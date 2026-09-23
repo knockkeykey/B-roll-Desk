@@ -1,0 +1,1958 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>B-roll 配对台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #2f3437;
+      --muted: #787774;
+      --dim: #a19f9a;
+      --bg: #f7f6f3;
+      --panel: #ffffff;
+      --panel-2: #fbfbfa;
+      --line: #eaeaea;
+      --line-strong: #d7d5d0;
+      --mint: #edf3ec;
+      --cyan: #e1f3fe;
+      --orange: #fbf3db;
+      --danger: #fdebec;
+      --accent-red: #9f2f2d;
+      --accent-blue: #1f6c9f;
+      --accent-green: #346538;
+      --accent-yellow: #956400;
+      --shadow: 0 2px 8px rgba(0, 0, 0, .04);
+      --radius: 10px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { min-width: 1060px; background: var(--bg); }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: "SF Pro Display", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: -.005em;
+    }
+
+    button, input, textarea, select { font: inherit; }
+
+    button {
+      color: var(--ink);
+      border: 1px solid var(--line-strong);
+      border-radius: 9px;
+      background: rgba(255, 255, 255, .045);
+      padding: 9px 13px;
+      cursor: pointer;
+      transition: border-color .18s ease, background .18s ease, transform .18s ease;
+    }
+
+    button:hover {
+      border-color: rgba(186, 252, 145, .55);
+      background: rgba(186, 252, 145, .09);
+    }
+
+    button:active { transform: translateY(1px); }
+
+    button.primary {
+      color: #0a1212;
+      border-color: var(--mint);
+      background: var(--mint);
+      font-weight: 700;
+    }
+
+    button.primary:hover { background: #d1ffb2; }
+
+    button.ghost { background: transparent; }
+
+    button.danger:hover {
+      border-color: rgba(255, 119, 115, .65);
+      background: rgba(255, 119, 115, .1);
+    }
+
+    input, textarea, select {
+      width: 100%;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      outline: none;
+      background: rgba(0, 0, 0, .18);
+    }
+
+    input:focus, textarea:focus, select:focus, button:focus-visible {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 3px rgba(141, 228, 229, .12);
+    }
+
+    input, select { height: 38px; padding: 0 11px; }
+
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+      padding: 12px 13px;
+      line-height: 1.65;
+    }
+
+    .app-shell { max-width: 1500px; margin: 0 auto; padding: 0 26px 38px; }
+
+    .topbar {
+      height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+
+    .brand-mark {
+      width: 20px;
+      height: 20px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 6px;
+      color: #09110e;
+      background: var(--mint);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .brand small { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .08em; }
+
+    .connection-state { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+
+    .state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+    .state-dot.ready { background: var(--mint); box-shadow: 0 0 0 4px rgba(186, 252, 145, .1); }
+    .state-dot.warn { background: var(--orange); }
+
+    .intro {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 28px;
+      padding: 38px 0 27px;
+    }
+
+    .intro h1 { max-width: 780px; margin: 0; font-size: clamp(28px, 3.7vw, 54px); line-height: .98; letter-spacing: -.055em; }
+    .intro h1 em { color: var(--mint); font-style: normal; }
+    .intro p { max-width: 680px; margin: 15px 0 0; color: var(--muted); line-height: 1.55; }
+
+    .hero-counter { min-width: 150px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255, 255, 255, .035); box-shadow: var(--shadow); }
+    .hero-counter strong { display: block; color: var(--mint); font-size: 38px; line-height: 1; letter-spacing: -.08em; }
+    .hero-counter span { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
+
+    .setup {
+      display: grid;
+      grid-template-columns: minmax(340px, 1.35fr) minmax(300px, .9fr);
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .setup-card, .panel { border: 1px solid var(--line); border-radius: var(--radius); background: rgba(17, 26, 29, .84); box-shadow: var(--shadow); }
+    .setup-card { padding: 16px; }
+
+    .setup-card h2, .panel-title h2 { margin: 0; font-size: 13px; letter-spacing: .02em; }
+    .setup-card p { margin: 5px 0 12px; color: var(--muted); font-size: 12px; }
+
+    .setup-actions { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+    .setup-actions .spacer { flex: 1; }
+
+    .destination-row { display: flex; gap: 8px; align-items: center; }
+    .destination-name { min-width: 0; overflow: hidden; color: var(--cyan); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .mini-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 10px; }
+    .field label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; }
+
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(330px, .7fr); gap: 14px; align-items: start; }
+    .panel { overflow: hidden; }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+    .panel-title { display: flex; align-items: center; gap: 9px; }
+    .panel-count { color: var(--muted); font-size: 11px; }
+    .panel-note { color: var(--muted); font-size: 11px; }
+
+    #anchorList { max-height: calc(100vh - 410px); min-height: 330px; overflow: auto; padding: 10px; }
+
+    .anchor-row {
+      position: relative;
+      margin: 0 0 8px;
+      padding: 13px;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .025);
+      transition: border-color .18s ease, background .18s ease, transform .18s ease;
+    }
+
+    .anchor-row:hover { border-color: var(--line-strong); background: rgba(255, 255, 255, .045); }
+    .anchor-row.is-over { border-color: var(--orange); background: rgba(255, 154, 98, .1); transform: translateY(-1px); }
+    .anchor-row.has-assets { border-color: rgba(186, 252, 145, .23); }
+
+    .anchor-top { display: grid; grid-template-columns: 35px minmax(0, 1fr) auto; gap: 11px; align-items: start; }
+    .anchor-number { color: var(--mint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 700; padding-top: 2px; }
+    .anchor-code { color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; letter-spacing: .04em; }
+    .anchor-text { margin-top: 5px; color: var(--ink); line-height: 1.5; }
+    .anchor-status { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .anchor-status.done { color: var(--mint); border-color: rgba(186, 252, 145, .3); background: rgba(186, 252, 145, .08); }
+
+    .drop-target { display: flex; align-items: center; gap: 8px; min-height: 32px; margin-top: 10px; padding: 7px 9px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--muted); font-size: 11px; }
+    .drop-target::before { content: "+"; display: inline-grid; place-items: center; width: 17px; height: 17px; border: 1px solid var(--dim); border-radius: 50%; color: var(--cyan); font-size: 14px; line-height: 1; }
+    .anchor-row.is-over .drop-target { color: var(--orange); border-color: var(--orange); }
+
+    .asset-list { display: grid; gap: 6px; margin-top: 9px; }
+    .asset-chip { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 8px; border-radius: 8px; background: rgba(186, 252, 145, .07); }
+    .asset-chip .chip-icon { color: var(--mint); font-size: 12px; }
+    .asset-chip .chip-name { min-width: 0; overflow: hidden; color: #d6e8dc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .asset-chip .chip-source { margin-left: auto; max-width: 180px; overflow: hidden; color: var(--dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .empty-state { display: grid; place-items: center; min-height: 300px; padding: 36px; color: var(--muted); text-align: center; }
+    .empty-state strong { display: block; margin-bottom: 8px; color: var(--ink); font-size: 15px; }
+
+    .side-body { padding: 14px 15px 16px; }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, .025); }
+    .stat strong { display: block; font-size: 24px; letter-spacing: -.06em; }
+    .stat span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .stat.accent strong { color: var(--mint); }
+
+    .side-section { margin-top: 20px; }
+    .side-section h3 { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
+    .rule-list { margin: 0; padding: 0; list-style: none; }
+    .rule-list li { display: flex; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(196, 228, 229, .08); color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .rule-list li::before { content: "•"; color: var(--mint); }
+
+    #activity { display: grid; gap: 7px; max-height: 245px; overflow: auto; }
+    .activity-item { padding: 9px 10px; border-left: 2px solid var(--cyan); background: rgba(141, 228, 229, .05); }
+    .activity-item strong { display: block; overflow: hidden; color: var(--ink); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .activity-item span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+
+    .side-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 17px; }
+    .side-actions button:last-child { grid-column: 1 / -1; }
+
+    .footer-note { margin-top: 15px; color: var(--dim); font-size: 11px; line-height: 1.5; }
+
+    #toast { position: fixed; right: 24px; bottom: 24px; z-index: 5; max-width: 430px; padding: 12px 15px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--ink); background: #172528; box-shadow: var(--shadow); opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .2s ease, transform .2s ease; }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.error { border-color: rgba(255, 119, 115, .55); background: #2a1d20; }
+
+    @media (max-width: 1100px) {
+      html { min-width: 0; }
+      .app-shell { padding: 0 16px 28px; }
+      .workspace, .setup { grid-template-columns: 1fr; }
+      #anchorList { max-height: none; }
+      .intro { align-items: start; }
+      .hero-counter { min-width: 120px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+
+    /*
+     * minimalist-ui pass
+     * Warm editorial canvas, flat surfaces, restrained accents, and clearer
+     * hierarchy for a local production tool. The rules below intentionally
+     * override the original dark desk theme without changing the app logic.
+     */
+    html { min-width: 0; background: var(--bg); }
+
+    body {
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.6;
+    }
+
+    .app-shell {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 0 40px 88px;
+    }
+
+    .topbar {
+      height: 76px;
+      border-bottom-color: var(--line);
+    }
+
+    .brand { gap: 11px; color: #111111; }
+
+    .brand-mark {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      color: var(--accent-red);
+      background: var(--danger);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: .04em;
+    }
+
+    .brand small {
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: .09em;
+    }
+
+    .connection-state {
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: .02em;
+    }
+
+    .state-dot { background: var(--dim); }
+    .state-dot.ready { background: var(--accent-green); box-shadow: none; }
+    .state-dot.warn { background: var(--accent-yellow); }
+
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 190px;
+      align-items: end;
+      gap: 40px;
+      padding: 82px 0 70px;
+    }
+
+    .intro h1 {
+      max-width: 800px;
+      color: #2f3437;
+      font-family: "Lyon Text", "Newsreader", "Instrument Serif", "Times New Roman", serif;
+      font-size: clamp(48px, 6vw, 82px);
+      font-weight: 500;
+      line-height: 1.03;
+      letter-spacing: -.045em;
+    }
+
+    .intro h1 em {
+      color: var(--accent-red);
+      font-style: normal;
+    }
+
+    .intro p {
+      max-width: 700px;
+      margin-top: 20px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .hero-counter {
+      min-width: 0;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: none;
+    }
+
+    .hero-counter strong {
+      color: #111111;
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 42px;
+      font-weight: 500;
+      letter-spacing: -.08em;
+    }
+
+    .hero-counter span {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    button {
+      color: var(--ink);
+      border-color: var(--line-strong);
+      border-radius: 5px;
+      background: var(--panel);
+      box-shadow: none;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    button:hover {
+      border-color: #bdbab3;
+      background: var(--panel-2);
+    }
+
+    button:active { transform: scale(.98); }
+
+    button.primary {
+      color: #ffffff;
+      border-color: #111111;
+      background: #111111;
+    }
+
+    button.primary:hover { border-color: #333333; background: #333333; }
+    button.ghost { background: transparent; }
+
+    button.danger { color: var(--accent-red); }
+    button.danger:hover { border-color: #d6a4a3; background: var(--danger); }
+
+    input, textarea, select {
+      color: var(--ink);
+      border-color: var(--line);
+      border-radius: 5px;
+      background: var(--panel);
+      box-shadow: none;
+    }
+
+    input:focus, textarea:focus, select:focus, button:focus-visible {
+      border-color: var(--accent-blue);
+      outline: 2px solid rgba(31, 108, 159, .16);
+      outline-offset: 1px;
+      box-shadow: none;
+    }
+
+    textarea { line-height: 1.7; }
+
+    .setup {
+      grid-template-columns: minmax(0, 1.25fr) minmax(330px, .75fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .setup-card, .panel {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: none;
+    }
+
+    .setup-card { padding: 28px; }
+
+    .setup-card h2, .panel-title h2 {
+      color: #111111;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .setup-card p {
+      margin: 7px 0 16px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .setup-actions { gap: 9px; margin-top: 12px; }
+    .destination-name { color: var(--accent-blue); }
+    .mini-grid { gap: 12px; margin-top: 14px; }
+    .field label { color: var(--muted); font-size: 11px; }
+
+    .workspace {
+      grid-template-columns: minmax(0, 1.38fr) minmax(330px, .62fr);
+      gap: 24px;
+    }
+
+    .panel-header {
+      padding: 19px 22px;
+      border-bottom-color: var(--line);
+      background: var(--panel-2);
+    }
+
+    .panel-title { gap: 10px; }
+    .panel-count, .panel-note { color: var(--muted); }
+
+    #anchorList {
+      max-height: calc(100vh - 460px);
+      min-height: 420px;
+      padding: 16px;
+      background: var(--panel);
+    }
+
+    .anchor-row {
+      margin-bottom: 10px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      transition: border-color .2s ease, background .2s ease, box-shadow .2s ease, transform .2s ease;
+    }
+
+    .anchor-row:hover {
+      border-color: var(--line-strong);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .anchor-row.is-over {
+      border-color: var(--accent-yellow);
+      background: var(--orange);
+      transform: translateY(-1px);
+    }
+
+    .anchor-row.has-assets { border-color: #c8d9c8; }
+    .anchor-top { grid-template-columns: 38px minmax(0, 1fr) auto; gap: 12px; }
+    .anchor-number, .anchor-code { color: var(--muted); }
+    .anchor-number { font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace; }
+    .anchor-code { font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace; }
+    .anchor-text { color: var(--ink); line-height: 1.65; }
+
+    .anchor-status {
+      padding: 4px 8px;
+      border-color: var(--line);
+      background: var(--panel);
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 9px;
+      letter-spacing: .02em;
+    }
+
+    .anchor-status.done {
+      color: var(--accent-green);
+      border-color: #c8d9c8;
+      background: var(--mint);
+    }
+
+    .drop-target {
+      min-height: 36px;
+      margin-top: 14px;
+      padding: 8px 10px;
+      border-color: #c8c6c0;
+      border-radius: 5px;
+      background: var(--panel);
+      color: var(--muted);
+    }
+
+    .drop-target::before {
+      width: 18px;
+      height: 18px;
+      border: 1px solid #c8c6c0;
+      border-radius: 4px;
+      color: var(--accent-blue);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 13px;
+    }
+
+    .anchor-row.is-over .drop-target {
+      border-color: var(--accent-yellow);
+      color: var(--accent-yellow);
+    }
+
+    .asset-list { gap: 7px; margin-top: 11px; }
+
+    .asset-chip {
+      padding: 8px 9px;
+      border: 1px solid #dce8dc;
+      border-radius: 5px;
+      background: var(--mint);
+    }
+
+   .asset-chip .chip-icon { color: var(--accent-green); }
+    .asset-chip .chip-icon {
+      position: relative;
+      width: 13px;
+      height: 13px;
+      flex: 0 0 13px;
+    }
+
+    .asset-chip .chip-icon::after {
+      content: "";
+      position: absolute;
+      left: 4px;
+      top: 1px;
+      width: 4px;
+      height: 8px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg);
+    }
+    .asset-chip .chip-name {
+      color: var(--accent-green);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+    }
+    .asset-chip .chip-source { color: var(--muted); }
+
+    .empty-state { min-height: 320px; color: var(--muted); }
+    .empty-state strong { color: #111111; }
+    .side-body { padding: 20px 22px 24px; }
+    .stat-grid { gap: 10px; }
+
+    .stat {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .stat strong {
+      color: #111111;
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 26px;
+      font-weight: 500;
+    }
+
+    .stat span { color: var(--muted); }
+    .stat.accent { background: var(--mint); }
+    .stat.accent strong { color: var(--accent-green); }
+    .side-section { margin-top: 28px; }
+    .side-section h3 { color: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
+    .rule-list li { border-bottom-color: var(--line); color: var(--muted); }
+    .rule-list li::before { color: var(--accent-green); }
+
+    #activity { gap: 8px; max-height: 260px; }
+
+    .activity-item {
+      padding: 10px 11px;
+      border-left: 2px solid var(--accent-blue);
+      background: var(--cyan);
+    }
+
+    .activity-item strong { color: #2f3437; }
+    .activity-item span { color: var(--muted); }
+    .side-actions { gap: 9px; margin-top: 24px; }
+    .footer-note { margin-top: 19px; color: var(--muted); }
+
+    #toast {
+      right: 28px;
+      bottom: 28px;
+      max-width: 430px;
+      padding: 12px 15px;
+      border: 1px solid #333333;
+      border-radius: 6px;
+      color: #ffffff;
+      background: #111111;
+      box-shadow: var(--shadow);
+    }
+
+    #toast.error {
+      border-color: #d6a4a3;
+      color: var(--accent-red);
+      background: var(--danger);
+    }
+
+    .reveal-on-scroll {
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity .6s cubic-bezier(.16, 1, .3, 1), transform .6s cubic-bezier(.16, 1, .3, 1);
+      transition-delay: calc(var(--reveal-index, 0) * 80ms);
+      will-change: transform, opacity;
+    }
+
+    .reveal-on-scroll.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 1100px) {
+      .app-shell { padding: 0 24px 64px; }
+      .intro { padding: 64px 0 52px; }
+      #anchorList { max-height: none; min-height: 360px; }
+    }
+
+    @media (max-width: 700px) {
+      .app-shell { padding: 0 16px 48px; }
+      .intro { grid-template-columns: 1fr; gap: 24px; padding: 48px 0 40px; }
+      .intro h1 { font-size: clamp(42px, 15vw, 64px); }
+      .hero-counter { width: 100%; }
+      .setup-card { padding: 20px; }
+      .setup-actions { align-items: stretch; flex-wrap: wrap; }
+      .setup-actions select { min-width: 150px; flex: 1; }
+      .setup-actions .primary { flex: 1 0 100%; }
+      .mini-grid { grid-template-columns: 1fr; }
+      .panel-header { padding: 17px 18px; }
+      #anchorList { padding: 12px; }
+      .anchor-row { padding: 15px; }
+      .anchor-top { grid-template-columns: 30px minmax(0, 1fr); }
+      .anchor-status { grid-column: 2; justify-self: start; }
+      .side-body { padding: 18px; }
+      #toast { right: 16px; bottom: 16px; left: 16px; max-width: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .reveal-on-scroll {
+        opacity: 1;
+        transform: none;
+        transition: none;
+      }
+    }
+
+    /* Tool-first layout: keep the working surface visible and the controls compact. */
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+    }
+
+    .topbar-summary {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .topbar-summary strong {
+      color: #111111;
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .tool-toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, .68fr) minmax(0, 1.32fr);
+      gap: 22px;
+      align-items: start;
+      padding: 18px 0 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .toolbar-heading {
+      display: grid;
+      align-content: start;
+      gap: 4px;
+      padding: 7px 0;
+    }
+
+    .eyebrow {
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 9px;
+      letter-spacing: .09em;
+    }
+
+    .toolbar-heading strong {
+      color: #111111;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+
+    .toolbar-note {
+      max-width: 320px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .script-editor {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+    }
+
+    .script-editor summary,
+    .secondary-details summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 38px;
+      padding: 0 12px;
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+      list-style: none;
+    }
+
+    .script-editor summary::-webkit-details-marker,
+    .secondary-details summary::-webkit-details-marker { display: none; }
+
+    .script-editor summary::after,
+    .secondary-details summary::after {
+      content: "+";
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 14px;
+      font-weight: 400;
+    }
+
+    .script-editor[open] summary::after,
+    .secondary-details[open] summary::after { content: "−"; }
+
+    .script-editor summary span {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 400;
+    }
+
+    .script-editor-body {
+      padding: 0 12px 12px;
+    }
+
+    .script-editor textarea {
+      min-height: 86px;
+      margin-top: 2px;
+      font-size: 12px;
+    }
+
+    .script-editor-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .script-editor-actions select { min-width: 150px; }
+    .script-editor-actions .primary { margin-left: auto; }
+
+    .workspace {
+      grid-template-columns: minmax(0, 1.78fr) minmax(300px, .72fr);
+      gap: 16px;
+      align-items: stretch;
+      margin-top: 16px;
+    }
+
+    .anchor-panel,
+    .directory-panel {
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .anchor-panel {
+      height: calc(100vh - 154px);
+    }
+
+   .anchor-panel #anchorList {
+     height: calc(100vh - 209px);
+     max-height: none;
+     min-height: 0;
+   }
+
+    .anchor-panel .anchor-row {
+      margin-bottom: 6px;
+      padding: 11px 12px;
+    }
+
+    .anchor-panel .anchor-top {
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+
+    .anchor-panel .anchor-number { font-size: 10px; }
+    .anchor-panel .anchor-code { font-size: 9px; }
+    .anchor-panel .anchor-text { margin-top: 3px; font-size: 13px; line-height: 1.5; }
+    .anchor-panel .anchor-status { padding: 3px 7px; font-size: 9px; }
+
+    .anchor-panel .drop-target {
+      min-height: 29px;
+      margin-top: 8px;
+      padding: 5px 8px;
+      font-size: 10px;
+    }
+
+    .anchor-panel .asset-list { margin-top: 7px; }
+    .anchor-panel .asset-chip { padding: 6px 8px; }
+    .anchor-panel .asset-chip .chip-name,
+    .anchor-panel .asset-chip .chip-source { font-size: 9px; }
+
+    .directory-panel {
+      position: sticky;
+      top: 16px;
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 108px);
+      min-height: 560px;
+    }
+
+    .directory-panel .panel-header { flex: 0 0 auto; }
+    .directory-panel .icon-button {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-color: var(--line);
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .directory-panel .icon-button:hover {
+      color: var(--ink);
+      background: var(--panel);
+    }
+
+    .directory-toolbar {
+      flex: 0 0 auto;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+   .directory-target {
+     display: flex;
+     align-items: center;
+     min-width: 0;
+     gap: 9px;
+   }
+
+    .directory-target + .directory-target { margin-top: 8px; }
+
+    .directory-label {
+      flex: 0 0 48px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+   .directory-target .primary { flex: 0 0 auto; }
+   .destination-name { min-width: 0; color: var(--accent-blue); text-overflow: ellipsis; }
+    .source-directory-name { min-width: 0; color: var(--accent-green); text-overflow: ellipsis; }
+
+    .directory-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .directory-fields .field label {
+      margin-bottom: 4px;
+      font-size: 10px;
+    }
+
+    .directory-fields input,
+    .directory-fields select {
+      height: 34px;
+      padding: 0 9px;
+      font-size: 11px;
+    }
+
+    .directory-hint {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    .directory-list {
+      flex: 1 1 auto;
+      min-height: 140px;
+      overflow: auto;
+      padding: 8px;
+      background: var(--panel-2);
+    }
+
+    .directory-empty {
+      display: grid;
+      align-content: center;
+      justify-items: start;
+      min-height: 160px;
+      padding: 18px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .directory-empty strong {
+      margin-bottom: 3px;
+      color: var(--ink);
+      font-size: 12px;
+    }
+
+    .directory-item {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      min-height: 40px;
+      padding: 7px 8px;
+      border-bottom: 1px solid var(--line);
+      color: var(--ink);
+      cursor: grab;
+      user-select: none;
+    }
+
+    .directory-item:hover,
+    .directory-item.is-dragging {
+      background: var(--cyan);
+    }
+
+    .directory-item:active { cursor: grabbing; }
+
+    .directory-item-icon {
+      width: 12px;
+      height: 14px;
+      border: 1px solid var(--accent-blue);
+      border-radius: 2px;
+      background: var(--panel);
+    }
+
+    .directory-item-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10px;
+    }
+
+    .directory-item-meta {
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .directory-footer {
+      flex: 0 0 auto;
+      padding: 10px 14px 12px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .compact-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .compact-stat {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+
+    .compact-stat:first-child { background: var(--mint); }
+
+    .compact-stat strong {
+      color: #111111;
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .compact-stat:first-child strong { color: var(--accent-green); }
+    .compact-stat span { color: var(--muted); font-size: 10px; }
+
+    .directory-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+      margin-top: 8px;
+    }
+
+    .directory-actions button {
+      min-height: 32px;
+      padding: 7px 8px;
+      font-size: 10px;
+    }
+
+    .directory-actions button:last-child { grid-column: 1 / -1; }
+
+    .save-state {
+      min-height: 18px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 9px;
+      text-align: right;
+    }
+
+    .secondary-details {
+      border-top: 1px solid var(--line);
+    }
+
+    .secondary-details summary {
+      min-height: 32px;
+      padding: 0 2px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .secondary-details .rule-list {
+      margin: 0 2px 8px;
+    }
+
+    .secondary-details .rule-list li {
+      padding: 6px 0;
+      font-size: 10px;
+    }
+
+    .secondary-details #activity {
+      max-height: 130px;
+      margin: 0 2px 8px;
+    }
+
+    .footer-note {
+      margin: 8px 2px 0;
+      font-size: 9px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 1100px) {
+      .tool-toolbar { grid-template-columns: 1fr; gap: 10px; }
+      .workspace { grid-template-columns: 1fr; }
+      .anchor-panel { height: auto; }
+      .anchor-panel #anchorList { height: auto; min-height: 360px; max-height: none; }
+      .directory-panel { position: static; height: 520px; min-height: 0; }
+    }
+
+    @media (max-width: 700px) {
+      .topbar-actions { gap: 10px; }
+      .topbar-summary { display: none; }
+      .tool-toolbar { padding-top: 12px; }
+      .script-editor-actions { flex-wrap: wrap; }
+      .script-editor-actions .primary { margin-left: 0; }
+      .script-editor-actions select { flex: 1; min-width: 140px; }
+      .script-editor-actions .primary { flex: 1 0 100%; }
+      .directory-fields { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">B</span>
+        <span>B-roll 配对台</span>
+        <small>LOCAL / V1</small>
+      </div>
+      <div class="topbar-actions">
+        <div class="topbar-summary">
+          <strong id="heroCount">0</strong>
+          <span>已归档</span>
+        </div>
+        <div class="connection-state" id="connectionState">
+          <span class="state-dot" id="stateDot"></span>
+          <span id="stateText">尚未选择目标目录</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="tool-toolbar">
+      <div class="toolbar-heading">
+        <span class="eyebrow">B-ROLL MAPPER</span>
+        <strong>文案 → 辅助画面</strong>
+        <span class="toolbar-note">左侧按文案定位，右侧管理素材；支持从 Finder 直接拖入。</span>
+      </div>
+      <details class="script-editor">
+        <summary>编辑 / 导入文案 <span>每行一个锚点</span></summary>
+        <div class="script-editor-body">
+          <textarea id="scriptInput" spellcheck="false" placeholder="把视频文案粘贴到这里……&#10;每一行会变成一个可拖放的 B-roll 槽位。"></textarea>
+          <div class="script-editor-actions">
+            <button id="importScriptBtn">导入 .txt</button>
+            <input id="scriptFile" type="file" accept=".txt,.md,text/plain,text/markdown" hidden />
+            <select id="splitMode" aria-label="文案拆分方式">
+              <option value="line">按换行拆分</option>
+              <option value="sentence">按句号自动拆分</option>
+            </select>
+            <button class="primary" id="parseBtn">重新生成锚点</button>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <main class="workspace">
+      <section class="panel anchor-panel">
+        <div class="panel-header">
+          <div class="panel-title"><h2>文案锚点</h2><span class="panel-count" id="anchorCount">0 句</span></div>
+          <span class="panel-note">拖视频到对应句子</span>
+        </div>
+        <div id="anchorList">
+          <div class="empty-state">
+            <div><strong>先导入文案</strong><span>每句话会变成一个 B-roll 投放位。</span></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel directory-panel">
+        <div class="panel-header">
+          <div class="panel-title"><h2>素材目录</h2><span class="panel-count" id="directoryCount">0 个视频</span></div>
+          <button class="icon-button" id="refreshDirectoryBtn" title="刷新目录" aria-label="刷新目录">↻</button>
+       </div>
+       <div class="directory-toolbar">
+         <div class="directory-target">
+            <span class="directory-label">素材来源</span>
+            <button id="chooseSourceDirBtn">选择素材目录</button>
+            <span class="source-directory-name" id="sourceDirectoryName">未选择</span>
+          </div>
+          <div class="directory-target">
+            <span class="directory-label">归档位置</span>
+            <button class="primary" id="chooseDirBtn">选择归档目录</button>
+            <span class="destination-name" id="destinationName">未选择</span>
+         </div>
+         <div class="directory-fields">
+            <div class="field">
+              <label for="prefixInput">期数 / 前缀</label>
+              <input id="prefixInput" placeholder="例如 第15期" />
+            </div>
+            <div class="field">
+              <label for="modeSelect">默认模式</label>
+              <select id="modeSelect">
+                <option value="FS">FS · 全屏</option>
+                <option value="PIP">PIP · 画中画</option>
+              </select>
+            </div>
+          </div>
+          <p class="directory-hint">右侧源素材可以直接拖到左侧文案；Finder 里的视频也仍然支持直接拖入。</p>
+        </div>
+        <div id="directoryList" class="directory-list">
+         <div class="directory-empty">
+            <strong>先选择素材目录</strong>
+            <span>目录中的视频会显示在这里，拖到左侧后会自动归档。</span>
+         </div>
+        </div>
+        <div class="directory-footer">
+          <div class="compact-stats">
+            <div class="compact-stat"><strong id="assignedStat">0</strong><span>已绑定</span></div>
+            <div class="compact-stat"><strong id="pendingStat">0</strong><span>待绑定</span></div>
+          </div>
+          <div class="directory-actions">
+            <button id="saveManifestBtn">保存清单</button>
+            <button id="downloadManifestBtn">下载清单</button>
+            <button class="ghost danger" id="clearAssignmentsBtn">清空配对记录</button>
+          </div>
+          <div class="save-state"><span id="lastSaved">尚未保存</span></div>
+          <details class="secondary-details">
+            <summary>固定规则</summary>
+            <ul class="rule-list">
+              <li>默认复制，不删除 Finder 原片。</li>
+              <li>文件名：BR 编号 + 文案短句 + 原扩展名。</li>
+              <li>完整文案写入 broll-manifest.json。</li>
+              <li>每条记录默认静音，放置轨道为 V2。</li>
+              <li>配对记录自动保存在本机浏览器。</li>
+            </ul>
+          </details>
+          <details class="secondary-details">
+            <summary>最近归档</summary>
+            <div id="activity"><div class="panel-note">还没有拖入素材。</div></div>
+          </details>
+          <p class="footer-note">这里采用安全复制模式，原始素材保留；目标目录里生成的是 ChatCut 使用版。</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const $ = (selector) => document.querySelector(selector);
+      const state = {
+       rows: [],
+       assignments: {},
+       directoryHandle: null,
+        sourceDirectoryHandle: null,
+       prefix: "",
+        splitMode: "line",
+        defaultMode: "FS",
+        toastTimer: null,
+      };
+
+      const DB_NAME = "broll-namer-db";
+      const DB_VERSION = 1;
+      const STORE_NAME = "handles";
+      const ASSIGNMENTS_STORAGE_KEY = "broll-namer-assignments-v1";
+
+      function showToast(message, kind = "normal") {
+        const toast = $("#toast");
+        toast.textContent = message;
+        toast.className = `show ${kind === "error" ? "error" : ""}`;
+        clearTimeout(state.toastTimer);
+        state.toastTimer = setTimeout(() => { toast.className = ""; }, 3600);
+      }
+
+      function escapeHTML(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function hashString(value) {
+        let hash = 2166136261;
+        for (let i = 0; i < value.length; i += 1) {
+          hash ^= value.charCodeAt(i);
+          hash = Math.imul(hash, 16777619);
+        }
+        return (hash >>> 0).toString(16);
+      }
+
+      function sanitizePart(value, maxLength = 24) {
+        const clean = String(value)
+          .normalize("NFKC")
+          .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+          .replace(/[\s\p{P}\p{S}]+/gu, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, maxLength);
+        return clean || "未命名";
+      }
+
+      function getExtension(fileName) {
+        const match = String(fileName).match(/(\.[a-z0-9]{1,8})$/i);
+        return match ? match[1].toLowerCase() : ".mp4";
+      }
+
+      function isVideoFile(file) {
+        const extension = getExtension(file.name);
+        return file.type.startsWith("video/") || [".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv", ".mts", ".m2ts"].includes(extension);
+      }
+
+      function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return "未知大小";
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+      }
+
+      async function renderDirectoryList() {
+       const container = $("#directoryList");
+       const count = $("#directoryCount");
+       if (!container || !count) return;
+        const browseHandle = state.sourceDirectoryHandle || state.directoryHandle;
+        if (!browseHandle) {
+         count.textContent = "0 个视频";
+          container.innerHTML = '<div class="directory-empty"><strong>先选择素材目录</strong><span>目录中的视频会显示在这里，拖到左侧后会自动归档。</span></div>';
+         return;
+       }
+
+        try {
+          const files = [];
+          for await (const [name, handle] of browseHandle.entries()) {
+            if (handle.kind !== "file") continue;
+            const file = await handle.getFile();
+            if (isVideoFile(file)) files.push({ name, file });
+          }
+          files.sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+          count.textContent = `${files.length} 个视频`;
+          if (!files.length) {
+            container.innerHTML = '<div class="directory-empty"><strong>目录里还没有视频</strong><span>把拍好的视频放进素材目录，点击右上角刷新。</span></div>';
+            return;
+          }
+
+         const assignedNames = new Set(Object.values(state.assignments).flat().flatMap((asset) => [asset.sourceName, asset.outputName]));
+          container.innerHTML = files.map(({ name, file }) => `
+            <div class="directory-item" draggable="true" data-file-name="${escapeHTML(name)}" title="拖到左侧文案：${escapeHTML(name)}">
+              <span class="directory-item-icon" aria-hidden="true"></span>
+              <span class="directory-item-name">${escapeHTML(name)}</span>
+              <span class="directory-item-meta">${assignedNames.has(name) ? "已绑定" : formatBytes(file.size)}</span>
+            </div>
+          `).join("");
+
+          container.querySelectorAll(".directory-item").forEach((item) => {
+            item.addEventListener("dragstart", (event) => {
+              event.dataTransfer.effectAllowed = "copy";
+              event.dataTransfer.setData("application/x-broll-file", item.dataset.fileName);
+              event.dataTransfer.setData("text/plain", item.dataset.fileName);
+              item.classList.add("is-dragging");
+            });
+            item.addEventListener("dragend", () => item.classList.remove("is-dragging"));
+          });
+        } catch (error) {
+          count.textContent = "读取失败";
+          container.innerHTML = `<div class="directory-empty"><strong>无法读取目录</strong><span>${escapeHTML(error.message || "请重新授权后再试。")}</span></div>`;
+        }
+      }
+
+      function splitScript(raw, mode) {
+        const normalized = String(raw || "").replace(/\r/g, "").trim();
+        if (!normalized) return [];
+        if (mode === "sentence") {
+          const parts = normalized.split("\n").flatMap((line) => line.match(/[^。！？!?]+[。！？!?]?/g) || []);
+          return parts.map((part) => part.trim()).filter(Boolean);
+        }
+        return normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+      }
+
+      function parseScript() {
+        const chunks = splitScript($("#scriptInput").value, state.splitMode);
+        const occurrences = new Map();
+        state.rows = chunks.map((text, index) => {
+          const base = hashString(text);
+          const occurrence = (occurrences.get(base) || 0) + 1;
+          occurrences.set(base, occurrence);
+          return { key: `${base}-${occurrence}`, text, index: index + 1 };
+        });
+        renderRows();
+        updateStats();
+        persistPreferences();
+      }
+
+      function getAssignments(rowKey) {
+        if (!state.assignments[rowKey]) state.assignments[rowKey] = [];
+        return state.assignments[rowKey];
+      }
+
+      function renderRows() {
+        const container = $("#anchorList");
+        $("#anchorCount").textContent = `${state.rows.length} 句`;
+        if (!state.rows.length) {
+          container.innerHTML = '<div class="empty-state"><div><strong>先导入文案</strong><span>每句话会变成一个 B-roll 投放位。</span></div></div>';
+          return;
+        }
+
+        container.innerHTML = state.rows.map((row) => {
+          const assets = getAssignments(row.key);
+          const assetMarkup = assets.map((asset) => `
+            <div class="asset-chip" title="${escapeHTML(asset.sourceName)}">
+              <span class="chip-icon" aria-hidden="true"></span>
+              <span class="chip-name">${escapeHTML(asset.outputName)}</span>
+              <span class="chip-source">${escapeHTML(asset.sourceName)}</span>
+            </div>
+          `).join("");
+          return `
+            <article class="anchor-row ${assets.length ? "has-assets" : ""}" data-row-key="${escapeHTML(row.key)}">
+              <div class="anchor-top">
+                <div class="anchor-number">${String(row.index).padStart(2, "0")}</div>
+                <div>
+                  <div class="anchor-code">BR${String(row.index).padStart(3, "0")}</div>
+                  <div class="anchor-text">${escapeHTML(row.text)}</div>
+                </div>
+                <div class="anchor-status ${assets.length ? "done" : ""}">${assets.length ? `${assets.length} 个已归档` : "待拍摄"}</div>
+              </div>
+              <div class="drop-target">从 Finder 拖视频到这里${assets.length ? "，可继续添加第二个镜头" : ""}</div>
+              ${assetMarkup ? `<div class="asset-list">${assetMarkup}</div>` : ""}
+            </article>
+          `;
+        }).join("");
+
+        container.querySelectorAll(".anchor-row").forEach((rowElement) => {
+          const rowKey = rowElement.dataset.rowKey;
+          rowElement.addEventListener("dragover", (event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            rowElement.classList.add("is-over");
+          });
+          rowElement.addEventListener("dragleave", () => rowElement.classList.remove("is-over"));
+         rowElement.addEventListener("drop", async (event) => {
+           event.preventDefault();
+           rowElement.classList.remove("is-over");
+            const directoryFileName = event.dataTransfer.getData("application/x-broll-file");
+            if (directoryFileName) {
+              await attachExistingFile(rowKey, directoryFileName);
+              return;
+            }
+           await handleDrop(rowKey, [...event.dataTransfer.files]);
+         });
+        });
+      }
+
+      function updateStats() {
+        const allAssignments = Object.values(state.assignments).flat();
+        const assignedCount = allAssignments.length;
+        const pending = state.rows.filter((row) => !getAssignments(row.key).length).length;
+        $("#heroCount").textContent = assignedCount;
+        $("#assignedStat").textContent = assignedCount;
+        $("#pendingStat").textContent = pending;
+      }
+
+      function renderActivity() {
+        const activity = $("#activity");
+        const items = Object.values(state.assignments).flat().sort((a, b) => new Date(b.copiedAt) - new Date(a.copiedAt)).slice(0, 12);
+        if (!items.length) {
+          activity.innerHTML = '<div class="panel-note">还没有拖入素材。</div>';
+          return;
+        }
+        activity.innerHTML = items.map((item) => `
+          <div class="activity-item">
+            <strong>${escapeHTML(item.outputName)}</strong>
+            <span>${escapeHTML(item.anchorText)}</span>
+          </div>
+        `).join("");
+      }
+
+      function setDirectoryState(kind, text) {
+        $("#stateText").textContent = text;
+        $("#stateDot").className = `state-dot ${kind}`;
+      }
+
+     function updateDirectoryUI() {
+       const name = state.directoryHandle ? state.directoryHandle.name : "未选择";
+       $("#destinationName").textContent = name;
+       if (state.directoryHandle) setDirectoryState("ready", `目标目录：${name}`);
+       else setDirectoryState("", "尚未选择目标目录");
+     }
+
+      function updateSourceDirectoryUI() {
+        const name = state.sourceDirectoryHandle ? state.sourceDirectoryHandle.name : "未选择";
+        $("#sourceDirectoryName").textContent = name;
+      }
+
+      function openDatabase() {
+        return new Promise((resolve, reject) => {
+          const request = indexedDB.open(DB_NAME, DB_VERSION);
+          request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      }
+
+      async function storeDirectoryHandle(handle, key = "destination") {
+       try {
+         const db = await openDatabase();
+         await new Promise((resolve, reject) => {
+           const transaction = db.transaction(STORE_NAME, "readwrite");
+            transaction.objectStore(STORE_NAME).put(handle, key);
+           transaction.oncomplete = resolve;
+           transaction.onerror = () => reject(transaction.error);
+         });
+         db.close();
+       } catch (error) {
+         console.warn("无法记住目录权限", error);
+       }
+     }
+
+      async function readStoredDirectoryHandle(key) {
+        const db = await openDatabase();
+        const handle = await new Promise((resolve, reject) => {
+          const request = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(key);
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => reject(request.error);
+        });
+        db.close();
+        return handle;
+      }
+
+      async function loadDirectoryHandle() {
+       try {
+          const [destinationHandle, sourceHandle] = await Promise.all([
+            readStoredDirectoryHandle("destination"),
+            readStoredDirectoryHandle("source"),
+          ]);
+          if (destinationHandle) {
+            state.directoryHandle = destinationHandle;
+           updateDirectoryUI();
+            if (await destinationHandle.queryPermission({ mode: "readwrite" }) !== "granted") {
+              setDirectoryState("warn", `已记住 ${destinationHandle.name}，需要重新授权`);
+           } else {
+             await restoreManifestFromDirectory();
+           }
+         }
+          if (sourceHandle) {
+            state.sourceDirectoryHandle = sourceHandle;
+            updateSourceDirectoryUI();
+            if (await sourceHandle.queryPermission({ mode: "read" }) === "granted") await renderDirectoryList();
+          } else if (destinationHandle && await destinationHandle.queryPermission({ mode: "read" }) === "granted") {
+            await renderDirectoryList();
+          }
+       } catch (error) {
+         console.warn("读取已保存目录失败", error);
+       }
+     }
+
+      async function chooseSourceDirectory() {
+        if (!window.showDirectoryPicker) {
+          showToast("请用 Chrome 或 Edge 打开此工具；当前浏览器不支持选择本地目录。", "error");
+          return;
+        }
+        try {
+          const handle = await window.showDirectoryPicker({ mode: "read" });
+          if (await handle.requestPermission({ mode: "read" }) !== "granted") {
+            showToast("没有获得素材目录的读取权限。", "error");
+            return;
+          }
+          state.sourceDirectoryHandle = handle;
+          await storeDirectoryHandle(handle, "source");
+          updateSourceDirectoryUI();
+          await renderDirectoryList();
+          showToast(`已连接素材目录：${handle.name}`);
+        } catch (error) {
+          if (error.name !== "AbortError") showToast(`选择素材目录失败：${error.message}`, "error");
+        }
+      }
+
+     async function chooseDirectory() {
+        if (!window.showDirectoryPicker) {
+          showToast("请用 Chrome 或 Edge 打开此工具；当前浏览器不支持选择本地目录。", "error");
+          return;
+        }
+        try {
+          const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+          if (await handle.requestPermission({ mode: "readwrite" }) !== "granted") {
+            showToast("没有获得目标目录的写入权限。", "error");
+            return;
+          }
+          state.directoryHandle = handle;
+          await storeDirectoryHandle(handle);
+          updateDirectoryUI();
+          await restoreManifestFromDirectory();
+          await renderDirectoryList();
+          showToast(`已连接目标目录：${handle.name}`);
+        } catch (error) {
+          if (error.name !== "AbortError") showToast(`选择目录失败：${error.message}`, "error");
+        }
+      }
+
+      async function ensureDirectory() {
+        if (!state.directoryHandle) {
+          await chooseDirectory();
+          return Boolean(state.directoryHandle);
+        }
+        const permission = await state.directoryHandle.queryPermission({ mode: "readwrite" });
+        if (permission === "granted") return true;
+        const requested = await state.directoryHandle.requestPermission({ mode: "readwrite" });
+        if (requested !== "granted") {
+          showToast("请重新授权目标目录的写入权限。", "error");
+          setDirectoryState("warn", `已记住 ${state.directoryHandle.name}，需要重新授权`);
+          return false;
+        }
+       updateDirectoryUI();
+       await restoreManifestFromDirectory();
+        await renderDirectoryList();
+       return true;
+      }
+
+      function persistAssignments() {
+        try {
+          localStorage.setItem(ASSIGNMENTS_STORAGE_KEY, JSON.stringify({
+            version: 1,
+            assignments: state.assignments,
+          }));
+          $("#lastSaved").textContent = `本机已保存 ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+        } catch (error) {
+          console.warn("无法保存本机配对记录", error);
+          setDirectoryState("warn", "本机保存失败，请保留目标目录中的 manifest");
+        }
+      }
+
+      function restoreAssignments() {
+        try {
+          const raw = localStorage.getItem(ASSIGNMENTS_STORAGE_KEY);
+          if (!raw) return;
+          const saved = JSON.parse(raw);
+          if (saved && saved.version === 1 && saved.assignments && typeof saved.assignments === "object") {
+            state.assignments = saved.assignments;
+          }
+        } catch (error) {
+          console.warn("无法读取本机配对记录", error);
+        }
+      }
+
+      async function restoreManifestFromDirectory() {
+        if (!state.directoryHandle) return;
+        try {
+          const manifestHandle = await state.directoryHandle.getFileHandle("broll-manifest.json", { create: false });
+          const manifestFile = await manifestHandle.getFile();
+          const manifest = JSON.parse(await manifestFile.text());
+          if (manifest.schema !== "broll-manifest.v1" || !Array.isArray(manifest.anchors)) return;
+
+          let changed = false;
+          for (const anchor of manifest.anchors) {
+            if (!anchor || !anchor.id || !Array.isArray(anchor.assets)) continue;
+            const current = getAssignments(anchor.id);
+            const known = new Set(current.map((asset) => asset.id || `${asset.outputName}|${asset.sourceName}`));
+            for (const asset of anchor.assets) {
+              const identity = asset.id || `${asset.outputName}|${asset.sourceName}`;
+              if (!known.has(identity)) {
+                current.push(asset);
+                known.add(identity);
+                changed = true;
+              }
+            }
+          }
+
+          if (changed) {
+            persistAssignments();
+            renderRows();
+            renderActivity();
+            updateStats();
+            $("#lastSaved").textContent = "已从 manifest 恢复";
+          }
+        } catch (error) {
+          if (error.name !== "NotFoundError") console.warn("无法从 manifest 恢复配对记录", error);
+        }
+      }
+
+      async function isAvailable(name) {
+        try {
+          await state.directoryHandle.getFileHandle(name, { create: false });
+          return false;
+        } catch (error) {
+          if (error.name === "NotFoundError") return true;
+          throw error;
+        }
+      }
+
+      async function uniqueName(baseName) {
+        if (await isAvailable(baseName)) return baseName;
+        const dot = baseName.lastIndexOf(".");
+        const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+        const extension = dot > 0 ? baseName.slice(dot) : "";
+        let counter = 2;
+        while (counter < 1000) {
+          const candidate = `${stem}_${String(counter).padStart(2, "0")}${extension}`;
+          if (await isAvailable(candidate)) return candidate;
+          counter += 1;
+        }
+        throw new Error("同名素材太多，无法生成唯一文件名");
+      }
+
+      async function copyFileToDirectory(file, outputName) {
+        const fileHandle = await state.directoryHandle.getFileHandle(outputName, { create: true });
+        const writable = await fileHandle.createWritable();
+        try {
+          await writable.write(file);
+          await writable.close();
+        } catch (error) {
+          try { await writable.abort(); } catch (_) { /* ignore cleanup errors */ }
+          throw error;
+        }
+      }
+
+      function findRow(rowKey) {
+        return state.rows.find((row) => row.key === rowKey);
+      }
+
+     async function attachExistingFile(rowKey, fileName) {
+       const row = findRow(rowKey);
+       if (!row || !(await ensureDirectory())) return;
+       const assignments = getAssignments(rowKey);
+        if (assignments.some((asset) => asset.sourceName === fileName)) {
+         showToast("这条素材已经绑定到当前句子。", "error");
+         return;
+       }
+
+       try {
+          const sourceHandle = state.sourceDirectoryHandle || state.directoryHandle;
+          if (!sourceHandle) {
+            showToast("请先选择素材目录。", "error");
+            return;
+          }
+          const fileHandle = await sourceHandle.getFileHandle(fileName, { create: false });
+         const file = await fileHandle.getFile();
+         if (!isVideoFile(file)) {
+           showToast("目录中的这个文件不是可识别的视频。", "error");
+           return;
+         }
+          await handleDrop(rowKey, [file]);
+       } catch (error) {
+          showToast(`读取目录素材失败：${error.message}`, "error");
+       }
+     }
+
+      async function handleDrop(rowKey, files) {
+        const row = findRow(rowKey);
+        if (!row) return;
+        const videoFiles = files.filter(isVideoFile);
+        if (!videoFiles.length) {
+          showToast("没有识别到视频文件，请拖入 MP4、MOV、M4V、WebM 或相机原片。", "error");
+          return;
+        }
+        if (!(await ensureDirectory())) return;
+
+        const assignments = getAssignments(rowKey);
+        const prefix = sanitizePart($("#prefixInput").value.trim(), 30);
+        const hasPrefix = $("#prefixInput").value.trim().length > 0;
+        const label = sanitizePart(row.text, 24);
+        const baseCode = `BR${String(row.index).padStart(3, "0")}`;
+        const mode = $("#modeSelect").value;
+
+        for (const file of videoFiles) {
+          try {
+            const prefixPart = hasPrefix ? `${prefix}_` : "";
+            const baseName = `${prefixPart}${baseCode}_${label}${getExtension(file.name)}`;
+            const outputName = await uniqueName(baseName);
+            await copyFileToDirectory(file, outputName);
+            assignments.push({
+              id: `${row.key}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              anchorKey: row.key,
+              anchorIndex: row.index,
+              anchorText: row.text,
+              sourceName: file.name,
+              outputName,
+              mode,
+              targetTrack: "V2",
+              audio: "mute",
+              copiedAt: new Date().toISOString(),
+            });
+            showToast(`已归档：${outputName}`);
+          } catch (error) {
+            showToast(`归档失败：${file.name} · ${error.message}`, "error");
+          }
+        }
+        renderRows();
+        renderActivity();
+        updateStats();
+        persistAssignments();
+        await saveManifest(false);
+       await renderDirectoryList();
+      }
+
+      function currentManifest() {
+        return {
+          schema: "broll-manifest.v1",
+          generatedAt: new Date().toISOString(),
+          tool: "B-roll 配对台",
+          destinationDirectory: state.directoryHandle ? state.directoryHandle.name : null,
+          naming: {
+            filenamePattern: "[prefix_]BR###_文案短句.ext",
+            defaultTrack: "V2",
+            defaultAudio: "mute",
+            copyMode: true,
+          },
+          anchors: state.rows.map((row) => ({
+            id: row.key,
+            index: row.index,
+            text: row.text,
+            assets: getAssignments(row.key),
+          })),
+        };
+      }
+
+      function manifestMarkdown(manifest) {
+        const lines = [
+          "# B-roll placement map",
+          "",
+          `- Generated: ${manifest.generatedAt}`,
+          `- Destination: ${manifest.destinationDirectory || "not selected"}`,
+          "- Default track: V2",
+          "- Default audio: mute",
+          "",
+          "| ID | Anchor text | Output file | Mode | Track | Audio |",
+          "|---|---|---|---|---|---|",
+        ];
+        for (const anchor of manifest.anchors) {
+          if (!anchor.assets.length) {
+            lines.push(`| BR${String(anchor.index).padStart(3, "0")} | ${anchor.text.replaceAll("|", "\\|")} |  |  |  |  |`);
+            continue;
+          }
+          for (const asset of anchor.assets) {
+            lines.push(`| BR${String(anchor.index).padStart(3, "0")} | ${anchor.text.replaceAll("|", "\\|")} | ${asset.outputName} | ${asset.mode} | ${asset.targetTrack} | ${asset.audio} |`);
+          }
+        }
+        lines.push("", "## Codex handoff", "", "读取同目录的 `broll-manifest.json`，按 anchor text 在当前最终 A-roll 中定位，再把 output file 放到 V2。不要重新改动 A-roll。", "");
+        return lines.join("\n");
+      }
+
+      async function writeTextFile(name, contents) {
+        const handle = await state.directoryHandle.getFileHandle(name, { create: true });
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(contents);
+          await writable.close();
+        } catch (error) {
+          try { await writable.abort(); } catch (_) { /* ignore cleanup errors */ }
+          throw error;
+        }
+      }
+
+      async function saveManifest(showMessage = true) {
+        if (!(await ensureDirectory())) return false;
+        const manifest = currentManifest();
+        try {
+          await writeTextFile("broll-manifest.json", JSON.stringify(manifest, null, 2));
+          await writeTextFile("broll-manifest.md", manifestMarkdown(manifest));
+          $("#lastSaved").textContent = `已保存 ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+          if (showMessage) showToast("清单已保存到目标目录");
+          return true;
+        } catch (error) {
+          showToast(`保存清单失败：${error.message}`, "error");
+          return false;
+        }
+      }
+
+      function downloadManifest() {
+        const blob = new Blob([JSON.stringify(currentManifest(), null, 2)], { type: "application/json;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "broll-manifest.json";
+        link.click();
+        URL.revokeObjectURL(url);
+        showToast("清单已下载");
+      }
+
+      function persistPreferences() {
+        localStorage.setItem("broll-namer-script", $("#scriptInput").value);
+        localStorage.setItem("broll-namer-split-mode", state.splitMode);
+        localStorage.setItem("broll-namer-prefix", $("#prefixInput").value);
+        localStorage.setItem("broll-namer-default-mode", $("#modeSelect").value);
+        persistAssignments();
+      }
+
+      function loadPreferences() {
+        const savedScript = localStorage.getItem("broll-namer-script");
+        const savedMode = localStorage.getItem("broll-namer-split-mode");
+        const savedPrefix = localStorage.getItem("broll-namer-prefix");
+        const savedDefaultMode = localStorage.getItem("broll-namer-default-mode");
+        restoreAssignments();
+        if (Object.values(state.assignments).flat().length) $("#lastSaved").textContent = "已从本机恢复";
+        if (savedScript) $("#scriptInput").value = savedScript;
+        if (savedMode === "line" || savedMode === "sentence") {
+          state.splitMode = savedMode;
+          $("#splitMode").value = savedMode;
+        }
+        if (savedPrefix) $("#prefixInput").value = savedPrefix;
+        if (savedDefaultMode === "FS" || savedDefaultMode === "PIP") $("#modeSelect").value = savedDefaultMode;
+      }
+
+      $("#parseBtn").addEventListener("click", () => {
+        state.splitMode = $("#splitMode").value;
+        parseScript();
+        showToast(`已生成 ${state.rows.length} 个文案槽位`);
+      });
+
+      $("#scriptInput").addEventListener("input", () => {
+        state.splitMode = $("#splitMode").value;
+        parseScript();
+      });
+
+      $("#splitMode").addEventListener("change", () => {
+        state.splitMode = $("#splitMode").value;
+        parseScript();
+      });
+
+    $("#prefixInput").addEventListener("input", persistPreferences);
+    $("#modeSelect").addEventListener("change", persistPreferences);
+      $("#chooseSourceDirBtn").addEventListener("click", chooseSourceDirectory);
+    $("#chooseDirBtn").addEventListener("click", chooseDirectory);
+     $("#refreshDirectoryBtn").addEventListener("click", renderDirectoryList);
+     $("#saveManifestBtn").addEventListener("click", () => saveManifest(true));
+      $("#downloadManifestBtn").addEventListener("click", downloadManifest);
+
+      $("#importScriptBtn").addEventListener("click", () => $("#scriptFile").click());
+      $("#scriptFile").addEventListener("change", async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        $("#scriptInput").value = await file.text();
+        parseScript();
+        showToast(`已导入文案：${file.name}`);
+        event.target.value = "";
+      });
+
+      $("#clearAssignmentsBtn").addEventListener("click", () => {
+        if (!Object.values(state.assignments).flat().length) return;
+        if (!window.confirm("只清空本次配对记录，不删除目标目录里的视频和清单。继续吗？")) return;
+        state.assignments = {};
+        persistAssignments();
+       renderRows();
+       renderActivity();
+       updateStats();
+       saveManifest(false);
+        renderDirectoryList();
+       showToast("本次配对记录已清空");
+     });
+
+      loadPreferences();
+      parseScript();
+      loadDirectoryHandle();
+    })();
+  </script>
+  <script>
+    (() => {
+     const targets = [...document.querySelectorAll(".tool-toolbar, .workspace > .panel")];
+      if (!targets.length) return;
+      targets.forEach((element, index) => {
+        element.classList.add("reveal-on-scroll");
+        element.style.setProperty("--reveal-index", index);
+      });
+      const reveal = (element) => element.classList.add("is-visible");
+      if (!("IntersectionObserver" in window)) {
+        targets.forEach(reveal);
+        return;
+      }
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          reveal(entry.target);
+          observer.unobserve(entry.target);
+        });
+      }, { threshold: 0.08 });
+      targets.forEach((element) => observer.observe(element));
+    })();
+  </script>
+</body>
+</html>

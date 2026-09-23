@@ -1,0 +1,247 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0A0000000000000000000021 /* BrollNamerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000011 /* BrollNamerApp.swift */; };
+		0A0000000000000000000022 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000012 /* AppModel.swift */; };
+		0A0000000000000000000023 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000013 /* Models.swift */; };
+		0A0000000000000000000024 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000014 /* Views.swift */; };
+		0A0000000000000000000025 /* FileDropDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000015 /* FileDropDelegate.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0A0000000000000000000003 /* BrollNamer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BrollNamer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A0000000000000000000011 /* BrollNamerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrollNamerApp.swift; sourceTree = "<group>"; };
+		0A0000000000000000000012 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		0A0000000000000000000013 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		0A0000000000000000000014 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		0A0000000000000000000015 /* FileDropDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDropDelegate.swift; sourceTree = "<group>"; };
+		0A0000000000000000000016 /* BrollNamer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BrollNamer.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0A0000000000000000000033 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A0000000000000000000004 = {
+			isa = PBXGroup;
+			children = (
+				0A0000000000000000000005 /* BrollNamerApp */,
+				0A0000000000000000000006 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		0A0000000000000000000005 /* BrollNamerApp */ = {
+			isa = PBXGroup;
+			children = (
+				0A0000000000000000000011 /* BrollNamerApp.swift */,
+				0A0000000000000000000012 /* AppModel.swift */,
+				0A0000000000000000000013 /* Models.swift */,
+				0A0000000000000000000014 /* Views.swift */,
+				0A0000000000000000000015 /* FileDropDelegate.swift */,
+				0A0000000000000000000016 /* BrollNamer.entitlements */,
+			);
+			path = BrollNamerApp;
+			sourceTree = "<group>";
+		};
+		0A0000000000000000000006 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0A0000000000000000000003 /* BrollNamer.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0A0000000000000000000002 /* BrollNamer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A0000000000000000000041 /* Build configuration list for PBXNativeTarget "BrollNamer" */;
+			buildPhases = (
+				0A0000000000000000000031 /* Sources */,
+				0A0000000000000000000032 /* Resources */,
+				0A0000000000000000000033 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BrollNamer;
+			productName = BrollNamer;
+			productReference = 0A0000000000000000000003 /* BrollNamer.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0A0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1640;
+				TargetAttributes = {
+					0A0000000000000000000002 = {
+						CreatedOnToolsVersion = 16.4;
+					};
+				};
+			};
+			buildConfigurationList = 0A0000000000000000000040 /* Build configuration list for PBXProject "BrollNamer" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = 0A0000000000000000000004;
+			productRefGroup = 0A0000000000000000000006 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0A0000000000000000000002 /* BrollNamer */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0A0000000000000000000032 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0A0000000000000000000031 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A0000000000000000000021 /* BrollNamerApp.swift in Sources */,
+				0A0000000000000000000022 /* AppModel.swift in Sources */,
+				0A0000000000000000000023 /* Models.swift in Sources */,
+				0A0000000000000000000024 /* Views.swift in Sources */,
+				0A0000000000000000000025 /* FileDropDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0A0000000000000000000050 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		0A0000000000000000000051 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		0A0000000000000000000052 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = BrollNamerApp/BrollNamer.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "B-roll 配对台";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.keyknock.BrollNamer;
+				PRODUCT_NAME = BrollNamer;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		0A0000000000000000000053 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = BrollNamerApp/BrollNamer.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "B-roll 配对台";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.keyknock.BrollNamer;
+				PRODUCT_NAME = BrollNamer;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0A0000000000000000000040 /* Build configuration list for PBXProject "BrollNamer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A0000000000000000000050 /* Debug */,
+				0A0000000000000000000051 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0A0000000000000000000041 /* Build configuration list for PBXNativeTarget "BrollNamer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A0000000000000000000052 /* Debug */,
+				0A0000000000000000000053 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0A0000000000000000000001 /* Project object */;
+}
