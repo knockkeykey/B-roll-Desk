@@ -18,14 +18,13 @@ final class AppModel: ObservableObject {
     @Published var defaultMode: BrollMode
     @Published var selectedAnchorID: String?
     @Published var anchorSearchText = ""
-    @Published var activeDropAnchorID: String?
-    @Published var isFileDragActive = false
+    let dropFeedback = DropFeedbackModel()
     @Published var selectedSourceFileURL: URL?
     @Published var mediaFilter: MediaFilter = .all
     @Published var isScriptEditorPresented = false
     @Published var isClearConfirmationPresented = false
     @Published var isBusy = false
-    @Published var statusMessage = "尚未选择目标目录"
+    @Published var statusMessage = "请设置素材来源和归档位置"
     @Published var lastSaved = "尚未保存"
     @Published var alert: AppAlert?
 
@@ -55,8 +54,8 @@ final class AppModel: ObservableObject {
         defaultMode = BrollMode(rawValue: defaults.string(forKey: defaultModeKey) ?? "FS") ?? .fs
 
         restoreSavedDirectories()
-        restoreAssignments()
         parseScript(persist: false)
+        restoreAssignments()
 
         Task { @MainActor [weak self] in
             self?.restoreDirectories()
@@ -71,12 +70,32 @@ final class AppModel: ObservableObject {
         destinationDirectoryURL?.lastPathComponent ?? "未选择"
     }
 
+    var isPrefixValid: Bool {
+        !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var assignedCount: Int {
-        assignments.values.reduce(0) { $0 + $1.count }
+        rows.reduce(0) { $0 + assets(for: $1.id).count }
     }
 
     var pendingCount: Int {
         rows.reduce(0) { $0 + (assets(for: $1.id).isEmpty ? 1 : 0) }
+    }
+
+    var scriptCharacterCount: Int {
+        scriptText.reduce(into: 0) { count, character in
+            if !character.isWhitespace {
+                count += 1
+            }
+        }
+    }
+
+    var aRollAnchorCount: Int {
+        pendingCount
+    }
+
+    var bRollAnchorCount: Int {
+        rows.count - pendingCount
     }
 
     var filteredRows: [AnchorRow] {
@@ -210,7 +229,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshSourceFiles() {
-        guard let directoryURL = sourceDirectoryURL ?? destinationDirectoryURL else {
+        guard let directoryURL = sourceDirectoryURL else {
             sourceFiles = []
             return
         }
@@ -335,7 +354,18 @@ final class AppModel: ObservableObject {
 
     func attach(urls: [URL], to rowID: String) async {
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
-        guard ensureDestination() else { return }
+        guard isPrefixValid else {
+            showError(title: "请填写期数 / 前缀", message: "绑定素材前，请先在左侧“命名规则”中填写期数或前缀。")
+            return
+        }
+        guard sourceDirectoryURL != nil else {
+            showError(title: "请先选择素材来源", message: "绑定素材前，请先在“素材目录”栏头选择素材来源文件夹。")
+            return
+        }
+        guard destinationDirectoryURL != nil else {
+            showError(title: "请先选择归档位置", message: "绑定素材前，请先在左侧“目录”中选择归档文件夹。")
+            return
+        }
 
         let mediaURLs = urls.filter { mediaKind(for: $0) != nil }
         guard !mediaURLs.isEmpty else {
@@ -344,12 +374,11 @@ final class AppModel: ObservableObject {
         }
 
         isBusy = true
-        activeDropAnchorID = nil
-        isFileDragActive = false
+        dropFeedback.isFileDragActive = false
         defer { isBusy = false }
 
         let prefixValue = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefixPart = prefixValue.isEmpty ? "" : "\(ScriptParser.sanitizePart(prefixValue, maxLength: 30))_"
+        let prefixPart = "\(ScriptParser.sanitizePart(prefixValue, maxLength: 30))_"
         let label = ScriptParser.sanitizePart(row.text, maxLength: 24)
         let baseCode = "BR\(String(format: "%03d", row.index))"
         var copiedCount = 0
@@ -405,13 +434,30 @@ final class AppModel: ObservableObject {
         _ = saveManifest(showMessage: false)
         refreshSourceFiles()
         lastSaved = "本机已保存 \(Self.timeString())"
+        let archiveSummary = "本次新增 \(copiedCount) 个；当前清单共 \(assignedCount) 个已绑定素材"
         statusMessage = skippedCount > 0
-            ? "已归档 \(copiedCount) 个素材，\(skippedCount) 个重复素材已跳过"
-            : "已归档 \(copiedCount) 个素材到 \(destinationDirectoryName)"
+            ? "\(archiveSummary)，跳过 \(skippedCount) 个重复素材"
+            : "\(archiveSummary)，已保存到 \(destinationDirectoryName)"
     }
 
     func unbind(_ asset: BrollAsset) {
         guard var rowAssets = assignments[asset.anchorKey] else { return }
+        guard let destinationDirectoryURL else {
+            showError(title: "无法取消绑定", message: "请先重新选择归档目录，才能删除对应的归档副本并更新清单。")
+            return
+        }
+
+        let outputFileName = URL(fileURLWithPath: asset.outputName).lastPathComponent
+        let archivedURL = destinationDirectoryURL.appendingPathComponent(outputFileName)
+        if FileManager.default.fileExists(atPath: archivedURL.path) {
+            do {
+                try FileManager.default.removeItem(at: archivedURL)
+            } catch {
+                showError(title: "删除归档副本失败", message: "\(outputFileName) 仍保留在归档目录，因此这次没有取消绑定。\n\(error.localizedDescription)")
+                return
+            }
+        }
+
         rowAssets.removeAll { $0.id == asset.id }
 
         if rowAssets.isEmpty {
@@ -421,18 +467,12 @@ final class AppModel: ObservableObject {
         }
 
         saveAssignments()
-        _ = saveManifest(showMessage: false)
+        let manifestSaved = saveManifest(showMessage: false)
         refreshSourceFiles()
         lastSaved = "本机已保存 \(Self.timeString())"
-        statusMessage = "已取消绑定：\(asset.sourceName)"
-    }
-
-    private func ensureDestination() -> Bool {
-        if destinationDirectoryURL != nil {
-            return true
-        }
-        chooseDestinationDirectory()
-        return destinationDirectoryURL != nil
+        statusMessage = manifestSaved
+            ? "已取消绑定并删除归档副本：\(asset.sourceName)"
+            : "已取消绑定并删除归档副本，但清单更新失败：\(asset.sourceName)"
     }
 
     private func copyFile(from sourceURL: URL, to destinationURL: URL) async throws {
@@ -481,7 +521,7 @@ final class AppModel: ObservableObject {
     }
 
     private var assignedNames: Set<String> {
-        Set(assignments.values.flatMap { $0 }.flatMap { [$0.sourceName, $0.outputName] })
+        Set(rows.flatMap { assets(for: $0.id) }.flatMap { [$0.sourceName, $0.outputName] })
     }
 
     private func currentManifest() -> BrollManifest {
@@ -491,7 +531,7 @@ final class AppModel: ObservableObject {
             tool: "B-roll 配对台",
             destinationDirectory: destinationDirectoryURL?.lastPathComponent,
             naming: ManifestNaming(
-                filenamePattern: "[prefix_]BR###_文案短句.ext",
+                filenamePattern: "期数或前缀_BR###_文案短句.ext",
                 defaultTrack: "V2",
                 defaultAudio: "mute",
                 copyMode: true

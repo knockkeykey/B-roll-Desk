@@ -46,7 +46,10 @@ Chrome / Edge 才支持选择本地目录并写入文件。若后续需要“拖
 项目现在同时包含一个 SwiftUI 原生 macOS App：
 
 - 打开 `BrollNamer.xcodeproj`，用 Xcode 16.4 或更新版本运行 `BrollNamer` target。
-- 最低支持 macOS 14；界面使用 `NavigationSplitView`、系统 `List`、`TextEditor`、SF Symbols 和标准目录选择面板。
+- 最低支持 macOS 14；界面使用 `HSplitView`、系统 `List`、`TextEditor`、SF Symbols 和标准目录选择面板。
 - 原有的复制模式、文件名规则、FS/PIP、V2、静音、`broll-manifest.json` / `.md` 契约保持不变。
 - 第一次选择素材来源和归档位置时，App 会请求用户选择目录权限，并通过安全作用域书签记住目录；原始 Finder 文件不会被移动或删除。
+- 绑定素材前必须选择“素材来源”和“归档位置”，并填写“期数 / 前缀”。取消单条绑定时会删除归档目录里的那份复制文件，并同步更新 JSON 与 Markdown 清单；原始素材保留。
+- “清空配对记录”只清除绑定数据，保留归档目录中的复制文件，适合重置清单但继续保留素材。
+- 素材目录操作集中在当前目录所在行，可更换、打开目录，并通过“…”管理常用目录和收藏；“全部 / 视频 / 图片”筛选显示在素材列表上方。
 - `BrollNamerApp/` 中是 SwiftUI 源码，`BrollNamer.entitlements` 开启了“用户选择的文件读写”沙盒权限。

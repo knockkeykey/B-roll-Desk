@@ -10,10 +10,8 @@ struct BrollNamerApp: App {
                 .frame(minWidth: 1440, minHeight: 720)
         }
         .defaultSize(width: 1600, height: 820)
-        .windowToolbarStyle(.unified)
+        .windowStyle(.hiddenTitleBar)
         .commands {
-            ToolbarCommands()
-
             CommandMenu("工作区") {
                 Button("编辑 / 导入文案") {
                     model.isScriptEditorPresented = true

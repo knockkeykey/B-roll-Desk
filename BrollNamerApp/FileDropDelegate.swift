@@ -2,9 +2,19 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+final class DropFeedbackModel: ObservableObject {
+    @Published var isFileDragActive = false
+}
+
+final class AnchorDropState: ObservableObject {
+    @Published var isActive = false
+}
+
 struct FileDropDelegate: DropDelegate {
     let rowID: String
     let model: AppModel
+    let feedback: DropFeedbackModel
+    let rowState: AnchorDropState
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [UTType.fileURL])
@@ -12,25 +22,20 @@ struct FileDropDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         guard info.hasItemsConforming(to: [UTType.fileURL]) else { return }
-        withAnimation(.snappy(duration: 0.2)) {
-            model.isFileDragActive = true
-            model.activeDropAnchorID = rowID
-        }
+        feedback.isFileDragActive = true
+        rowState.isActive = true
     }
 
     func dropExited(info: DropInfo) {
-        guard model.activeDropAnchorID == rowID else { return }
-        withAnimation(.snappy(duration: 0.2)) {
-            model.activeDropAnchorID = nil
-        }
+        rowState.isActive = false
     }
 
     func performDrop(info: DropInfo) -> Bool {
         let providers = info.itemProviders(for: [UTType.fileURL])
         guard !providers.isEmpty else { return false }
 
-        model.isFileDragActive = false
-        model.activeDropAnchorID = nil
+        feedback.isFileDragActive = false
+        rowState.isActive = false
 
         Task { @MainActor in
             let urls = await Self.urls(from: providers)
@@ -71,7 +76,7 @@ struct FileDropDelegate: DropDelegate {
 }
 
 struct AnchorListDropDelegate: DropDelegate {
-    let model: AppModel
+    let feedback: DropFeedbackModel
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [UTType.fileURL])
@@ -79,20 +84,15 @@ struct AnchorListDropDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         guard info.hasItemsConforming(to: [UTType.fileURL]) else { return }
-        withAnimation(.easeOut(duration: 0.16)) {
-            model.isFileDragActive = true
-        }
+        feedback.isFileDragActive = true
     }
 
     func dropExited(info: DropInfo) {
-        withAnimation(.easeOut(duration: 0.16)) {
-            model.isFileDragActive = false
-            model.activeDropAnchorID = nil
-        }
+        feedback.isFileDragActive = false
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        model.isFileDragActive = false
+        feedback.isFileDragActive = false
         return false
     }
 }
