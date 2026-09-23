@@ -25,8 +25,12 @@ struct BrollNamerApp: App {
 
                 Divider()
 
-                Button("导出 JSON 清单") {
-                    model.exportManifest()
+                Button("在 Finder 中打开 JSON 清单") {
+                    model.revealManifest()
+                }
+
+                Button("预览 JSON 清单") {
+                    model.previewManifest()
                 }
             }
         }

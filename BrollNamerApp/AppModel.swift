@@ -15,13 +15,14 @@ final class AppModel: ObservableObject {
     @Published var scriptText: String
     @Published var splitMode: SplitMode
     @Published var prefix: String
-    @Published var defaultMode: BrollMode
-    @Published var selectedAnchorID: String?
     @Published var anchorSearchText = ""
     let dropFeedback = DropFeedbackModel()
     @Published var selectedSourceFileURL: URL?
+    @Published var sourceFileJumpID: UUID?
     @Published var mediaFilter: MediaFilter = .all
     @Published var isScriptEditorPresented = false
+    @Published var isManifestPreviewPresented = false
+    @Published private(set) var manifestPreviewText = ""
     @Published var isClearConfirmationPresented = false
     @Published var isBusy = false
     @Published var statusMessage = "请设置素材来源和归档位置"
@@ -42,7 +43,6 @@ final class AppModel: ObservableObject {
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
     private let prefixKey = "broll-namer-prefix"
-    private let defaultModeKey = "broll-namer-default-mode"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
     private let savedDirectoriesKey = "broll-namer-saved-directories"
@@ -51,7 +51,6 @@ final class AppModel: ObservableObject {
         scriptText = defaults.string(forKey: scriptKey) ?? ""
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
         prefix = defaults.string(forKey: prefixKey) ?? ""
-        defaultMode = BrollMode(rawValue: defaults.string(forKey: defaultModeKey) ?? "FS") ?? .fs
 
         restoreSavedDirectories()
         parseScript(persist: false)
@@ -133,7 +132,6 @@ final class AppModel: ObservableObject {
         defaults.set(scriptText, forKey: scriptKey)
         defaults.set(splitMode.rawValue, forKey: splitModeKey)
         defaults.set(prefix, forKey: prefixKey)
-        defaults.set(defaultMode.rawValue, forKey: defaultModeKey)
         saveAssignments()
     }
 
@@ -150,12 +148,6 @@ final class AppModel: ObservableObject {
                 index: offset + 1,
                 text: text
             )
-        }
-
-        if let selectedAnchorID, rows.contains(where: { $0.id == selectedAnchorID }) == false {
-            self.selectedAnchorID = rows.first?.id
-        } else if self.selectedAnchorID == nil {
-            self.selectedAnchorID = rows.first?.id
         }
 
         if persist {
@@ -261,17 +253,57 @@ final class AppModel: ObservableObject {
     }
 
     func requestClearAssignments() {
-        guard assignedCount > 0 else { return }
+        guard !assignments.isEmpty || destinationDirectoryURL != nil else { return }
         isClearConfirmationPresented = true
     }
 
     func clearAssignments() {
-        assignments.removeAll()
-        saveAssignments()
-        _ = saveManifest(showMessage: false)
+        guard let destinationDirectoryURL else {
+            showError(title: "无法清空配对记录", message: "请先重新选择归档位置，才能删除归档副本并更新清单。")
+            return
+        }
+
+        let discoveredNames: Set<String>
+        do {
+            discoveredNames = try ArchiveCleaner.discoverCopies(
+                in: destinationDirectoryURL,
+                mediaExtensions: Self.videoExtensions.union(Self.imageExtensions)
+            )
+        } catch {
+            showError(title: "无法读取归档位置", message: "尚未清空配对记录：\(error.localizedDescription)")
+            return
+        }
+
+        let recordedNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
+        let outputNames = recordedNames.union(discoveredNames)
+        let cleanup = ArchiveCleaner.removeCopies(named: outputNames, from: destinationDirectoryURL)
+
+        assignments = assignments.compactMapValues { assets in
+            let remaining = assets.filter { cleanup.failedNames.contains($0.outputName) }
+            return remaining.isEmpty ? nil : remaining
+        }
+        let localSaved = saveAssignments()
+        let manifestSaved = saveManifest(showMessage: false)
         refreshSourceFiles()
-        lastSaved = "配对记录已清空"
-        statusMessage = "已清空本次配对记录；目标目录中的视频未删除"
+
+        if !cleanup.failedNames.isEmpty {
+            let examples = cleanup.failedNames.sorted().prefix(3).joined(separator: "、")
+            let suffix = cleanup.failedNames.count > 3 ? "等" : ""
+            let manifestNote = manifestSaved
+                ? "清单已更新；未删除的文件仍留在归档位置，对应绑定会保留。"
+                : "清单更新也失败了，请检查归档目录。"
+            let localNote = localSaved ? "" : "本机记录保存也失败了。"
+            showError(
+                title: "部分归档副本删除失败",
+                message: "有 \(cleanup.failedNames.count) 个归档文件未能删除：\(examples)\(suffix)。\(manifestNote)\(localNote)"
+            )
+        } else if !localSaved {
+            showError(title: "本机配对记录保存失败", message: "归档副本已删除，但本机记录未能保存。请检查应用数据目录。")
+        } else if manifestSaved {
+            lastSaved = "已清空 \(Self.timeString())"
+            let missingNote = cleanup.missingCount > 0 ? "，另有 \(cleanup.missingCount) 个文件原本不存在" : ""
+            statusMessage = "已删除 \(cleanup.deletedCount) 个归档副本\(missingNote)，并更新 JSON / Markdown 清单"
+        }
     }
 
     func saveManifest(showMessage: Bool = true) -> Bool {
@@ -282,13 +314,7 @@ final class AppModel: ObservableObject {
 
         let manifest = currentManifest()
         do {
-            let jsonData = try encodedJSON(manifest)
-            try jsonData.write(to: destinationDirectoryURL.appendingPathComponent("broll-manifest.json"), options: .atomic)
-            try manifestMarkdown(manifest).write(
-                to: destinationDirectoryURL.appendingPathComponent("broll-manifest.md"),
-                atomically: true,
-                encoding: .utf8
-            )
+            try writeManifest(manifest, to: destinationDirectoryURL)
             lastSaved = "已保存 \(Self.timeString())"
             if showMessage {
                 statusMessage = "清单已保存到 \(destinationDirectoryURL.lastPathComponent)"
@@ -300,21 +326,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func exportManifest() {
-        let panel = NSSavePanel()
-        panel.title = "导出 B-roll 清单"
-        panel.message = "选择 broll-manifest.json 的保存位置"
-        panel.prompt = "导出"
-        panel.nameFieldStringValue = "broll-manifest.json"
-        panel.canCreateDirectories = true
-        panel.allowedContentTypes = [.json]
+    func revealManifest() {
+        guard let destinationDirectoryURL else {
+            showError(title: "还没有归档位置", message: "请先选择归档文件夹，才能在 Finder 中定位 JSON 清单。")
+            return
+        }
+        guard saveManifest(showMessage: false) else { return }
+        let url = destinationDirectoryURL.appendingPathComponent("broll-manifest.json")
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        statusMessage = "已在 Finder 中定位 JSON 清单"
+    }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+    func previewManifest() {
         do {
-            try encodedJSON(currentManifest()).write(to: url, options: .atomic)
-            statusMessage = "清单已导出：\(url.lastPathComponent)"
+            let data = try encodedJSON(currentManifest().fullScreen)
+            manifestPreviewText = String(decoding: data, as: UTF8.self)
+            isManifestPreviewPresented = true
         } catch {
-            showError(title: "导出清单失败", message: error.localizedDescription)
+            showError(title: "无法预览 JSON 清单", message: error.localizedDescription)
         }
     }
 
@@ -344,6 +373,17 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    func sourceFile(for asset: BrollAsset) -> SourceFile? {
+        sourceFiles.first { $0.name == asset.sourceName }
+    }
+
+    func jumpToSourceFile(for asset: BrollAsset) {
+        guard let file = sourceFile(for: asset) else { return }
+        mediaFilter = .all
+        selectedSourceFileURL = file.url
+        sourceFileJumpID = UUID()
+    }
+
     func revealSourceDirectory() {
         revealDirectory(sourceDirectoryURL)
     }
@@ -355,7 +395,7 @@ final class AppModel: ObservableObject {
     func attach(urls: [URL], to rowID: String) async {
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
         guard isPrefixValid else {
-            showError(title: "请填写期数 / 前缀", message: "绑定素材前，请先在左侧“命名规则”中填写期数或前缀。")
+            showError(title: "请填写期数 / 前缀", message: "绑定素材前，请先在左侧“归档设置”中填写期数或前缀。")
             return
         }
         guard sourceDirectoryURL != nil else {
@@ -363,7 +403,7 @@ final class AppModel: ObservableObject {
             return
         }
         guard destinationDirectoryURL != nil else {
-            showError(title: "请先选择归档位置", message: "绑定素材前，请先在左侧“目录”中选择归档文件夹。")
+            showError(title: "请先选择归档位置", message: "绑定素材前，请先在左侧“归档设置”中选择归档文件夹。")
             return
         }
 
@@ -407,7 +447,7 @@ final class AppModel: ObservableObject {
                     anchorText: row.text,
                     sourceName: sourceName,
                     outputName: outputName,
-                    mode: defaultMode,
+                    mode: .fs,
                     targetTrack: "V2",
                     audio: "mute",
                     copiedAt: ISO8601DateFormatter().string(from: Date())
@@ -548,6 +588,19 @@ final class AppModel: ObservableObject {
         return try encoder.encode(manifest)
     }
 
+    private func writeManifest(_ manifest: BrollManifest, to directoryURL: URL) throws {
+        let fullScreenManifest = manifest.fullScreen
+        try encodedJSON(fullScreenManifest).write(
+            to: directoryURL.appendingPathComponent("broll-manifest.json"),
+            options: .atomic
+        )
+        try manifestMarkdown(fullScreenManifest).write(
+            to: directoryURL.appendingPathComponent("broll-manifest.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     private func manifestMarkdown(_ manifest: BrollManifest) -> String {
         var lines = [
             "# B-roll placement map",
@@ -590,9 +643,18 @@ final class AppModel: ObservableObject {
             let data = try Data(contentsOf: manifestURL)
             let manifest = try JSONDecoder().decode(BrollManifest.self, from: data)
             guard manifest.schema == "broll-manifest.v1" else { return }
+            let fullScreenManifest = manifest.fullScreen
+
+            if fullScreenManifest != manifest {
+                do {
+                    try writeManifest(fullScreenManifest, to: destinationDirectoryURL)
+                } catch {
+                    statusMessage = "旧清单已在应用内改为全屏，但写回归档位置失败：\(error.localizedDescription)"
+                }
+            }
 
             var changed = false
-            for anchor in manifest.anchors {
+            for anchor in fullScreenManifest.anchors {
                 var current = assignments[anchor.id] ?? []
                 var known = Set(current.map(assetIdentity))
                 for asset in anchor.assets where !known.contains(assetIdentity(asset)) {
@@ -624,7 +686,10 @@ final class AppModel: ObservableObject {
             let data = try Data(contentsOf: url)
             let store = try JSONDecoder().decode(AssignmentStore.self, from: data)
             guard store.version == 1 else { return }
-            assignments = store.assignments
+            assignments = store.assignments.mapValues { $0.map(\.fullScreen) }
+            if assignments != store.assignments {
+                saveAssignments()
+            }
             if assignedCount > 0 {
                 lastSaved = "已从本机恢复"
             }
@@ -633,16 +698,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func saveAssignments() {
-        guard let url = assignmentsURL else { return }
+    @discardableResult
+    private func saveAssignments() -> Bool {
+        guard let url = assignmentsURL else { return false }
         do {
             let folderURL = url.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
             let store = AssignmentStore(version: 1, assignments: assignments)
             let data = try JSONEncoder().encode(store)
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             statusMessage = "本机配对记录保存失败，请保留目标目录中的 manifest"
+            return false
         }
     }
 

@@ -13,6 +13,7 @@ private enum ListPaneMetrics {
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
+    @State private var isSidebarVisible = true
 
     private var theme: AppTheme {
         AppTheme(rawValue: themeRawValue) ?? .system
@@ -28,16 +29,22 @@ struct ContentView: View {
 
     var body: some View {
         HSplitView {
-            SidebarView(model: model, themeRawValue: $themeRawValue)
-                .frame(minWidth: 238, idealWidth: 276, maxWidth: 340)
-            AnchorListView(model: model)
+            if isSidebarVisible {
+                SidebarView(model: model, themeRawValue: $themeRawValue, isSidebarVisible: $isSidebarVisible)
+                    .frame(minWidth: 238, idealWidth: 276, maxWidth: 340)
+            }
+            AnchorListView(model: model, isSidebarVisible: $isSidebarVisible)
                 .frame(minWidth: 390, idealWidth: 540, maxWidth: 760)
             DetailView(model: model)
-                .frame(minWidth: 680, idealWidth: 820)
+                .frame(minWidth: 780, idealWidth: 820)
         }
+        .padding(.top, -28)
         .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $model.isScriptEditorPresented) {
             ScriptEditorSheet(model: model)
+        }
+        .sheet(isPresented: $model.isManifestPreviewPresented) {
+            ManifestPreviewSheet(text: model.manifestPreviewText)
         }
         .alert(item: $model.alert) { alert in
             Alert(
@@ -47,17 +54,18 @@ struct ContentView: View {
             )
         }
         .confirmationDialog(
-            "清空本次配对记录？",
+            "清理归档副本与配对记录？",
             isPresented: $model.isClearConfirmationPresented,
             titleVisibility: .visible
         ) {
-                    Button("清空配对记录", role: .destructive) {
+                    Button("删除归档副本并清空记录", role: .destructive) {
                         model.clearAssignments()
                     }
                     .pointerCursor()
                     Button("取消", role: .cancel) {}
+                        .pointerCursor()
         } message: {
-            Text("只清空本机记录和 manifest 中的绑定，不会删除目标目录里的视频。")
+            Text("将删除当前归档位置中已绑定及符合命名规则的旧素材副本，并更新 JSON 和 Markdown 清单。素材目录中的原始文件会保留。")
         }
         .preferredColorScheme(preferredColorScheme)
         .background(OverlayScrollerStyleInstaller().allowsHitTesting(false).accessibilityHidden(true))
@@ -370,6 +378,8 @@ private final class MaterialScrollbar: NSView {
 private struct SidebarView: View {
     @ObservedObject var model: AppModel
     @Binding var themeRawValue: String
+    @Binding var isSidebarVisible: Bool
+    @FocusState private var isPrefixFocused: Bool
 
     private var theme: AppTheme {
         AppTheme(rawValue: themeRawValue) ?? .system
@@ -381,6 +391,9 @@ private struct SidebarView: View {
                 title: "B-roll 配对台",
                 systemImage: "film.stack",
                 actions: [
+                    PaneHeaderAction(systemImage: "sidebar.left", help: "收起侧边栏") {
+                        isSidebarVisible = false
+                    },
                     PaneHeaderAction(
                         systemImage: theme.icon,
                         help: "当前主题：\(theme.title)，点击切换"
@@ -392,58 +405,49 @@ private struct SidebarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    SidebarSection(title: "目录", systemImage: "folder") {
-                        VStack(alignment: .leading, spacing: 8) {
+                    SidebarSection(title: "归档设置", systemImage: "archivebox") {
+                        VStack(alignment: .leading, spacing: 14) {
                             DirectoryChoiceRow(
                                 title: "归档位置",
                                 value: model.destinationDirectoryName,
                                 isConfigured: model.destinationDirectoryURL != nil,
-                                systemImage: "archivebox",
                                 action: model.chooseDestinationDirectory,
                                 openAction: model.revealDestinationDirectory
                             )
-                        }
-                    }
 
-                    SidebarSection(title: "命名规则", systemImage: "pencil.and.list.clipboard") {
-                        VStack(alignment: .leading, spacing: 12) {
+                            Divider()
+
+                            HStack(spacing: 6) {
+                                Label("命名规则", systemImage: "pencil.and.list.clipboard")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                ConfigurationStatusIcon(isConfigured: model.isPrefixValid,
+                                                        readyHelp: "命名前缀已填写",
+                                                        waitingHelp: "填写期数或前缀后可绑定素材")
+                                Spacer(minLength: 0)
+                            }
+
                             VStack(alignment: .leading, spacing: 7) {
                                 HStack {
                                     Label("期数 / 前缀", systemImage: "number")
                                         .font(.subheadline)
                                     Spacer()
-                                    Text("必填")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(model.isPrefixValid ? Color.green : Color.orange)
                                 }
-                                HStack(spacing: 7) {
-                                    TextField("例如 第15期", text: $model.prefix)
-                                        .textFieldStyle(.roundedBorder)
-                                        .controlSize(.small)
-                                    Image(systemName: model.isPrefixValid ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                                        .foregroundStyle(model.isPrefixValid ? Color.green : Color.orange)
-                                        .help(model.isPrefixValid ? "绑定前缀已填写" : "绑定素材前请填写期数或前缀")
-                                }
-                                if !model.isPrefixValid {
-                                    Text("填写后才能绑定素材")
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-
-                            SidebarFieldRow(title: "默认模式", systemImage: "rectangle.on.rectangle") {
-                                Picker(selection: $model.defaultMode) {
-                                    ForEach(BrollMode.allCases) { mode in
-                                        Text(mode.title).tag(mode)
+                                TextField("例如 第15期", text: $model.prefix)
+                                    .textFieldStyle(.plain)
+                                    .font(.callout)
+                                    .focused($isPrefixFocused)
+                                    .background(PrefixFocusDismissView(isFocused: isPrefixFocused) {
+                                        isPrefixFocused = false
+                                    })
+                                    .frame(height: 40)
+                                    .padding(.horizontal, 10)
+                                    .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                            .strokeBorder(isPrefixFocused ? Color.accentColor : Color(nsColor: .separatorColor).opacity(0.55),
+                                                          lineWidth: isPrefixFocused ? 1.5 : 0.5)
                                     }
-                                }
-                                label: {
-                                    EmptyView()
-                                }
-                                .pickerStyle(.menu)
-                                .labelsHidden()
-                                .controlSize(.small)
-                                .pointerCursor()
                             }
 
                             Text("示例：\(model.isPrefixValid ? ScriptParser.sanitizePart(model.prefix, maxLength: 30) : "期数")_BR001_文案短句.ext")
@@ -455,52 +459,24 @@ private struct SidebarView: View {
                         }
                     }
 
-                    SidebarSection(title: "统计", systemImage: "chart.bar") {
-                        VStack(spacing: 2) {
-                            StatMetric(
-                                value: model.scriptCharacterCount,
-                                unit: "字",
-                                label: "文案字数",
-                                detail: "含标点，不计空白",
-                                systemImage: "text.alignleft",
-                                tint: .secondary
-                            )
-
-                            Divider().padding(.leading, 28)
-
-                            StatMetric(
-                                value: model.aRollAnchorCount,
-                                unit: "条",
-                                label: "A-roll 锚点",
-                                detail: "尚未绑定素材",
-                                systemImage: "waveform",
-                                tint: .secondary
-                            )
-
-                            Divider().padding(.leading, 28)
-
-                            StatMetric(
-                                value: model.bRollAnchorCount,
-                                unit: "条",
-                                label: "B-roll 锚点",
-                                detail: "已绑定 \(model.assignedCount) 个素材",
-                                systemImage: "film",
-                                tint: .green
-                            )
-                        }
-                        .animation(.snappy(duration: 0.24), value: model.assignedCount)
-                        .animation(.snappy(duration: 0.24), value: model.scriptCharacterCount)
-                    }
-
                     SidebarSection(title: "清单", systemImage: "doc.text") {
                         VStack(alignment: .leading, spacing: 8) {
-                            SidebarActionButton(title: "导出 JSON 清单", systemImage: "arrow.down.doc") {
-                                model.exportManifest()
+                            HStack(spacing: 8) {
+                                Label("JSON 文件", systemImage: "curlybraces")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                                ManifestIconButton(title: "在 Finder 中显示 JSON 清单", systemImage: "folder") {
+                                    model.revealManifest()
+                                }
+                                ManifestIconButton(title: "预览 JSON 清单内容", systemImage: "eye") {
+                                    model.previewManifest()
+                                }
                             }
 
                             Divider()
 
-                            SidebarActionButton(title: "清空配对记录", systemImage: "trash", role: .destructive) {
+                            SidebarActionButton(title: "清空配对和归档副本", systemImage: "trash", role: .destructive) {
                                 model.requestClearAssignments()
                             }
                         }
@@ -508,20 +484,14 @@ private struct SidebarView: View {
 
                     SidebarStatusView(model: model)
 
-                    Label("默认复制，原始 Finder 文件不会被移动或删除。", systemImage: "lock.shield")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .labelStyle(.titleAndIcon)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(16)
             }
         }
         .background(.windowBackground)
+        .defaultFocus($isPrefixFocused, false)
+        .onAppear { isPrefixFocused = false }
         .onChange(of: model.prefix) { _, _ in
-            model.persistPreferences()
-        }
-        .onChange(of: model.defaultMode) { _, _ in
             model.persistPreferences()
         }
     }
@@ -607,93 +577,119 @@ private struct DirectoryChoiceRow: View {
     let title: String
     let value: String
     let isConfigured: Bool
-    let systemImage: String
     let action: () -> Void
     let openAction: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .foregroundStyle(.tint)
-                    .frame(width: 34, height: 34)
-                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 5) {
-                        Text(title)
-                            .font(.subheadline.weight(.semibold))
-                        Label(isConfigured ? "已就绪" : "必填", systemImage: isConfigured ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(isConfigured ? Color.green : Color.orange)
-                    }
-                    Text(value == "未选择" ? "请选择归档文件夹" : value)
-                        .font(.caption)
-                        .foregroundStyle(isConfigured ? Color.secondary : Color.orange)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .foregroundStyle(Color.primary)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                ConfigurationStatusIcon(isConfigured: isConfigured,
+                                        readyHelp: "归档位置已选择",
+                                        waitingHelp: "请选择归档位置")
             }
 
-            HStack {
+            HStack(spacing: 9) {
+                Image(systemName: isConfigured ? "folder.fill" : "folder")
+                    .foregroundStyle(isConfigured ? Color.accentColor : Color.orange)
+                Text(value == "未选择" ? "请选择归档文件夹" : value)
+                    .font(.callout)
+                    .foregroundStyle(isConfigured ? Color.secondary : Color.orange)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 Button(action: action) {
-                    Label(isConfigured ? "更换目录" : "选择归档目录", systemImage: "folder.badge.plus")
+                    Image(systemName: "folder.badge.plus")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("选择或更换归档位置")
+                .buttonStyle(IconActionButtonStyle())
+                .instantHelp("选择或更换归档位置")
                 .accessibilityLabel("选择或更换归档位置，当前：\(value)")
                 .pointerCursor()
 
-                Spacer(minLength: 0)
-
                 if isConfigured {
-                Button(action: openAction) {
-                    Image(systemName: "arrow.up.forward.app")
-                        .frame(width: 26, height: 24)
-                }
-                .buttonStyle(IconActionButtonStyle())
-                .foregroundStyle(.secondary)
-                .help("在 Finder 中打开归档目录")
-                .accessibilityLabel("在 Finder 中打开归档目录")
-                .pointerCursor()
+                    Button(action: openAction) {
+                        Image(systemName: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(IconActionButtonStyle())
+                    .foregroundStyle(.secondary)
+                    .instantHelp("在 Finder 中打开归档目录")
+                    .accessibilityLabel("在 Finder 中打开归档目录")
+                    .pointerCursor()
                 }
             }
+            .frame(height: 40)
+            .padding(.horizontal, 10)
+            .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(.separator.opacity(0.55), lineWidth: 0.5)
+            }
         }
-        .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.opacity(0.62), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(.separator.opacity(0.55), lineWidth: 0.75)
-        }
     }
 }
 
-private struct SidebarFieldRow<Control: View>: View {
-    let title: String
-    let systemImage: String
-    @ViewBuilder let control: () -> Control
-
-    init(
-        title: String,
-        systemImage: String,
-        @ViewBuilder control: @escaping () -> Control
-    ) {
-        self.title = title
-        self.systemImage = systemImage
-        self.control = control
-    }
+private struct ConfigurationStatusIcon: View {
+    let isConfigured: Bool
+    let readyHelp: String
+    let waitingHelp: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Label(title, systemImage: systemImage)
-                .font(.subheadline)
-            control()
-                .frame(maxWidth: .infinity, alignment: .leading)
+        Image(systemName: isConfigured ? "checkmark.circle.fill" : "circle.dotted")
+            .font(.caption)
+            .foregroundStyle(isConfigured ? Color.green : Color.orange)
+            .instantHelp(isConfigured ? readyHelp : waitingHelp)
+            .accessibilityLabel(isConfigured ? readyHelp : waitingHelp)
+    }
+}
+
+private struct PrefixFocusDismissView: NSViewRepresentable {
+    let isFocused: Bool
+    let dismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.observeClicks(around: view)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.isFocused = isFocused
+        context.coordinator.dismiss = dismiss
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.stopObserving()
+    }
+
+    final class Coordinator {
+        var isFocused = false
+        var dismiss: (() -> Void)?
+        private var monitor: Any?
+
+        func observeClicks(around view: NSView) {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak view] event in
+                guard let self, self.isFocused, let view, event.window === view.window else { return event }
+                let inputBounds = view.convert(view.bounds, to: nil)
+                if !inputBounds.contains(event.locationInWindow) {
+                    DispatchQueue.main.async { [weak self] in self?.dismiss?() }
+                }
+                return event
+            }
         }
+
+        func stopObserving() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+
+        deinit { stopObserving() }
     }
 }
 
@@ -737,22 +733,84 @@ private struct SidebarActionButton: View {
     }
 }
 
+private struct ManifestIconButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.body)
+                .frame(width: 42, height: 36)
+        }
+        .buttonStyle(SidebarActionButtonStyle(tint: .primary))
+        .instantHelp(title)
+        .accessibilityLabel(title)
+        .pointerCursor()
+    }
+}
+
+private struct ManifestPreviewSheet: View {
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("JSON 清单预览", systemImage: "curlybraces")
+                    .font(.headline)
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .pointerCursor()
+            }
+            .padding(16)
+
+            Divider()
+
+            ScrollView {
+                Text(text)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+            }
+        }
+        .frame(minWidth: 620, minHeight: 480)
+    }
+}
+
 private struct SidebarActionButtonStyle: ButtonStyle {
     let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .modifier(SidebarActionButtonChrome(tint: tint, isPressed: configuration.isPressed))
+    }
+}
+
+private struct SidebarActionButtonChrome: ViewModifier {
+    let tint: Color
+    let isPressed: Bool
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
             .foregroundStyle(tint)
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .background(
-                tint.opacity(configuration.isPressed ? 0.17 : 0.08),
+                tint.opacity(isPressed ? 0.18 : (isHovered ? 0.13 : 0.06)),
                 in: RoundedRectangle(cornerRadius: 7, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(tint.opacity(0.12), lineWidth: 0.5)
+                    .strokeBorder(tint.opacity(isPressed || isHovered ? 0.2 : 0.1), lineWidth: 0.5)
             }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .onHover { isHovered = $0 }
+            .scaleEffect(isPressed ? 0.98 : 1)
+            .animation(.easeOut(duration: 0.12), value: isPressed)
+            .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 }
 
@@ -785,67 +843,68 @@ private struct IconActionButtonChrome: ViewModifier {
     }
 }
 
-private struct StatMetric: View {
+private struct AnchorHeaderMetric: View {
     let value: Int
-    let unit: String
     let label: String
+    let shortLabel: String
     let detail: String
-    let systemImage: String
     let tint: Color
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: systemImage)
-                .font(.caption)
+        HStack(spacing: 4) {
+            Text(shortLabel)
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(tint)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.primary)
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value, format: .number)
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
-                    .contentTransition(.numericText())
-                Text(unit)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .foregroundStyle(.primary)
+            Text(value, format: .number)
+                .font(.caption.weight(.semibold).monospacedDigit())
+                .contentTransition(.numericText())
         }
-        .padding(.vertical, 6)
+        .fixedSize()
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .instantHelp("\(label)：\(value)，\(detail)")
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label) \(value)，\(detail)")
     }
 }
 
 private struct AnchorListView: View {
     @ObservedObject var model: AppModel
-    @FocusState private var isAnchorListFocused: Bool
+    @Binding var isSidebarVisible: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            PaneHeader(
-                title: "文案锚点",
-                systemImage: "text.badge.checkmark",
-                count: "\(model.filteredRows.count) / \(model.rows.count) 句",
-                actions: [
-                    PaneHeaderAction(
-                        systemImage: "doc.text",
-                        help: "编辑或导入视频文案"
-                    ) {
-                        model.isScriptEditorPresented = true
+            HStack(spacing: 8) {
+                if !isSidebarVisible {
+                    Button { isSidebarVisible = true } label: {
+                        Image(systemName: "sidebar.left")
                     }
-                ]
-            )
+                    .buttonStyle(IconActionButtonStyle())
+                    .instantHelp("展开侧边栏")
+                    .accessibilityLabel("展开侧边栏")
+                    .pointerCursor()
+                }
+                Label("文案锚点", systemImage: "text.badge.checkmark")
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                HStack(spacing: 4) {
+                    AnchorHeaderMetric(value: model.scriptCharacterCount, label: "文案字数", shortLabel: "字", detail: "含标点，不计空白", tint: .secondary)
+                    AnchorHeaderMetric(value: model.aRollAnchorCount, label: "A-roll 锚点", shortLabel: "A", detail: "尚未绑定素材", tint: .blue)
+                    AnchorHeaderMetric(value: model.bRollAnchorCount, label: "B-roll 锚点", shortLabel: "B", detail: "已绑定 \(model.assignedCount) 个素材", tint: .green)
+                }
+                Button { model.isScriptEditorPresented = true } label: {
+                    Image(systemName: "doc.text")
+                }
+                .buttonStyle(IconActionButtonStyle())
+                .instantHelp("编辑或导入视频文案")
+                .accessibilityLabel("编辑或导入视频文案")
+                .pointerCursor()
+            }
+            .padding(.horizontal, 16)
+            .frame(height: ListPaneMetrics.headerHeight)
+            .overlay(alignment: .bottom) { Divider() }
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
@@ -861,7 +920,7 @@ private struct AnchorListView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .help("清除搜索")
+                    .instantHelp("清除搜索")
                     .accessibilityLabel("清除搜索")
                     .pointerCursor()
                 }
@@ -903,50 +962,19 @@ private struct AnchorListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollViewReader { proxy in
-                    List {
-                        ForEach(model.filteredRows) { row in
-                            AnchorRowView(row: row, model: model)
-                                .id(row.id)
-                        }
+                List {
+                    ForEach(model.filteredRows) { row in
+                        AnchorRowView(row: row, model: model)
                     }
-                    .listStyle(.inset)
-                    .focusable()
-                    .focused($isAnchorListFocused)
-                    .onKeyPress(keys: [.upArrow, .downArrow]) { keyPress in
-                        let rows = model.filteredRows
-                        guard !rows.isEmpty else { return .ignored }
-                        let currentIndex = rows.firstIndex { $0.id == model.selectedAnchorID } ?? 0
-                        let offset = keyPress.key == .upArrow ? -1 : 1
-                        let nextIndex = min(max(currentIndex + offset, 0), rows.count - 1)
-                        let nextID = rows[nextIndex].id
-                        model.selectedAnchorID = nextID
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo(nextID, anchor: .center)
-                        }
-                        return .handled
-                    }
-                    .onChange(of: model.selectedAnchorID) { _, selectedID in
-                        guard isAnchorListFocused, let selectedID else { return }
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo(selectedID, anchor: .center)
-                        }
-                    }
-                    .overlay {
-                        AnchorListDropOutline(feedback: model.dropFeedback)
-                    }
-                    .onDrop(of: [UTType.fileURL], delegate: AnchorListDropDelegate(feedback: model.dropFeedback))
                 }
+                .listStyle(.inset)
+                .overlay {
+                    AnchorListDropOutline(feedback: model.dropFeedback)
+                }
+                .onDrop(of: [UTType.fileURL], delegate: AnchorListDropDelegate(feedback: model.dropFeedback))
             }
         }
         .background(.windowBackground)
-        .onChange(of: model.filteredRows.map(\.id)) { _, ids in
-            if let selectedAnchorID = model.selectedAnchorID, !ids.contains(selectedAnchorID) {
-                model.selectedAnchorID = ids.first
-            } else if model.selectedAnchorID == nil {
-                model.selectedAnchorID = ids.first
-            }
-        }
     }
 }
 
@@ -1002,7 +1030,7 @@ private struct PaneHeader: View {
                 }
                 .buttonStyle(IconActionButtonStyle())
                 .foregroundStyle(.secondary)
-                .help(headerAction.help)
+                .instantHelp(headerAction.help)
                 .accessibilityLabel(headerAction.accessibilityLabel)
                 .pointerCursor()
             }
@@ -1042,7 +1070,27 @@ private struct AnchorRowView: View {
     private var assets: [BrollAsset] { model.assets(for: row.id) }
     private var isDropTarget: Bool { dropState.isActive }
     private var isAssigned: Bool { !assets.isEmpty }
-    private var isSelected: Bool { model.selectedAnchorID == row.id }
+    private var hasAvailableSource: Bool { assets.contains { model.sourceFile(for: $0) != nil } }
+    private var matchesSelectedSource: Bool {
+        guard let sourceName = model.selectedSourceFileURL?.lastPathComponent else { return false }
+        return assets.contains { $0.sourceName == sourceName }
+    }
+
+    private var rowFill: Color {
+        if isDropTarget { return Color.accentColor.opacity(0.13) }
+        if matchesSelectedSource { return Color.orange.opacity(0.17) }
+        return Color.primary.opacity(0.02)
+    }
+
+    private var rowBorder: Color {
+        if isDropTarget { return Color.accentColor.opacity(0.78) }
+        if matchesSelectedSource { return Color.orange.opacity(0.95) }
+        return .clear
+    }
+
+    private var rowBorderWidth: CGFloat {
+        isDropTarget || matchesSelectedSource ? 2 : 0
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -1065,8 +1113,11 @@ private struct AnchorRowView: View {
                         .foregroundStyle(.primary)
                         .lineSpacing(2)
                         .textSelection(.enabled)
+                        .instantHelp("从素材目录或 Finder 拖入图片 / 视频，绑定到这条文案锚点")
                 }
             }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: jumpToBoundSource)
 
             if !assets.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
@@ -1087,36 +1138,27 @@ private struct AnchorRowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                    isDropTarget
-                        ? Color.accentColor.opacity(0.13)
-                        : (isAssigned
-                            ? Color.green.opacity(isSelected ? 0.17 : 0.075)
-                            : Color.accentColor.opacity(isSelected ? 0.10 : 0.02))
-                )
+                .fill(rowFill)
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .onTapGesture(perform: jumpToBoundSource)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(
-                    isDropTarget
-                        ? Color.accentColor.opacity(0.78)
-                        : (isAssigned
-                            ? Color.green.opacity(isSelected ? 0.72 : 0.28)
-                            : Color.accentColor.opacity(isSelected ? 0.58 : 0)),
-                    lineWidth: isDropTarget || isSelected ? 1.5 : (isAssigned ? 1 : 0)
-                )
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            model.selectedAnchorID = row.id
+                .strokeBorder(rowBorder, lineWidth: rowBorderWidth)
         }
         .onDrop(
             of: [UTType.fileURL],
             delegate: FileDropDelegate(rowID: row.id, model: model, feedback: model.dropFeedback, rowState: dropState)
         )
-        .help("从素材目录或 Finder 拖入图片 / 视频，绑定到这条文案锚点")
+        .pointerCursor(hasAvailableSource ? .pointingHand : .arrow)
         .animation(.snappy(duration: 0.2), value: assets.count)
-        .pointerCursor()
+    }
+
+    private func jumpToBoundSource() {
+        let selectedName = model.selectedSourceFileURL?.lastPathComponent
+        let availableAssets = assets.filter { model.sourceFile(for: $0) != nil }
+        guard let asset = availableAssets.first(where: { $0.sourceName == selectedName }) ?? availableAssets.first else { return }
+        model.jumpToSourceFile(for: asset)
     }
 }
 
@@ -1144,7 +1186,7 @@ private struct RollTypeTag: View {
             Capsule()
                 .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
         }
-        .help(isBroll
+        .instantHelp(isBroll
             ? "已绑定 \(assetCount) 个视频或图片，文件已复制到归档目录"
             : "默认 A-roll，尚未绑定 B-roll 素材"
         )
@@ -1165,26 +1207,35 @@ private struct AssetChip: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: mediaSymbol)
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(asset.outputName)
-                    .font(.callout.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("源文件：\(asset.sourceName)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            Button {
+                model.jumpToSourceFile(for: asset)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: mediaSymbol)
+                        .foregroundStyle(isSelected ? Color.orange : Color.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(asset.outputName)
+                            .font(.callout.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("源文件：\(asset.sourceName)")
+                            .font(.caption2)
+                            .foregroundStyle(isSelected ? Color.orange : Color.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 6)
-            Text(asset.mode.rawValue)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.quaternary, in: Capsule())
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .disabled(model.sourceFile(for: asset) == nil)
+            .instantHelp(model.sourceFile(for: asset) == nil
+                ? "当前素材目录中没有此源文件"
+                : "在素材目录中定位 \(asset.sourceName)")
+            .accessibilityLabel("定位源文件 \(asset.sourceName)")
+            .pointerCursor(model.sourceFile(for: asset) == nil ? .arrow : .pointingHand)
 
             Button {
                 model.unbind(asset)
@@ -1195,23 +1246,23 @@ private struct AssetChip: View {
             }
             .buttonStyle(IconActionButtonStyle())
             .foregroundStyle(.secondary)
-            .help("取消绑定并删除归档副本；原始素材保留")
+            .instantHelp("取消绑定并删除归档副本；原始素材保留")
             .accessibilityLabel("取消绑定并删除归档副本 \(asset.sourceName)")
             .pointerCursor()
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-            .background(
+        .background(
             isSelected
-                ? Color.accentColor.opacity(0.12)
+                ? Color.orange.opacity(0.17)
                 : (isDropTarget ? Color.accentColor.opacity(0.09) : Color.green.opacity(0.055)),
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .strokeBorder(
-                    isSelected ? Color.accentColor.opacity(0.48) : Color.green.opacity(0.18),
-                    lineWidth: isSelected ? 1 : 0.6
+                    isSelected ? Color.orange.opacity(0.85) : Color.green.opacity(0.18),
+                    lineWidth: isSelected ? 1.5 : 0.6
                 )
         }
         .contextMenu {
@@ -1224,14 +1275,14 @@ private struct AssetChip: View {
     }
 }
 
-private struct MaterialDirectoryHeader: View {
+private struct MaterialListHeader: View {
     @ObservedObject var model: AppModel
     @Binding var isDirectoryPopoverPresented: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(
-                title: "素材目录",
+                title: "素材列表",
                 systemImage: "film.stack",
                 count: "\(model.visibleSourceFiles.count) 个素材",
                 actions: [
@@ -1242,50 +1293,55 @@ private struct MaterialDirectoryHeader: View {
             )
 
             HStack(spacing: 8) {
-                Image(systemName: model.sourceDirectoryURL == nil ? "folder" : "folder.fill")
-                    .foregroundStyle(.tint)
-                Text(model.sourceDirectoryURL == nil ? "未选择目录" : model.sourceDirectoryName)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(model.sourceDirectoryURL?.path ?? "尚未选择素材来源")
-                Spacer(minLength: 4)
-                Button(model.sourceDirectoryURL == nil ? "选择目录" : "更换目录") {
-                    model.chooseSourceDirectory()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("选择素材来源目录")
-                .pointerCursor()
-
-                if model.sourceDirectoryURL != nil {
+                HStack(spacing: 9) {
+                    Image(systemName: model.sourceDirectoryURL == nil ? "folder" : "folder.fill")
+                        .foregroundStyle(model.sourceDirectoryURL == nil ? Color.orange : Color.accentColor)
+                    Text(model.sourceDirectoryURL == nil ? "未选择目录" : model.sourceDirectoryName)
+                        .font(.callout)
+                        .foregroundStyle(model.sourceDirectoryURL == nil ? Color.orange : Color.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(minWidth: 55, maxWidth: .infinity, alignment: .leading)
+                        .instantHelp(model.sourceDirectoryURL?.path ?? "尚未选择素材来源")
                     Button {
-                        model.revealSourceDirectory()
+                        model.chooseSourceDirectory()
                     } label: {
-                        Image(systemName: "arrow.up.forward.app")
+                        Image(systemName: "folder.badge.plus")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .help("在 Finder 中打开素材目录")
-                    .accessibilityLabel("在 Finder 中打开素材目录")
+                    .instantHelp(model.sourceDirectoryURL == nil ? "选择素材来源目录" : "更换素材来源目录")
+                    .accessibilityLabel(model.sourceDirectoryURL == nil ? "选择素材来源目录" : "更换素材来源目录")
                     .pointerCursor()
+
+                    Button {
+                        isDirectoryPopoverPresented = true
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .buttonStyle(IconActionButtonStyle())
+                    .instantHelp("管理常用素材目录")
+                    .accessibilityLabel("管理常用素材目录")
+                    .pointerCursor()
+                    .popover(isPresented: $isDirectoryPopoverPresented, arrowEdge: .trailing) {
+                        DirectoryManagerPopover(model: model) {
+                            isDirectoryPopoverPresented = false
+                        }
+                        .frame(width: 310)
+                    }
+                }
+                .frame(height: 40)
+                .padding(.horizontal, 10)
+                .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(.separator.opacity(0.55), lineWidth: 0.5)
                 }
 
-                Button {
-                    isDirectoryPopoverPresented = true
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
-                .buttonStyle(IconActionButtonStyle())
-                .help("管理常用素材目录")
-                .accessibilityLabel("管理常用素材目录")
-                .pointerCursor()
-                .popover(isPresented: $isDirectoryPopoverPresented, arrowEdge: .trailing) {
-                    DirectoryManagerPopover(model: model) {
-                        isDirectoryPopoverPresented = false
-                    }
-                    .frame(width: 330)
-                }
+                Divider()
+                    .frame(height: 24)
+
+                MediaFilterPicker(selection: $model.mediaFilter)
             }
-            .font(.caption)
             .padding(.horizontal, 16)
             .frame(height: ListPaneMetrics.toolsHeight)
             .background(.quaternary.opacity(0.2))
@@ -1301,7 +1357,7 @@ private struct DirectoryManagerPopover: View {
     let dismiss: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("素材目录", systemImage: "folder.badge.gearshape")
                     .font(.headline)
@@ -1316,32 +1372,27 @@ private struct DirectoryManagerPopover: View {
                     .controlSize(.small)
                     .font(.caption)
                     .accessibilityLabel("收藏当前素材目录")
-                    .help("将当前目录加入常用目录")
+                    .instantHelp("将当前目录加入常用目录")
                     .pointerCursor()
                 }
             }
 
-            Button {
+            DirectoryPopoverAction(title: "选择素材目录…", systemImage: "folder.badge.plus", isPrimary: true) {
                 model.chooseSourceDirectory()
                 dismiss()
-            } label: {
-                Label("选择素材目录…", systemImage: "folder.badge.plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .pointerCursor()
 
-            Button {
+            if model.sourceDirectoryURL != nil {
+                DirectoryPopoverAction(title: "在 Finder 中打开当前目录", systemImage: "arrow.up.forward.app") {
+                    model.revealSourceDirectory()
+                    dismiss()
+                }
+            }
+
+            DirectoryPopoverAction(title: "选择并收藏新目录…", systemImage: "bookmark") {
                 model.chooseAndSaveSourceDirectory()
                 dismiss()
-            } label: {
-                Label("选择并收藏新目录…", systemImage: "plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .pointerCursor()
 
             Divider()
 
@@ -1379,6 +1430,38 @@ private struct DirectoryManagerPopover: View {
     }
 }
 
+private struct DirectoryPopoverAction: View {
+    let title: String
+    let systemImage: String
+    var isPrimary = false
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.body)
+                    .frame(width: 20)
+                Text(title)
+                    .font(.callout.weight(isPrimary ? .semibold : .regular))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(
+                isPrimary ? Color.accentColor.opacity(isHovered ? 0.16 : 0.10) : Color.primary.opacity(isHovered ? 0.08 : 0.035),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isPrimary ? Color.accentColor : Color.primary)
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+    }
+}
+
 private struct SavedDirectoryRow: View {
     let directory: SavedDirectory
     let isSelected: Bool
@@ -1407,7 +1490,7 @@ private struct SavedDirectoryRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("切换到素材目录：\(directory.name)")
+            .instantHelp("切换到素材目录：\(directory.name)")
             .accessibilityLabel("切换素材目录：\(directory.name)")
             .pointerCursor()
 
@@ -1419,7 +1502,7 @@ private struct SavedDirectoryRow: View {
                     .foregroundStyle(.secondary)
             }
             .menuStyle(.borderlessButton)
-            .help("管理常用目录")
+            .instantHelp("管理常用目录")
             .accessibilityLabel("管理常用目录")
             .pointerCursor()
         }
@@ -1441,20 +1524,7 @@ private struct DetailView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                MaterialDirectoryHeader(model: model, isDirectoryPopoverPresented: $isDirectoryPopoverPresented)
-
-                HStack {
-                    Text("筛选素材")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    MediaFilterPicker(selection: $model.mediaFilter)
-                }
-                .padding(.horizontal, 16)
-                .frame(height: ListPaneMetrics.toolsHeight)
-                .overlay(alignment: .bottom) {
-                    Divider()
-                }
+                MaterialListHeader(model: model, isDirectoryPopoverPresented: $isDirectoryPopoverPresented)
 
                 if model.visibleSourceFiles.isEmpty {
                     ContentUnavailableView {
@@ -1483,9 +1553,9 @@ private struct DetailView: View {
                                         )
                                         .padding(.horizontal, 16)
                                         .padding(.vertical, 4)
-                                        .id(file.url)
+                                        .id(file.url.standardizedFileURL.path)
                                         .onTapGesture {
-                                            selectSourceFile(file.url)
+                                            selectSourceFile(file)
                                         }
 
                                         if index < model.visibleSourceFiles.count - 1 {
@@ -1498,25 +1568,37 @@ private struct DetailView: View {
                                 .frame(width: geometry.size.width)
                                 .background(alignment: .topLeading) {
                                     MaterialScrollbarInstaller()
-                                        .frame(width: 0, height: 0)
+                                        .frame(width: 1, height: 1)
                                         .allowsHitTesting(false)
                                         .accessibilityHidden(true)
                                 }
                             }
                             .scrollIndicators(.hidden)
                             .contentMargins(.trailing, 0, for: .scrollContent)
+                            .task(id: model.sourceFileJumpID) {
+                                guard model.sourceFileJumpID != nil,
+                                      let url = model.selectedSourceFileURL,
+                                      let file = model.visibleSourceFiles.first(where: { $0.url == url }) else { return }
+                                selectSourceFile(file)
+                                await Task.yield()
+                                guard !Task.isCancelled else { return }
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo(file.url.standardizedFileURL.path, anchor: .center)
+                                }
+                            }
                             .focusable()
                             .focused($isMaterialListFocused)
+                            .focusEffectDisabled()
                             .onKeyPress(keys: [.upArrow, .downArrow, .space]) { keyPress in
                                 switch keyPress.key {
                                 case .upArrow:
                                     if let url = moveSelection(by: -1) {
-                                        proxy.scrollTo(url, anchor: .center)
+                                        proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
                                     }
                                     return .handled
                                 case .downArrow:
                                     if let url = moveSelection(by: 1) {
-                                        proxy.scrollTo(url, anchor: .center)
+                                        proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
                                     }
                                     return .handled
                                 case .space:
@@ -1532,7 +1614,7 @@ private struct DetailView: View {
                 }
 
             }
-            .frame(minWidth: 300, idealWidth: 380, maxWidth: .infinity)
+            .frame(minWidth: 420, idealWidth: 440, maxWidth: .infinity)
 
             Divider()
 
@@ -1555,9 +1637,14 @@ private struct DetailView: View {
         }
     }
 
-    private func selectSourceFile(_ url: URL) {
-        selectedSourceFileURLs = [url]
-        model.selectedSourceFileURL = url
+    private func selectSourceFile(_ file: SourceFile) {
+        selectedSourceFileURLs = [file.url]
+        model.selectedSourceFileURL = file.url
+        if file.kind == .video {
+            previewController.play(url: file.url)
+        } else {
+            previewController.load(url: nil)
+        }
         isMaterialListFocused = true
     }
 
@@ -1576,9 +1663,9 @@ private struct DetailView: View {
             targetIndex = offset < 0 ? visibleFiles.count - 1 : 0
         }
 
-        let url = visibleFiles[targetIndex].url
-        selectSourceFile(url)
-        return url
+        let file = visibleFiles[targetIndex]
+        selectSourceFile(file)
+        return file.url
     }
 }
 
@@ -1594,9 +1681,9 @@ private struct MediaFilterPicker: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .controlSize(.small)
-        .frame(width: 164)
-        .help("筛选素材类型")
+        .controlSize(.large)
+        .frame(width: 156, height: 40)
+        .instantHelp("筛选素材类型")
         .pointerCursor()
     }
 }
@@ -1621,7 +1708,7 @@ private struct MediaPreviewView: View {
                         Text(file.name)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .help(file.name)
+                            .instantHelp(file.name)
                         Text(MediaFormatting.bytes(file.byteCount))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -1633,7 +1720,7 @@ private struct MediaPreviewView: View {
                         Image(systemName: "eye")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .help("使用 Quick Look 打开素材")
+                    .instantHelp("使用 Quick Look 打开素材")
                     .accessibilityLabel("使用 Quick Look 打开素材")
                     .pointerCursor()
 
@@ -1643,7 +1730,7 @@ private struct MediaPreviewView: View {
                         Image(systemName: "arrow.up.forward.app")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .help("在 Finder 中显示素材")
+                    .instantHelp("在 Finder 中显示素材")
                     .accessibilityLabel("在 Finder 中显示素材")
                     .pointerCursor()
                 } else {
@@ -1683,7 +1770,7 @@ private struct MediaPreviewView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
-                            .help(controller.isPlaying ? "暂停视频" : "播放视频")
+                            .instantHelp(controller.isPlaying ? "暂停视频" : "播放视频")
                             .accessibilityLabel(controller.isPlaying ? "暂停视频" : "播放视频")
                             .pointerCursor()
 
@@ -1772,6 +1859,7 @@ private final class MediaPreviewController: ObservableObject {
     private var currentURL: URL?
     private var endObserver: NSObjectProtocol?
     private var timeObserver: Any?
+    private var hasReachedEnd = false
 
     init() {
         timeObserver = player.addPeriodicTimeObserver(
@@ -1785,6 +1873,7 @@ private final class MediaPreviewController: ObservableObject {
     func load(url: URL?) {
         guard currentURL != url else { return }
         currentURL = url
+        hasReachedEnd = false
         pause()
         player.replaceCurrentItem(with: url.map(AVPlayerItem.init(url:)))
 
@@ -1800,8 +1889,20 @@ private final class MediaPreviewController: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 self?.isPlaying = false
+                self?.hasReachedEnd = true
             }
         }
+    }
+
+    func play(url: URL) {
+        load(url: url)
+        guard player.currentItem != nil else { return }
+        if hasReachedEnd {
+            player.seek(to: .zero)
+            hasReachedEnd = false
+        }
+        player.play()
+        isPlaying = true
     }
 
     func togglePlayback() {
@@ -1809,9 +1910,8 @@ private final class MediaPreviewController: ObservableObject {
 
         if player.timeControlStatus == .playing || player.rate != 0 {
             pause()
-        } else {
-            player.play()
-            isPlaying = true
+        } else if let currentURL {
+            play(url: currentURL)
         }
     }
 
@@ -1851,6 +1951,7 @@ private struct SourceFileRow: View {
                 Text(file.name)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .foregroundStyle(isSelected ? Color.orange : Color.primary)
                 Text(isAssigned ? "已绑定" : MediaFormatting.bytes(file.byteCount))
                     .font(.caption2)
                     .foregroundStyle(isAssigned ? .green : .secondary)
@@ -1858,76 +1959,72 @@ private struct SourceFileRow: View {
             Spacer(minLength: 5)
             if isAssigned {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(isSelected ? Color.orange : Color.green)
                     .font(.caption)
-                    .help("该素材已绑定")
             }
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+            isSelected ? Color.orange.opacity(0.17) : Color.clear,
             in: RoundedRectangle(cornerRadius: 8, style: .continuous)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(isSelected ? Color.orange.opacity(0.8) : Color.clear, lineWidth: 1)
+        }
         .contentShape(Rectangle())
         .onDrag {
             return NSItemProvider(object: file.url as NSURL)
         }
-        .background(CursorRectView(cursor: .openHand).allowsHitTesting(false))
-        .onHover { isHovering in
-            if isHovering {
-                NSCursor.openHand.set()
-            } else {
-                NSCursor.arrow.set()
-            }
-        }
-        .help("点击选择，拖拽到文案锚点")
+        .pointerCursor()
+        .instantHelp(file.kind == .video ? "点击后在当前媒体播放，或拖拽到文案锚点" : "点击后在当前媒体预览，或拖拽到文案锚点")
         .accessibilityValue(isSelected ? "已选中" : "未选中")
     }
 }
 
-private struct CursorRectView: NSViewRepresentable {
-    let cursor: NSCursor
+private struct ImmediateHelpModifier: ViewModifier {
+    let text: String
 
-    func makeNSView(context: Context) -> CursorRectHostingView {
-        CursorRectHostingView(cursor: cursor)
-    }
-
-    func updateNSView(_ nsView: CursorRectHostingView, context: Context) {
-        nsView.cursor = cursor
-        nsView.resetCursorRects()
+    func body(content: Content) -> some View {
+        content
+            .help(text)
+            .accessibilityHint(Text(text))
     }
 }
 
-private final class CursorRectHostingView: NSView {
-    var cursor: NSCursor
+private struct PointerCursorModifier: ViewModifier {
+    let cursor: NSCursor
+    @State private var isCursorPushed = false
 
-    init(cursor: NSCursor) {
-        self.cursor = cursor
-        super.init(frame: .zero)
-    }
-
-    required init?(coder: NSCoder) {
-        cursor = .arrow
-        super.init(coder: coder)
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: cursor)
+    func body(content: Content) -> some View {
+        content
+            .onHover { isHovering in
+                guard isCursorPushed != isHovering else { return }
+                isCursorPushed = isHovering
+                if isHovering {
+                    cursor.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .onDisappear {
+                if isCursorPushed {
+                    NSCursor.pop()
+                    isCursorPushed = false
+                }
+            }
     }
 }
 
 private extension View {
+    func instantHelp(_ text: String) -> some View {
+        modifier(ImmediateHelpModifier(text: text))
+    }
+
     func pointerCursor(_ cursor: NSCursor = .pointingHand) -> some View {
-        background(CursorRectView(cursor: cursor).allowsHitTesting(false))
-            .onHover { isHovering in
-                if isHovering {
-                    cursor.set()
-                } else {
-                    NSCursor.arrow.set()
-                }
-            }
+        modifier(PointerCursorModifier(cursor: cursor))
     }
 }
 
@@ -2128,6 +2225,7 @@ private struct ScriptEditorSheet: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 300)
+                    .pointerCursor()
 
                     Spacer()
 

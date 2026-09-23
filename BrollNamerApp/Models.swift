@@ -46,18 +46,10 @@ enum SplitMode: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-enum BrollMode: String, CaseIterable, Codable, Identifiable {
+enum BrollMode: String, Codable {
     case fs = "FS"
+    // Kept only so older manifests can still be decoded and migrated.
     case pip = "PIP"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .fs: return "FS · 全屏"
-        case .pip: return "PIP · 画中画"
-        }
-    }
 }
 
 enum MediaKind: String, CaseIterable, Codable, Identifiable {
@@ -122,6 +114,22 @@ struct BrollAsset: Identifiable, Codable, Hashable {
     let targetTrack: String
     let audio: String
     let copiedAt: String
+
+    var fullScreen: BrollAsset {
+        guard mode != .fs else { return self }
+        return BrollAsset(
+            id: id,
+            anchorKey: anchorKey,
+            anchorIndex: anchorIndex,
+            anchorText: anchorText,
+            sourceName: sourceName,
+            outputName: outputName,
+            mode: .fs,
+            targetTrack: targetTrack,
+            audio: audio,
+            copiedAt: copiedAt
+        )
+    }
 }
 
 struct ManifestNaming: Codable, Hashable {
@@ -145,11 +153,91 @@ struct BrollManifest: Codable, Hashable {
     let destinationDirectory: String?
     let naming: ManifestNaming
     let anchors: [ManifestAnchor]
+
+    var fullScreen: BrollManifest {
+        BrollManifest(
+            schema: schema,
+            generatedAt: generatedAt,
+            tool: tool,
+            destinationDirectory: destinationDirectory,
+            naming: naming,
+            anchors: anchors.map { anchor in
+                ManifestAnchor(
+                    id: anchor.id,
+                    index: anchor.index,
+                    text: anchor.text,
+                    assets: anchor.assets.map(\.fullScreen)
+                )
+            }
+        )
+    }
 }
 
 struct AssignmentStore: Codable {
     let version: Int
     let assignments: [String: [BrollAsset]]
+}
+
+struct ArchiveCleanupResult {
+    var deletedCount = 0
+    var missingCount = 0
+    var failedNames: Set<String> = []
+}
+
+enum ArchiveCleaner {
+    static func discoverCopies(in directoryURL: URL, mediaExtensions: Set<String>) throws -> Set<String> {
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        return Set(urls.compactMap { url in
+            guard mediaExtensions.contains(url.pathExtension.lowercased()),
+                  url.lastPathComponent.range(
+                    of: #"^.+_BR[0-9]{3,}_.+\.[^.]+$"#,
+                    options: .regularExpression
+                  ) != nil,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                return nil
+            }
+            return url.lastPathComponent
+        })
+    }
+
+    static func removeCopies(named outputNames: Set<String>, from directoryURL: URL) -> ArchiveCleanupResult {
+        let fileManager = FileManager.default
+        var result = ArchiveCleanupResult()
+
+        for outputName in outputNames.sorted() {
+            guard !outputName.isEmpty,
+                  outputName == (outputName as NSString).lastPathComponent,
+                  outputName != ".", outputName != ".." else {
+                result.failedNames.insert(outputName)
+                continue
+            }
+
+            let archivedURL = directoryURL.appendingPathComponent(outputName)
+            do {
+                let values = try archivedURL.resourceValues(forKeys: [.isDirectoryKey])
+                guard values.isDirectory != true else {
+                    result.failedNames.insert(outputName)
+                    continue
+                }
+                try fileManager.removeItem(at: archivedURL)
+                result.deletedCount += 1
+            } catch {
+                let fileError = error as NSError
+                if fileError.domain == NSCocoaErrorDomain &&
+                    [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(fileError.code) {
+                    result.missingCount += 1
+                } else {
+                    result.failedNames.insert(outputName)
+                }
+            }
+        }
+
+        return result
+    }
 }
 
 struct SourceFile: Identifiable, Hashable {
