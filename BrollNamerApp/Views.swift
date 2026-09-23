@@ -183,6 +183,190 @@ private final class InsetOverlayScroller: NSScroller {
     }
 }
 
+// SwiftUI's macOS scroll view can reserve a full scroller column even for overlay
+// indicators. The material pane uses its own overlay so the content reaches the divider.
+private struct MaterialScrollbarInstaller: NSViewRepresentable {
+    final class Coordinator {
+        weak var scrollView: NSScrollView?
+        var indicator: MaterialScrollbar?
+        var isScheduling = false
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        installLater(from: view, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        installLater(from: view, coordinator: context.coordinator)
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.indicator?.removeFromSuperview()
+        coordinator.indicator = nil
+    }
+
+    private func installLater(from view: NSView, coordinator: Coordinator, attempts: Int = 20) {
+        guard !coordinator.isScheduling else { return }
+        coordinator.isScheduling = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            coordinator.isScheduling = false
+            var ancestor = view.superview
+            while let candidate = ancestor, !(candidate is NSScrollView) {
+                ancestor = candidate.superview
+            }
+            guard let scrollView = ancestor as? NSScrollView else {
+                if attempts > 0 {
+                    installLater(from: view, coordinator: coordinator, attempts: attempts - 1)
+                }
+                return
+            }
+
+            if coordinator.scrollView !== scrollView {
+                coordinator.indicator?.removeFromSuperview()
+                let indicator = MaterialScrollbar(scrollView: scrollView)
+                indicator.frame = NSRect(x: scrollView.bounds.width - 10, y: 0, width: 10, height: scrollView.bounds.height)
+                indicator.autoresizingMask = [.minXMargin, .height]
+                scrollView.addSubview(indicator, positioned: .above, relativeTo: nil)
+                coordinator.scrollView = scrollView
+                coordinator.indicator = indicator
+            }
+            scrollView.hasVerticalScroller = false
+            coordinator.indicator?.needsDisplay = true
+        }
+    }
+}
+
+private final class MaterialScrollbar: NSView {
+    private weak var scrollView: NSScrollView?
+    private var clipObserver: NSObjectProtocol?
+    private var documentObserver: NSObjectProtocol?
+    private weak var trackedDocument: NSView?
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false
+    private var isDragging = false
+    private var dragOffset: CGFloat = 0
+
+    override var isFlipped: Bool { true }
+
+    init(scrollView: NSScrollView) {
+        self.scrollView = scrollView
+        super.init(frame: .zero)
+        observeScrollView()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    deinit {
+        if let clipObserver { NotificationCenter.default.removeObserver(clipObserver) }
+        if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
+    }
+
+    func observeScrollView() {
+        guard let scrollView else { return }
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
+        if let clipObserver { NotificationCenter.default.removeObserver(clipObserver) }
+        clipObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { [weak self] _ in self?.needsDisplay = true }
+
+        if trackedDocument !== scrollView.documentView {
+            if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
+            trackedDocument = scrollView.documentView
+            trackedDocument?.postsFrameChangedNotifications = true
+            documentObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: trackedDocument,
+                queue: .main
+            ) { [weak self] _ in self?.needsDisplay = true }
+        }
+    }
+
+    override func updateTrackingAreas() {
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        needsDisplay = true
+    }
+
+    private var thumbRect: NSRect? {
+        guard let scrollView, let document = scrollView.documentView else { return nil }
+        let visible = scrollView.contentView.documentVisibleRect
+        let documentRect = document.bounds
+        let range = documentRect.height - visible.height
+        guard range > 1, bounds.height > 0 else { return nil }
+        let height = min(bounds.height, max(24, bounds.height * visible.height / documentRect.height))
+        let offset = document.isFlipped
+            ? visible.minY - documentRect.minY
+            : documentRect.maxY - visible.maxY
+        let progress = min(1, max(0, offset / range))
+        return NSRect(x: 2, y: (bounds.height - height) * progress, width: 6, height: height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let thumbRect else { return }
+        NSColor.labelColor.withAlphaComponent(isHovered || isDragging ? 0.28 : 0.16).setFill()
+        NSBezierPath(roundedRect: thumbRect, xRadius: 3, yRadius: 3).fill()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let thumbRect else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        dragOffset = thumbRect.contains(point) ? point.y - thumbRect.minY : thumbRect.height / 2
+        isDragging = true
+        scroll(toThumbOrigin: point.y - dragOffset)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isDragging else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        scroll(toThumbOrigin: point.y - dragOffset)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        isDragging = false
+        needsDisplay = true
+    }
+
+    private func scroll(toThumbOrigin origin: CGFloat) {
+        guard let scrollView, let document = scrollView.documentView, let thumbRect else { return }
+        let clipView = scrollView.contentView
+        let visible = clipView.documentVisibleRect
+        let range = document.bounds.height - visible.height
+        let travel = bounds.height - thumbRect.height
+        guard range > 0, travel > 0 else { return }
+        let progress = min(1, max(0, origin / travel))
+        let y = document.isFlipped
+            ? document.bounds.minY + range * progress
+            : document.bounds.maxY - visible.height - range * progress
+        clipView.scroll(to: NSPoint(x: clipView.bounds.minX, y: y))
+        scrollView.reflectScrolledClipView(clipView)
+        needsDisplay = true
+    }
+}
+
 private struct SidebarView: View {
     @ObservedObject var model: AppModel
     @Binding var themeRawValue: String
@@ -1286,37 +1470,63 @@ private struct DetailView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List(selection: $selectedSourceFileURLs) {
-                        ForEach(model.visibleSourceFiles) { file in
-                            SourceFileRow(
-                                file: file,
-                                model: model,
-                                isAssigned: model.isAssigned(file),
-                                isSelected: selectedSourceFileURLs.contains(file.url)
-                            )
-                            .tag(file.url)
-                            .onTapGesture {
-                                selectSourceFile(file.url)
+                    GeometryReader { geometry in
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(Array(model.visibleSourceFiles.enumerated()), id: \.element.id) { index, file in
+                                        SourceFileRow(
+                                            file: file,
+                                            model: model,
+                                            isAssigned: model.isAssigned(file),
+                                            isSelected: selectedSourceFileURLs.contains(file.url)
+                                        )
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 4)
+                                        .id(file.url)
+                                        .onTapGesture {
+                                            selectSourceFile(file.url)
+                                        }
+
+                                        if index < model.visibleSourceFiles.count - 1 {
+                                            Divider()
+                                                .padding(.leading, 128)
+                                                .padding(.trailing, 16)
+                                        }
+                                    }
+                                }
+                                .frame(width: geometry.size.width)
+                                .background(alignment: .topLeading) {
+                                    MaterialScrollbarInstaller()
+                                        .frame(width: 0, height: 0)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
                             }
-                        }
-                    }
-                    .listStyle(.inset)
-                    .focusable()
-                    .focused($isMaterialListFocused)
-                    .onKeyPress(keys: [.upArrow, .downArrow, .space]) { keyPress in
-                        switch keyPress.key {
-                        case .upArrow:
-                            moveSelection(by: -1)
-                            return .handled
-                        case .downArrow:
-                            moveSelection(by: 1)
-                            return .handled
-                        case .space:
-                            guard selectedSourceFileURL != nil else { return .ignored }
-                            previewController.togglePlayback()
-                            return .handled
-                        default:
-                            return .ignored
+                            .scrollIndicators(.hidden)
+                            .contentMargins(.trailing, 0, for: .scrollContent)
+                            .focusable()
+                            .focused($isMaterialListFocused)
+                            .onKeyPress(keys: [.upArrow, .downArrow, .space]) { keyPress in
+                                switch keyPress.key {
+                                case .upArrow:
+                                    if let url = moveSelection(by: -1) {
+                                        proxy.scrollTo(url, anchor: .center)
+                                    }
+                                    return .handled
+                                case .downArrow:
+                                    if let url = moveSelection(by: 1) {
+                                        proxy.scrollTo(url, anchor: .center)
+                                    }
+                                    return .handled
+                                case .space:
+                                    guard selectedSourceFileURL != nil else { return .ignored }
+                                    previewController.togglePlayback()
+                                    return .handled
+                                default:
+                                    return .ignored
+                                }
+                            }
                         }
                     }
                 }
@@ -1351,9 +1561,9 @@ private struct DetailView: View {
         isMaterialListFocused = true
     }
 
-    private func moveSelection(by offset: Int) {
+    private func moveSelection(by offset: Int) -> URL? {
         let visibleFiles = model.visibleSourceFiles
-        guard !visibleFiles.isEmpty else { return }
+        guard !visibleFiles.isEmpty else { return nil }
 
         let currentIndex = selectedSourceFileURL.flatMap { selectedURL in
             visibleFiles.firstIndex { $0.url == selectedURL }
@@ -1366,7 +1576,9 @@ private struct DetailView: View {
             targetIndex = offset < 0 ? visibleFiles.count - 1 : 0
         }
 
-        selectSourceFile(visibleFiles[targetIndex].url)
+        let url = visibleFiles[targetIndex].url
+        selectSourceFile(url)
+        return url
     }
 }
 
@@ -1654,6 +1866,10 @@ private struct SourceFileRow: View {
         .padding(.vertical, 5)
         .padding(.horizontal, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
         .contentShape(Rectangle())
         .onDrag {
             return NSItemProvider(object: file.url as NSURL)
