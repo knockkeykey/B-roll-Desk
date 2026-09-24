@@ -1,6 +1,7 @@
 import AppKit
 import AVKit
 import AVFoundation
+import ImageIO
 import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -1553,11 +1554,13 @@ private struct DetailView: View {
     }
 
     var body: some View {
+        let visibleFiles = model.visibleSourceFiles
+
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 MaterialListHeader(model: model, isDirectoryPopoverPresented: $isDirectoryPopoverPresented)
 
-                if model.visibleSourceFiles.isEmpty {
+                if visibleFiles.isEmpty {
                     ContentUnavailableView {
                         Label("还没有素材", systemImage: "film")
                     } description: {
@@ -1575,7 +1578,7 @@ private struct DetailView: View {
                         ScrollViewReader { proxy in
                             ScrollView {
                                 LazyVStack(spacing: 0) {
-                                    ForEach(Array(model.visibleSourceFiles.enumerated()), id: \.element.id) { index, file in
+                                    ForEach(Array(visibleFiles.enumerated()), id: \.element.id) { index, file in
                                         SourceFileRow(
                                             file: file,
                                             index: index + 1,
@@ -1590,7 +1593,7 @@ private struct DetailView: View {
                                             selectSourceFile(file)
                                         }
 
-                                        if index < model.visibleSourceFiles.count - 1 {
+                                        if index < visibleFiles.count - 1 {
                                             Divider()
                                                 .padding(.leading, 174)
                                                 .padding(.trailing, 16)
@@ -1610,7 +1613,7 @@ private struct DetailView: View {
                             .task(id: model.sourceFileJumpID) {
                                 guard model.sourceFileJumpID != nil,
                                       let url = model.selectedSourceFileURL,
-                                      let file = model.visibleSourceFiles.first(where: { $0.url == url }) else { return }
+                                      let file = visibleFiles.first(where: { $0.url == url }) else { return }
                                 selectSourceFile(file)
                                 await Task.yield()
                                 guard !Task.isCancelled else { return }
@@ -1651,9 +1654,7 @@ private struct DetailView: View {
             Divider()
 
             MediaPreviewView(
-                file: selectedSourceFileURL.flatMap { url in
-                    model.sourceFiles.first(where: { $0.url == url })
-                },
+                file: selectedSourceFileURL.flatMap(model.sourceFile(at:)),
                 controller: previewController
             )
             .frame(minWidth: 340, idealWidth: 480, maxWidth: .infinity)
@@ -1836,8 +1837,9 @@ private struct ImagePreviewContent: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(16)
-        .task(id: file.url) {
-            image = NSImage(contentsOf: file.url)
+        .task(id: file.cacheIdentity) {
+            image = nil
+            image = await ImageThumbnailLoader.image(for: file, maxPixelSize: 2048)
         }
     }
 }
@@ -1958,8 +1960,7 @@ private struct SourceFileRow: View {
     let isSelected: Bool
 
     private var assignedAssets: [BrollAsset] {
-        model.rows.flatMap { model.assets(for: $0.id) }
-            .filter { $0.sourceName == file.name }
+        model.assignedAssets(forSourceName: file.name)
     }
 
     private var hoverDetails: String {
@@ -2313,12 +2314,15 @@ private final class QuickLookPreviewController: NSResponder, QLPreviewPanelDataS
 private struct MediaThumbnailView: View {
     let file: SourceFile
 
+    @Environment(\.displayScale) private var displayScale
     @State private var image: NSImage?
     @State private var isLoading = true
 
     private let thumbnailSize = CGSize(width: 92, height: 56)
 
     var body: some View {
+        let maxPixelSize = max(1, Int(ceil(max(thumbnailSize.width, thumbnailSize.height) * displayScale)))
+
         ZStack(alignment: .bottomLeading) {
             if let image {
                 Image(nsImage: image)
@@ -2361,40 +2365,95 @@ private struct MediaThumbnailView: View {
                 .strokeBorder(.separator.opacity(0.65), lineWidth: 0.5)
         }
         .accessibilityLabel("\(file.kind.title)缩略图")
-        .task(id: file.url) {
+        .task(id: "\(file.cacheIdentity)|\(maxPixelSize)") {
             isLoading = true
+            image = nil
             if file.kind == .image {
-                image = NSImage(contentsOf: file.url)
+                image = await ImageThumbnailLoader.image(for: file, maxPixelSize: maxPixelSize)
             } else {
-                image = await VideoThumbnailLoader.image(for: file.url)
+                image = await VideoThumbnailLoader.image(for: file, maxPixelSize: maxPixelSize)
             }
-            isLoading = false
+            if !Task.isCancelled {
+                isLoading = false
+            }
         }
     }
 }
 
-private final class VideoThumbnailCache {
-    static let shared = VideoThumbnailCache()
+private final class MediaThumbnailCache {
+    static let shared = MediaThumbnailCache()
 
-    private let cache = NSCache<NSURL, NSImage>()
+    private let cache = NSCache<NSString, CGImage>()
 
-    func image(for url: URL) -> NSImage? {
-        cache.object(forKey: url as NSURL)
+    private init() {
+        cache.countLimit = 400
+        cache.totalCostLimit = 128 * 1024 * 1024
     }
 
-    func insert(_ image: NSImage, for url: URL) {
-        cache.setObject(image, forKey: url as NSURL)
+    func image(for key: String) -> CGImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func insert(_ image: CGImage, for key: String, cost: Int) {
+        cache.setObject(image, forKey: key as NSString, cost: max(1, cost))
     }
 }
 
+@MainActor
+private enum ImageThumbnailLoader {
+    static func image(for file: SourceFile, maxPixelSize: Int) async -> NSImage? {
+        let pixelSize = max(1, maxPixelSize)
+        let key = "\(file.cacheIdentity)|\(pixelSize)"
+        if let cached = MediaThumbnailCache.shared.image(for: key) {
+            return NSImage(cgImage: cached, size: .zero)
+        }
+
+        let url = file.url
+        let worker = Task.detached(priority: .utility) { () -> (CGImage, Int)? in
+            guard !Task<Never, Never>.isCancelled,
+                  let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                return nil
+            }
+
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: pixelSize,
+                kCGImageSourceShouldCacheImmediately: true
+            ]
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                return nil
+            }
+
+            return (cgImage, cgImage.bytesPerRow * cgImage.height)
+        }
+
+        let result = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+
+        guard !Task<Never, Never>.isCancelled, let (cgImage, cost) = result else { return nil }
+        MediaThumbnailCache.shared.insert(cgImage, for: key, cost: cost)
+        return NSImage(cgImage: cgImage, size: .zero)
+    }
+}
+
+@MainActor
 private enum VideoThumbnailLoader {
-    static func image(for url: URL) async -> NSImage? {
-        if let cached = VideoThumbnailCache.shared.image(for: url) {
-            return cached
+    static func image(for file: SourceFile, maxPixelSize: Int) async -> NSImage? {
+        let pixelSize = max(1, maxPixelSize)
+        let key = "\(file.cacheIdentity)|\(pixelSize)"
+        if let cached = MediaThumbnailCache.shared.image(for: key) {
+            return NSImage(cgImage: cached, size: .zero)
         }
 
+        let url = file.url
         let asset = AVURLAsset(url: url)
-        let duration = CMTimeGetSeconds(asset.duration)
+        let loadedDuration = try? await asset.load(.duration)
+        guard !Task<Never, Never>.isCancelled else { return nil }
+        let duration = loadedDuration.map(CMTimeGetSeconds) ?? .nan
         let sampleSeconds: Double
         if duration.isFinite, duration > 0 {
             sampleSeconds = min(max(duration * 0.12, 0.05), 1.0)
@@ -2405,24 +2464,17 @@ private enum VideoThumbnailLoader {
         let requestedTime = CMTime(seconds: sampleSeconds, preferredTimescale: 600)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 368, height: 224)
+        generator.maximumSize = CGSize(width: pixelSize, height: pixelSize)
 
-        let image: NSImage? = await withCheckedContinuation { continuation in
-            generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: requestedTime)]) { [generator] _, cgImage, _, result, _ in
-                guard result == .succeeded, let cgImage else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                _ = generator
-                continuation.resume(returning: NSImage(cgImage: cgImage, size: .zero))
-            }
+        let cgImage: CGImage
+        do {
+            (cgImage, _) = try await generator.image(at: requestedTime)
+        } catch {
+            return nil
         }
-
-        if let image {
-            VideoThumbnailCache.shared.insert(image, for: url)
-        }
-        return image
+        let cost = cgImage.bytesPerRow * cgImage.height
+        MediaThumbnailCache.shared.insert(cgImage, for: key, cost: cost)
+        return NSImage(cgImage: cgImage, size: .zero)
     }
 }
 

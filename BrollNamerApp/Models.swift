@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 enum AppTheme: String, CaseIterable, Codable, Identifiable {
     case system
@@ -52,7 +53,7 @@ enum BrollMode: String, Codable {
     case pip = "PIP"
 }
 
-enum MediaKind: String, CaseIterable, Codable, Identifiable {
+enum MediaKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case video
     case image
 
@@ -148,7 +149,7 @@ struct AssignmentStore: Codable {
     let assignments: [String: [BrollAsset]]
 }
 
-struct ArchiveCleanupResult {
+struct ArchiveCleanupResult: Sendable {
     var deletedCount = 0
     var missingCount = 0
     var failedNames: Set<String> = []
@@ -210,13 +211,79 @@ enum ArchiveCleaner {
     }
 }
 
-struct SourceFile: Identifiable, Hashable {
+struct SourceFile: Identifiable, Hashable, Sendable {
     let url: URL
     let byteCount: Int64
     let kind: MediaKind
+    let modificationDate: Date?
 
     var id: URL { url }
     var name: String { url.lastPathComponent }
+
+    var cacheIdentity: String {
+        let modified = modificationDate.map { String($0.timeIntervalSince1970.bitPattern) } ?? "unknown"
+        return "\(url.standardizedFileURL.path)|\(byteCount)|\(modified)"
+    }
+}
+
+enum SourceFileScanner {
+    static func scan(
+        in directoryURL: URL,
+        videoExtensions: Set<String>,
+        imageExtensions: Set<String>
+    ) throws -> [SourceFile] {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .fileSizeKey,
+            .contentTypeKey,
+            .contentModificationDateKey
+        ]
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        )
+
+        var files: [SourceFile] = []
+        files.reserveCapacity(urls.count)
+
+        for (index, url) in urls.enumerated() {
+            if index.isMultiple(of: 128) {
+                try Task<Never, Never>.checkCancellation()
+            }
+
+            let values = try? url.resourceValues(forKeys: keys)
+            guard values?.isRegularFile != false else { continue }
+
+            let pathExtension = url.pathExtension.lowercased()
+            let kind: MediaKind?
+            if videoExtensions.contains(pathExtension) {
+                kind = .video
+            } else if imageExtensions.contains(pathExtension) {
+                kind = .image
+            } else if values?.contentType?.conforms(to: .movie) == true {
+                kind = .video
+            } else if values?.contentType?.conforms(to: .image) == true {
+                kind = .image
+            } else {
+                kind = nil
+            }
+
+            guard let kind else { continue }
+            files.append(
+                SourceFile(
+                    url: url,
+                    byteCount: Int64(values?.fileSize ?? 0),
+                    kind: kind,
+                    modificationDate: values?.contentModificationDate
+                )
+            )
+        }
+
+        try Task<Never, Never>.checkCancellation()
+        files.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return files
+    }
 }
 
 struct SavedDirectory: Identifiable, Codable, Hashable {

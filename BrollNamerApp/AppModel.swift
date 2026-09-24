@@ -19,7 +19,9 @@ final class AppModel: ObservableObject {
     let dropFeedback = DropFeedbackModel()
     @Published var selectedSourceFileURL: URL?
     @Published var sourceFileJumpID: UUID?
-    @Published var mediaFilter: MediaFilter = .all
+    @Published var mediaFilter: MediaFilter = .all {
+        didSet { rebuildVisibleSourceFiles() }
+    }
     @Published var isScriptEditorPresented = false
     @Published var isManifestPreviewPresented = false
     @Published private(set) var manifestPreviewText = ""
@@ -32,6 +34,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var rows: [AnchorRow] = []
     @Published private(set) var assignments: [String: [BrollAsset]] = [:]
     @Published private(set) var sourceFiles: [SourceFile] = []
+    @Published private(set) var visibleSourceFiles: [SourceFile] = []
     @Published private(set) var sourceDirectoryURL: URL?
     @Published private(set) var destinationDirectoryURL: URL?
     @Published private(set) var savedDirectories: [SavedDirectory] = []
@@ -39,6 +42,12 @@ final class AppModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private var sourceAccessActive = false
     private var destinationAccessActive = false
+    private var sourceFilesByName: [String: SourceFile] = [:]
+    private var sourceFilesByURL: [URL: SourceFile] = [:]
+    private var assignedNamesIndex: Set<String> = []
+    private var assetsBySourceName: [String: [BrollAsset]] = [:]
+    private var sourceScanTask: Task<[SourceFile], Error>?
+    private var sourceScanGeneration = UUID()
 
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
@@ -103,14 +112,14 @@ final class AppModel: ObservableObject {
         return rows.filter { $0.text.localizedCaseInsensitiveContains(query) || "BR\(String(format: "%03d", $0.index))".localizedCaseInsensitiveContains(query) }
     }
 
-    var visibleSourceFiles: [SourceFile] {
+    private func rebuildVisibleSourceFiles() {
         switch mediaFilter {
         case .all:
-            return sourceFiles
+            visibleSourceFiles = sourceFiles
         case .video:
-            return sourceFiles.filter { $0.kind == .video }
+            visibleSourceFiles = sourceFiles.filter { $0.kind == .video }
         case .image:
-            return sourceFiles.filter { $0.kind == .image }
+            visibleSourceFiles = sourceFiles.filter { $0.kind == .image }
         }
     }
 
@@ -126,7 +135,15 @@ final class AppModel: ObservableObject {
     }
 
     func isAssigned(_ file: SourceFile) -> Bool {
-        assignedNames.contains(file.name)
+        assignedNamesIndex.contains(file.name)
+    }
+
+    func assignedAssets(forSourceName sourceName: String) -> [BrollAsset] {
+        assetsBySourceName[sourceName] ?? []
+    }
+
+    func sourceFile(at url: URL) -> SourceFile? {
+        sourceFilesByURL[url]
     }
 
     var isCurrentSourceDirectorySaved: Bool {
@@ -156,6 +173,7 @@ final class AppModel: ObservableObject {
                 text: text
             )
         }
+        rebuildAssignmentIndexes()
 
         if persist {
             persistPreferences()
@@ -212,6 +230,7 @@ final class AppModel: ObservableObject {
     }
 
     func chooseDestinationDirectory() {
+        guard !isBusy else { return }
         let panel = NSOpenPanel()
         panel.title = "选择归档目录"
         panel.message = "选择一个用于保存复制素材和 manifest 的文件夹"
@@ -228,67 +247,121 @@ final class AppModel: ObservableObject {
     }
 
     func refreshSourceFiles() {
+        sourceScanTask?.cancel()
+        sourceScanTask = nil
+
         guard let directoryURL = sourceDirectoryURL else {
-            sourceFiles = []
+            sourceScanGeneration = UUID()
+            installSourceFiles([])
             return
         }
 
-        do {
-            let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .contentTypeKey]
-            sourceFiles = try FileManager.default
-                .contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])
-                .compactMap { url in
-                    let values = try? url.resourceValues(forKeys: keys)
-                    guard values?.isRegularFile != false else { return nil }
-                    guard let kind = mediaKind(for: url, contentType: values?.contentType) else { return nil }
-                    return SourceFile(
-                        url: url,
-                        byteCount: Int64(values?.fileSize ?? 0),
-                        kind: kind
-                    )
+        let generation = UUID()
+        sourceScanGeneration = generation
+        let didStartAccess = directoryURL.startAccessingSecurityScopedResource()
+        let videoExtensions = Self.videoExtensions
+        let imageExtensions = Self.imageExtensions
+        let scanTask = Task.detached(priority: .userInitiated) {
+            defer {
+                if didStartAccess {
+                    directoryURL.stopAccessingSecurityScopedResource()
                 }
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-
-            if let selectedSourceFileURL,
-               sourceFiles.contains(where: { $0.url == selectedSourceFileURL }) == false {
-                self.selectedSourceFileURL = nil
             }
-        } catch {
-            sourceFiles = []
-            statusMessage = "无法读取素材目录：\(error.localizedDescription)"
+            return try SourceFileScanner.scan(
+                in: directoryURL,
+                videoExtensions: videoExtensions,
+                imageExtensions: imageExtensions
+            )
+        }
+        sourceScanTask = scanTask
+
+        Task { @MainActor [weak self] in
+            do {
+                let files = try await scanTask.value
+                guard let self, self.sourceScanGeneration == generation else { return }
+                self.sourceScanTask = nil
+                self.installSourceFiles(files)
+            } catch is CancellationError {
+                guard let self, self.sourceScanGeneration == generation else { return }
+                self.sourceScanTask = nil
+            } catch {
+                guard let self, self.sourceScanGeneration == generation else { return }
+                self.sourceScanTask = nil
+                self.installSourceFiles([])
+                self.statusMessage = "无法读取素材目录：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func installSourceFiles(_ files: [SourceFile]) {
+        var byName: [String: SourceFile] = [:]
+        var byURL: [URL: SourceFile] = [:]
+        for file in files {
+            byName[file.name] = file
+            byURL[file.url] = file
+        }
+
+        sourceFilesByName = byName
+        sourceFilesByURL = byURL
+        sourceFiles = files
+        rebuildVisibleSourceFiles()
+
+        if let selectedSourceFileURL, byURL[selectedSourceFileURL] == nil {
+            self.selectedSourceFileURL = nil
         }
     }
 
     func requestClearAssignments() {
+        guard !isBusy else { return }
         guard !assignments.isEmpty || destinationDirectoryURL != nil else { return }
         isClearConfirmationPresented = true
     }
 
     func clearAssignments() {
+        guard !isBusy else { return }
         guard let destinationDirectoryURL else {
             showError(title: "无法清空配对记录", message: "请先重新选择归档位置，才能删除归档副本并更新清单。")
             return
         }
 
-        let discoveredNames: Set<String>
-        do {
-            discoveredNames = try ArchiveCleaner.discoverCopies(
+        let recordedNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
+        let mediaExtensions = Self.videoExtensions.union(Self.imageExtensions)
+        let didStartAccess = destinationDirectoryURL.startAccessingSecurityScopedResource()
+        isBusy = true
+        statusMessage = "正在清理归档副本…"
+
+        let cleanupTask = Task.detached(priority: .utility) {
+            defer {
+                if didStartAccess {
+                    destinationDirectoryURL.stopAccessingSecurityScopedResource()
+                }
+            }
+            let discoveredNames = try ArchiveCleaner.discoverCopies(
                 in: destinationDirectoryURL,
-                mediaExtensions: Self.videoExtensions.union(Self.imageExtensions)
+                mediaExtensions: mediaExtensions
             )
-        } catch {
-            showError(title: "无法读取归档位置", message: "尚未清空配对记录：\(error.localizedDescription)")
-            return
+            let outputNames = recordedNames.union(discoveredNames)
+            return ArchiveCleaner.removeCopies(named: outputNames, from: destinationDirectoryURL)
         }
 
-        let recordedNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
-        let outputNames = recordedNames.union(discoveredNames)
-        let cleanup = ArchiveCleaner.removeCopies(named: outputNames, from: destinationDirectoryURL)
+        Task { @MainActor [weak self] in
+            defer { self?.isBusy = false }
+            do {
+                let cleanup = try await cleanupTask.value
+                guard let self, self.destinationDirectoryURL == destinationDirectoryURL else { return }
+                self.finishClearAssignments(cleanup)
+            } catch {
+                self?.showError(title: "无法读取归档位置", message: "尚未清空配对记录：\(error.localizedDescription)")
+            }
+        }
+    }
 
+    private func finishClearAssignments(_ cleanup: ArchiveCleanupResult) {
         assignments = assignments.compactMapValues { assets in
             let remaining = assets.filter { cleanup.failedNames.contains($0.outputName) }
             return remaining.isEmpty ? nil : remaining
         }
+        rebuildAssignmentIndexes()
         let localSaved = saveAssignments()
         let manifestSaved = saveManifest(showMessage: false)
         refreshSourceFiles()
@@ -381,7 +454,7 @@ final class AppModel: ObservableObject {
     }
 
     func sourceFile(for asset: BrollAsset) -> SourceFile? {
-        sourceFiles.first { $0.name == asset.sourceName }
+        sourceFilesByName[asset.sourceName]
     }
 
     func jumpToSourceFile(for asset: BrollAsset) {
@@ -400,6 +473,7 @@ final class AppModel: ObservableObject {
     }
 
     func attach(urls: [URL], to rowID: String) async {
+        guard !isBusy else { return }
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
         guard isPrefixValid else {
             showError(title: "请填写期数 / 前缀", message: "绑定素材前，请先在左侧“归档设置”中填写期数或前缀。")
@@ -477,6 +551,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        rebuildAssignmentIndexes()
         saveAssignments()
         _ = saveManifest(showMessage: false)
         refreshSourceFiles()
@@ -488,6 +563,7 @@ final class AppModel: ObservableObject {
     }
 
     func unbind(_ asset: BrollAsset) {
+        guard !isBusy else { return }
         guard var rowAssets = assignments[asset.anchorKey] else { return }
         guard let destinationDirectoryURL else {
             showError(title: "无法取消绑定", message: "请先重新选择归档目录，才能删除对应的归档副本并更新清单。")
@@ -513,6 +589,7 @@ final class AppModel: ObservableObject {
             assignments[asset.anchorKey] = rowAssets
         }
 
+        rebuildAssignmentIndexes()
         saveAssignments()
         let manifestSaved = saveManifest(showMessage: false)
         refreshSourceFiles()
@@ -567,8 +644,21 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    private var assignedNames: Set<String> {
-        Set(rows.flatMap { assets(for: $0.id) }.flatMap { [$0.sourceName, $0.outputName] })
+    private func rebuildAssignmentIndexes() {
+        var names: Set<String> = []
+        var assetsByName: [String: [BrollAsset]] = [:]
+
+        for row in rows {
+            let assets = assignments[row.id] ?? []
+            for asset in assets {
+                names.insert(asset.sourceName)
+                names.insert(asset.outputName)
+                assetsByName[asset.sourceName, default: []].append(asset)
+            }
+        }
+
+        assignedNamesIndex = names
+        assetsBySourceName = assetsByName
     }
 
     private func currentManifest() -> BrollManifest {
@@ -662,6 +752,7 @@ final class AppModel: ObservableObject {
                 changed = mergeManifestAssets(assets, into: row) || changed
             }
             if changed {
+                rebuildAssignmentIndexes()
                 saveAssignments()
                 lastSaved = "已从 manifest 恢复"
             }
@@ -705,6 +796,7 @@ final class AppModel: ObservableObject {
             let store = try JSONDecoder().decode(AssignmentStore.self, from: data)
             guard store.version == 1 else { return }
             assignments = store.assignments.mapValues { $0.map(\.fullScreen) }
+            rebuildAssignmentIndexes()
             if assignments != store.assignments {
                 saveAssignments()
             }
