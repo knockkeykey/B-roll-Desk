@@ -7,6 +7,25 @@ import UniformTypeIdentifiers
 @Observable
 @MainActor
 final class AppModel {
+    private struct UndoSnapshot: Equatable {
+        let scriptText: String
+        let splitMode: SplitMode
+        let preservesEmptyAnchors: Bool
+        let assignments: [String: [BrollAsset]]
+        let rollTypeOverrides: [String: AnchorRollType]
+
+        var archivedNames: Set<String> {
+            Set(assignments.values.flatMap { $0.map(\.outputName) })
+        }
+    }
+
+    private struct ArchiveCopy: Sendable {
+        let sourceURL: URL
+        let destinationURL: URL
+        let didStartAccess: Bool
+        let outputName: String
+    }
+
     static let videoExtensions: Set<String> = [
         "mp4", "mov", "m4v", "webm", "avi", "mkv", "mts", "m2ts"
     ]
@@ -36,6 +55,7 @@ final class AppModel {
 
     private(set) var rows: [AnchorRow] = []
     private(set) var assignments: [String: [BrollAsset]] = [:]
+    private(set) var rollTypeOverrides: [String: AnchorRollType] = [:]
     private(set) var sourceFiles: [SourceFile] = []
     private(set) var visibleSourceFiles: [SourceFile] = []
     private(set) var sourceDirectoryURL: URL?
@@ -43,6 +63,7 @@ final class AppModel {
     private(set) var savedDirectories: [SavedDirectory] = []
 
     private let defaults = UserDefaults.standard
+    private weak var undoManager: UndoManager?
     private var sourceAccessActive = false
     private var destinationAccessActive = false
     private var sourceFilesByName: [String: SourceFile] = [:]
@@ -55,6 +76,7 @@ final class AppModel {
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
     private let preservesEmptyAnchorsKey = "broll-namer-preserves-empty-anchors"
+    private let rollTypeOverridesKey = "broll-namer-roll-type-overrides"
     private let prefixKey = "broll-namer-prefix"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
@@ -65,6 +87,10 @@ final class AppModel {
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
         preservesEmptyAnchors = defaults.bool(forKey: preservesEmptyAnchorsKey)
         prefix = defaults.string(forKey: prefixKey) ?? ""
+        rollTypeOverrides = (defaults.dictionary(forKey: rollTypeOverridesKey) ?? [:]).compactMapValues { value in
+            guard let rawValue = value as? String else { return nil }
+            return AnchorRollType(rawValue: rawValue)
+        }
 
         restoreSavedDirectories()
         parseScript(persist: false)
@@ -92,7 +118,11 @@ final class AppModel {
     }
 
     var pendingCount: Int {
-        rows.reduce(0) { $0 + (assets(for: $1.id).isEmpty ? 1 : 0) }
+        pendingBrollCount
+    }
+
+    var pendingBrollCount: Int {
+        rows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll && assets(for: $1.id).isEmpty ? 1 : 0) }
     }
 
     var scriptCharacterCount: Int {
@@ -104,11 +134,11 @@ final class AppModel {
     }
 
     var aRollAnchorCount: Int {
-        pendingCount
+        rows.reduce(0) { $0 + (rollType(for: $1.id) == .aRoll ? 1 : 0) }
     }
 
     var bRollAnchorCount: Int {
-        rows.count - pendingCount
+        rows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll ? 1 : 0) }
     }
 
     var filteredRows: [AnchorRow] {
@@ -132,11 +162,23 @@ final class AppModel {
         assignments[rowID] ?? []
     }
 
-    func explainARollTag() {
-        alert = AppAlert(
-            title: "A-roll 锚点",
-            message: "这句文案还没有绑定 B-roll。把素材列表中的视频或图片拖到这条文案上，就会复制并归档；绑定后，这里会显示 B-roll。"
-        )
+    func rollType(for rowID: String) -> AnchorRollType {
+        rollTypeOverrides[rowID] ?? (assets(for: rowID).isEmpty ? .aRoll : .bRoll)
+    }
+
+    func toggleRollType(for rowID: String) {
+        guard let row = rows.first(where: { $0.id == rowID }) else { return }
+        let before = makeUndoSnapshot()
+        let nextType: AnchorRollType = rollType(for: rowID) == .bRoll ? .aRoll : .bRoll
+        rollTypeOverrides[rowID] = nextType
+        persistPreferences()
+        lastSaved = "本机已保存 \(Self.timeString())"
+        statusMessage = nextType == .bRoll
+            ? (assets(for: rowID).isEmpty
+                ? "BR\(String(format: "%03d", row.index)) 已设为 B-roll，待绑定素材；请从素材列表拖拽素材到这条文案。"
+                : "BR\(String(format: "%03d", row.index)) 已设为 B-roll")
+            : "BR\(String(format: "%03d", row.index)) 已设为 A-roll"
+        registerUndo(named: "切换 A/B-roll", restoring: before)
     }
 
     func isAssigned(_ file: SourceFile) -> Bool {
@@ -162,7 +204,24 @@ final class AppModel {
         defaults.set(splitMode.rawValue, forKey: splitModeKey)
         defaults.set(preservesEmptyAnchors, forKey: preservesEmptyAnchorsKey)
         defaults.set(prefix, forKey: prefixKey)
+        defaults.set(rollTypeOverrides.mapValues(\.rawValue), forKey: rollTypeOverridesKey)
         saveAssignments()
+    }
+
+    func connectUndoManager(_ undoManager: UndoManager?) {
+        self.undoManager = undoManager
+        if let undoManager, undoManager.levelsOfUndo < 50 {
+            undoManager.levelsOfUndo = 50
+        }
+    }
+
+    func setSplitMode(_ mode: SplitMode) {
+        guard splitMode != mode else { return }
+        let before = makeUndoSnapshot()
+        splitMode = mode
+        parseScript(persist: false)
+        persistPreferences()
+        registerUndo(named: "更改文案拆分方式", restoring: before)
     }
 
     func parseScript(persist: Bool = true) {
@@ -179,6 +238,8 @@ final class AppModel {
                 text: text
             )
         }
+        let currentRowIDs = Set(rows.map(\.id))
+        rollTypeOverrides = rollTypeOverrides.filter { currentRowIDs.contains($0.key) }
         rebuildAssignmentIndexes()
 
         if persist {
@@ -188,13 +249,16 @@ final class AppModel {
 
     func replaceInlineRow(at index: Int, with text: String) {
         guard rows.indices.contains(index) else { return }
+        let before = makeUndoSnapshot()
         var texts = rows.map(\.text)
         texts[index] = inlineText(text)
         applyInlineRows(texts, sourceIndices: rows.indices.map { [$0] })
+        registerUndo(named: "修改文案", restoring: before)
     }
 
     func splitInlineRow(at index: Int, text: String, selection: NSRange) {
         guard rows.indices.contains(index) else { return }
+        let before = makeUndoSnapshot()
         let value = inlineText(text) as NSString
         let safeLocation = min(max(selection.location, 0), value.length)
         let safeLength = min(max(selection.length, 0), value.length - safeLocation)
@@ -206,16 +270,19 @@ final class AppModel {
         var sourceIndices = rows.indices.map { [$0] }
         sourceIndices.replaceSubrange(index...index, with: [[index], []])
         applyInlineRows(texts, sourceIndices: sourceIndices)
+        registerUndo(named: "拆分文案", restoring: before)
     }
 
     func mergeInlineRowWithPrevious(at index: Int, text: String) -> Int? {
         guard rows.indices.contains(index), index > 0 else { return nil }
+        let before = makeUndoSnapshot()
         let insertionPoint = (rows[index - 1].text as NSString).length
         var texts = rows.map(\.text)
         texts.replaceSubrange((index - 1)...index, with: [rows[index - 1].text + inlineText(text)])
         var sourceIndices = rows.indices.map { [$0] }
         sourceIndices.replaceSubrange((index - 1)...index, with: [[index - 1, index]])
         applyInlineRows(texts, sourceIndices: sourceIndices)
+        registerUndo(named: "合并文案", restoring: before)
         return insertionPoint
     }
 
@@ -227,6 +294,7 @@ final class AppModel {
     private func applyInlineRows(_ texts: [String], sourceIndices: [[Int]]) {
         let previousRows = rows
         let previousAssignments = assignments
+        let previousRollTypeOverrides = rollTypeOverrides
         splitMode = .line
         preservesEmptyAnchors = true
         scriptText = texts.joined(separator: "\n")
@@ -237,6 +305,16 @@ final class AppModel {
             to: rows,
             sourceIndices: sourceIndices
         )
+        rollTypeOverrides = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
+            guard sourceIndices.indices.contains(offset) else { return nil }
+            let inheritedType = sourceIndices[offset]
+                .compactMap { sourceIndex -> AnchorRollType? in
+                    guard previousRows.indices.contains(sourceIndex) else { return nil }
+                    return previousRollTypeOverrides[previousRows[sourceIndex].id]
+                }
+                .first
+            return inheritedType.map { (row.id, $0) }
+        })
         rebuildAssignmentIndexes()
         persistPreferences()
         if destinationDirectoryURL != nil {
@@ -263,6 +341,14 @@ final class AppModel {
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        activateSourceDirectory(url)
+        if saveAsFavorite {
+            saveFavoriteDirectory(url, showMessage: false)
+        }
+        statusMessage = "素材目录已连接：\(url.lastPathComponent)"
+    }
+
+    func acceptSourceDirectoryDrop(_ url: URL, saveAsFavorite: Bool = false) {
         activateSourceDirectory(url)
         if saveAsFavorite {
             saveFavoriteDirectory(url, showMessage: false)
@@ -305,6 +391,14 @@ final class AppModel {
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        activateDestinationDirectory(url)
+        restoreManifestFromDestination()
+        refreshSourceFiles()
+        statusMessage = "目标目录已连接：\(url.lastPathComponent)"
+    }
+
+    func acceptDestinationDirectoryDrop(_ url: URL) {
+        guard !isBusy else { return }
         activateDestinationDirectory(url)
         restoreManifestFromDestination()
         refreshSourceFiles()
@@ -388,6 +482,10 @@ final class AppModel {
             showError(title: "无法清空配对记录", message: "请先重新选择归档位置，才能删除归档副本并更新清单。")
             return
         }
+
+        // Clearing can also remove unrecorded archive files, so earlier undo entries
+        // must not appear to undo a different action after this irreversible cleanup.
+        undoManager?.removeAllActions()
 
         let recordedNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
         let mediaExtensions = Self.videoExtensions.union(Self.imageExtensions)
@@ -594,6 +692,8 @@ final class AppModel {
             return
         }
 
+        let undoState = makeUndoSnapshot()
+
         isBusy = true
         dropFeedback.isFileDragActive = false
         defer { isBusy = false }
@@ -634,6 +734,7 @@ final class AppModel {
                     copiedAt: ISO8601DateFormatter().string(from: Date())
                 )
                 assignments[rowID, default: []].append(asset)
+                rollTypeOverrides[rowID] = .bRoll
                 copiedCount += 1
             } catch {
                 showError(title: "归档失败：\(sourceName)", message: error.localizedDescription)
@@ -655,6 +756,7 @@ final class AppModel {
         saveAssignments()
         _ = saveManifest(showMessage: false)
         refreshSourceFiles()
+        registerUndo(named: "绑定素材", restoring: undoState)
         lastSaved = "本机已保存 \(Self.timeString())"
         let archiveSummary = "本次新增 \(copiedCount) 个；当前清单共 \(assignedCount) 个已绑定素材"
         statusMessage = skippedCount > 0
@@ -665,6 +767,7 @@ final class AppModel {
     func unbind(_ asset: BrollAsset) {
         guard !isBusy else { return }
         guard var rowAssets = assignments[asset.anchorKey] else { return }
+        let undoState = makeUndoSnapshot()
         guard let destinationDirectoryURL else {
             showError(title: "无法取消绑定", message: "请先重新选择归档目录，才能删除对应的归档副本并更新清单。")
             return
@@ -693,6 +796,7 @@ final class AppModel {
         saveAssignments()
         let manifestSaved = saveManifest(showMessage: false)
         refreshSourceFiles()
+        registerUndo(named: "取消素材绑定", restoring: undoState)
         lastSaved = "本机已保存 \(Self.timeString())"
         statusMessage = manifestSaved
             ? "已取消绑定并删除归档副本：\(asset.sourceName)"
@@ -759,6 +863,112 @@ final class AppModel {
 
         assignedNamesIndex = names
         assetsBySourceName = assetsByName
+    }
+
+    private func makeUndoSnapshot() -> UndoSnapshot {
+        UndoSnapshot(
+            scriptText: scriptText,
+            splitMode: splitMode,
+            preservesEmptyAnchors: preservesEmptyAnchors,
+            assignments: assignments,
+            rollTypeOverrides: rollTypeOverrides
+        )
+    }
+
+    private func registerUndo(named actionName: String, restoring snapshot: UndoSnapshot) {
+        guard let undoManager, makeUndoSnapshot() != snapshot else { return }
+        undoManager.registerUndo(withTarget: self) { model in
+            let current = model.makeUndoSnapshot()
+            model.registerUndo(named: actionName, restoring: current)
+            model.applyUndoSnapshot(snapshot)
+            model.reconcileArchiveCopies(from: current, to: snapshot)
+            model.undoManager?.setActionName(actionName)
+        }
+        undoManager.setActionName(actionName)
+    }
+
+    private func applyUndoSnapshot(_ snapshot: UndoSnapshot) {
+        scriptText = snapshot.scriptText
+        splitMode = snapshot.splitMode
+        preservesEmptyAnchors = snapshot.preservesEmptyAnchors
+        parseScript(persist: false)
+        assignments = snapshot.assignments
+        rollTypeOverrides = snapshot.rollTypeOverrides
+        rebuildAssignmentIndexes()
+        persistPreferences()
+        if destinationDirectoryURL != nil {
+            _ = saveManifest(showMessage: false)
+        }
+        lastSaved = "已撤回到 \(Self.timeString())"
+    }
+
+    private func reconcileArchiveCopies(from current: UndoSnapshot, to target: UndoSnapshot) {
+        let removedNames = current.archivedNames.subtracting(target.archivedNames)
+        if let destinationDirectoryURL {
+            for name in removedNames where name == (name as NSString).lastPathComponent {
+                try? FileManager.default.removeItem(at: destinationDirectoryURL.appendingPathComponent(name))
+            }
+        }
+
+        let restoredNames = target.archivedNames.subtracting(current.archivedNames)
+        guard !restoredNames.isEmpty,
+              let sourceDirectoryURL,
+              let destinationDirectoryURL else {
+            if !removedNames.isEmpty { refreshSourceFiles() }
+            return
+        }
+
+        var copies: [ArchiveCopy] = []
+        for asset in target.assignments.values.flatMap({ $0 }) where restoredNames.contains(asset.outputName) {
+            let sourceURL = sourceDirectoryURL.appendingPathComponent(asset.sourceName)
+            let destinationURL = destinationDirectoryURL.appendingPathComponent(asset.outputName)
+            guard !FileManager.default.fileExists(atPath: destinationURL.path),
+                  FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
+            copies.append(ArchiveCopy(
+                sourceURL: sourceURL,
+                destinationURL: destinationURL,
+                didStartAccess: sourceURL.startAccessingSecurityScopedResource(),
+                outputName: asset.outputName
+            ))
+        }
+
+        guard !copies.isEmpty else {
+            if !removedNames.isEmpty { refreshSourceFiles() }
+            statusMessage = "撤回了绑定记录；无法从当前素材目录恢复已删除的归档副本"
+            return
+        }
+
+        statusMessage = "正在恢复已删除的归档副本…"
+        let copyTask = Task.detached(priority: .utility) {
+            var failedNames: [String] = []
+            defer {
+                for copy in copies where copy.didStartAccess {
+                    copy.sourceURL.stopAccessingSecurityScopedResource()
+                }
+            }
+            for copy in copies {
+                do {
+                    try FileManager.default.copyItem(at: copy.sourceURL, to: copy.destinationURL)
+                } catch {
+                    failedNames.append(copy.outputName)
+                }
+            }
+            return failedNames
+        }
+
+        Task { @MainActor [weak self] in
+            let failedNames = await copyTask.value
+            guard let self else { return }
+            self.refreshSourceFiles()
+            if !failedNames.isEmpty {
+                self.showError(
+                    title: "归档副本未能全部恢复",
+                    message: "撤回记录已恢复，但以下文件复制失败：\(failedNames.prefix(3).joined(separator: "、"))"
+                )
+            } else {
+                self.statusMessage = "已恢复 \(copies.count) 个归档副本"
+            }
+        }
     }
 
     private func currentManifest() -> BrollManifest {
@@ -1042,6 +1252,9 @@ final class AppModel {
     }
 
     private func activateSourceDirectory(_ url: URL) {
+        if sourceDirectoryURL?.standardizedFileURL != url.standardizedFileURL {
+            undoManager?.removeAllActions()
+        }
         if sourceAccessActive {
             sourceDirectoryURL?.stopAccessingSecurityScopedResource()
         }
@@ -1052,6 +1265,9 @@ final class AppModel {
     }
 
     private func activateDestinationDirectory(_ url: URL) {
+        if destinationDirectoryURL?.standardizedFileURL != url.standardizedFileURL {
+            undoManager?.removeAllActions()
+        }
         if destinationAccessActive {
             destinationDirectoryURL?.stopAccessingSecurityScopedResource()
         }

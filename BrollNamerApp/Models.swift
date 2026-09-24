@@ -47,6 +47,18 @@ enum SplitMode: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum AnchorRollType: String, Codable, Equatable {
+    case aRoll
+    case bRoll
+
+    var title: String {
+        switch self {
+        case .aRoll: return "A-roll"
+        case .bRoll: return "B-roll"
+        }
+    }
+}
+
 enum BrollMode: String, Codable {
     case fs = "FS"
     // Kept only so older manifests can still be decoded and migrated.

@@ -19,6 +19,7 @@ struct BrollNamerApp: App {
         .defaultSize(width: 1600, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            UndoRedoCommands()
             CommandMenu("工作区") {
                 Button("编辑 / 导入文案") {
                     model.isScriptEditorPresented = true
@@ -40,6 +41,26 @@ struct BrollNamerApp: App {
                     model.previewManifest()
                 }
             }
+        }
+    }
+}
+
+private struct UndoRedoCommands: Commands {
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some Commands {
+        CommandGroup(replacing: .undoRedo) {
+            Button("撤销") {
+                undoManager?.undo()
+            }
+            .keyboardShortcut("z", modifiers: [.command])
+            .disabled(undoManager?.canUndo != true)
+
+            Button("重做") {
+                undoManager?.redo()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(undoManager?.canRedo != true)
         }
     }
 }

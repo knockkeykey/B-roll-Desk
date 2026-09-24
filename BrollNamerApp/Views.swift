@@ -13,6 +13,8 @@ private enum ListPaneMetrics {
 
 struct ContentView: View {
     @Bindable var model: AppModel
+    @Environment(\.undoManager) private var undoManager
+    @StateObject private var folderDragFeedback = FolderDragFeedbackModel()
     @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
     @State private var isSidebarVisible = true
     @State private var isSidebarMounted = true
@@ -92,6 +94,8 @@ struct ContentView: View {
             DetailView(model: model, isMediaPreviewVisible: $isMediaPreviewVisible)
                 .frame(minWidth: isMediaPreviewVisible ? 780 : 420, idealWidth: 820)
         }
+        .onDrop(of: [UTType.fileURL], delegate: WholeWindowDirectoryDropDelegate(feedback: folderDragFeedback))
+        .environmentObject(folderDragFeedback)
         .frame(minWidth: minimumContentWidth)
         .padding(.top, -28)
         .ignoresSafeArea(.container, edges: .top)
@@ -132,6 +136,12 @@ struct ContentView: View {
                         .pointerCursor()
         } message: {
             Text("将删除当前归档位置中已绑定及符合命名规则的旧素材副本，并更新 JSON 和 Markdown 清单。素材目录中的原始文件会保留。")
+        }
+        .onAppear {
+            model.connectUndoManager(undoManager)
+        }
+        .onChange(of: undoManager) { _, manager in
+            model.connectUndoManager(manager)
         }
         .preferredColorScheme(preferredColorScheme)
         .font(.system(size: 16))
@@ -461,7 +471,8 @@ private struct SidebarView: View {
                 title: "B-roll 配对台",
                 systemImage: "photo.stack",
                 showsTitleIcon: false,
-                titleFont: .custom("SmileySans-Oblique", size: 27).weight(.bold),
+                showsWaveUnderline: true,
+                titleFont: .custom("SmileySans-Oblique", size: 22).weight(.bold),
                 actions: [
                     PaneHeaderAction(systemImage: "sidebar.left", help: "收起侧边栏") {
                         withAnimation(.easeInOut(duration: 0.24)) {
@@ -486,7 +497,8 @@ private struct SidebarView: View {
                                 value: model.destinationDirectoryName,
                                 isConfigured: model.destinationDirectoryURL != nil,
                                 action: model.chooseDestinationDirectory,
-                                openAction: model.revealDestinationDirectory
+                                openAction: model.revealDestinationDirectory,
+                                onDirectoryDrop: { model.acceptDestinationDirectoryDrop($0) }
                             )
 
                             Divider()
@@ -537,8 +549,10 @@ private struct SidebarView: View {
 
                             HStack(spacing: 8) {
                                 Label("JSON 文件", systemImage: "curlybraces")
-                                    .font(.system(size: 16, weight: .medium))
+                                    .font(.system(size: 15, weight: .medium))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.72)
                                 Spacer(minLength: 0)
                                 ManifestIconButton(title: "在 Finder 新标签页中显示 JSON 清单", systemImage: "arrow.up.forward.app") {
                                     model.revealManifest()
@@ -546,13 +560,16 @@ private struct SidebarView: View {
                                 ManifestIconButton(title: "预览 JSON 清单内容", systemImage: "eye") {
                                     model.previewManifest()
                                 }
+                                ManifestIconButton(
+                                    title: "清空配对和归档副本",
+                                    systemImage: "trash",
+                                    hoverTint: .red
+                                ) {
+                                    model.requestClearAssignments()
+                                }
                             }
 
                             Divider()
-
-                            SidebarActionButton(title: "清空配对和归档副本", systemImage: "trash", role: .destructive) {
-                                model.requestClearAssignments()
-                            }
                         }
                     }
 
@@ -618,42 +635,41 @@ private struct SidebarSection<Content: View>: View {
 private struct SidebarStatusView: View {
     @Bindable var model: AppModel
 
-    private var isConnected: Bool {
-        model.sourceDirectoryURL != nil && model.destinationDirectoryURL != nil
-    }
-
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: isConnected ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(isConnected ? Color.green : Color.secondary)
-                .font(.system(size: 17))
+        VStack(alignment: .leading, spacing: 8) {
+            Label("操作状态", systemImage: "info.circle")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+                .hoverHelp("显示最近一次操作结果和本机保存状态")
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text(model.statusMessage)
-                    .font(.system(size: 16))
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "text.alignleft")
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .font(.system(size: 16))
 
-                Text(model.lastSaved)
-                    .font(.system(size: 14))
-                    .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.statusMessage)
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+
+                    Text(model.lastSaved)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.tertiary)
+                }
+
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: 0)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            (isConnected ? Color.green : Color.secondary).opacity(0.08),
-            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-        )
+        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(
-                    (isConnected ? Color.green : Color.secondary).opacity(0.14),
-                    lineWidth: 0.5
-                )
+                .strokeBorder(.separator.opacity(0.55), lineWidth: 0.5)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("操作状态。最近操作：\(model.statusMessage)。\(model.lastSaved)")
     }
 }
 
@@ -663,6 +679,7 @@ private struct DirectoryChoiceRow: View {
     let isConfigured: Bool
     let action: () -> Void
     let openAction: () -> Void
+    let onDirectoryDrop: (URL) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -713,6 +730,7 @@ private struct DirectoryChoiceRow: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(.separator.opacity(0.55), lineWidth: 0.5)
             }
+            .modifier(DirectoryDropTargetModifier(onDrop: onDirectoryDrop))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -726,7 +744,7 @@ private struct ConfigurationStatusIcon: View {
     var body: some View {
         Image(systemName: isConfigured ? "checkmark.circle.fill" : "circle.dotted")
             .font(.system(size: 14))
-            .foregroundStyle(isConfigured ? Color.green : Color.orange)
+            .foregroundStyle(isConfigured ? Color.blue : Color.orange)
             .hoverHelp(isConfigured ? readyHelp : waitingHelp)
             .accessibilityLabel(isConfigured ? readyHelp : waitingHelp)
     }
@@ -822,7 +840,25 @@ private struct SidebarActionButton: View {
 private struct ManifestIconButton: View {
     let title: String
     let systemImage: String
+    var hoverTint: Color?
     let action: () -> Void
+    @State private var isHovered = false
+
+    init(
+        title: String,
+        systemImage: String,
+        hoverTint: Color? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.hoverTint = hoverTint
+        self.action = action
+    }
+
+    private var tint: Color {
+        isHovered ? (hoverTint ?? .primary) : .primary
+    }
 
     var body: some View {
         Button(action: action) {
@@ -830,9 +866,10 @@ private struct ManifestIconButton: View {
                 .font(.system(size: 16))
                 .frame(width: 42, height: 36)
         }
-        .buttonStyle(SidebarActionButtonStyle(tint: .primary))
+        .buttonStyle(SidebarActionButtonStyle(tint: tint))
         .hoverHelp(title)
         .accessibilityLabel(title)
+        .onHover { isHovered = $0 }
         .pointerCursor()
     }
 }
@@ -988,8 +1025,8 @@ private struct AnchorListView: View {
                 Spacer(minLength: 4)
                 HStack(spacing: 4) {
                     AnchorHeaderMetric(value: model.scriptCharacterCount, label: "文案字数", shortLabel: "字", detail: "含标点，不计空白", tint: .secondary)
-                    AnchorHeaderMetric(value: model.aRollAnchorCount, label: "A-roll 锚点", shortLabel: "A", detail: "尚未绑定素材", tint: .blue)
-                    AnchorHeaderMetric(value: model.bRollAnchorCount, label: "B-roll 锚点", shortLabel: "B", detail: "已绑定 \(model.assignedCount) 个素材", tint: .green)
+                    AnchorHeaderMetric(value: model.aRollAnchorCount, label: "A-roll 锚点", shortLabel: "A", detail: "主讲口播，不需要绑定 B-roll", tint: .blue)
+                    AnchorHeaderMetric(value: model.bRollAnchorCount, label: "B-roll 锚点", shortLabel: "B", detail: "待绑定 \(model.pendingBrollCount) 条；共绑定 \(model.assignedCount) 个素材", tint: .green)
                 }
                 Button { model.isScriptEditorPresented = true } label: {
                     Image(systemName: "square.and.pencil")
@@ -1168,6 +1205,7 @@ private struct PaneHeader: View {
     let title: String
     let systemImage: String
     let showsTitleIcon: Bool
+    let showsWaveUnderline: Bool
     let titleFont: Font?
     let count: String?
     let actions: [PaneHeaderAction]
@@ -1176,6 +1214,7 @@ private struct PaneHeader: View {
         title: String,
         systemImage: String,
         showsTitleIcon: Bool = true,
+        showsWaveUnderline: Bool = false,
         titleFont: Font? = nil,
         count: String? = nil,
         actions: [PaneHeaderAction] = []
@@ -1183,6 +1222,7 @@ private struct PaneHeader: View {
         self.title = title
         self.systemImage = systemImage
         self.showsTitleIcon = showsTitleIcon
+        self.showsWaveUnderline = showsWaveUnderline
         self.titleFont = titleFont
         self.count = count
         self.actions = actions
@@ -1190,16 +1230,46 @@ private struct PaneHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            HStack(spacing: 8) {
-                if showsTitleIcon {
-                    Image(systemName: systemImage)
-                        .accessibilityHidden(true)
+            if showsWaveUnderline {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(titleFont ?? .system(size: 17, weight: .semibold))
+                        .fixedSize(horizontal: true, vertical: false)
+                    HeaderWaveUnderline()
+                        .stroke(
+                            Color.accentColor.opacity(0.82),
+                            style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round)
+                        )
+                        .frame(width: 120, height: 11)
+                        .overlay(alignment: .leading) {
+                            Circle()
+                                .stroke(Color.accentColor.opacity(0.9), lineWidth: 1.5)
+                                .frame(width: 8, height: 8)
+                                .offset(x: -1)
+                        }
+                        .overlay(alignment: .trailing) {
+                            Circle()
+                                .stroke(Color.accentColor.opacity(0.9), lineWidth: 1.5)
+                                .frame(width: 8, height: 8)
+                                .offset(x: 1)
+                        }
                 }
-                Text(title)
-            }
+                .frame(minWidth: 150, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .offset(y: 8)
+                .accessibilityElement(children: .combine)
+            } else {
+                HStack(spacing: 8) {
+                    if showsTitleIcon {
+                        Image(systemName: systemImage)
+                            .accessibilityHidden(true)
+                    }
+                    Text(title)
+                }
                 .font(titleFont ?? .system(size: 17, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
+            }
             Spacer(minLength: 8)
             if let count {
                 Text(count)
@@ -1224,6 +1294,23 @@ private struct PaneHeader: View {
         .overlay(alignment: .bottom) {
             Divider()
         }
+    }
+}
+
+private struct HeaderWaveUnderline: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let startX: CGFloat = 4
+        let endX = rect.width - 4
+        let centerY = rect.midY
+        path.move(to: CGPoint(x: startX, y: centerY))
+        for step in 1...32 {
+            let progress = CGFloat(step) / 32
+            let x = startX + (endX - startX) * progress
+            let y = centerY + sin(progress * .pi * 4) * min(2.2, rect.height * 0.22)
+            path.addLine(to: CGPoint(x: x, y: y))
+        }
+        return path
     }
 }
 
@@ -1261,7 +1348,9 @@ private struct AnchorRowView: View {
 
     private var assets: [BrollAsset] { model.assets(for: row.id) }
     private var isDropTarget: Bool { dropState.isActive }
-    private var isAssigned: Bool { !assets.isEmpty }
+    private var isPendingBinding: Bool {
+        model.rollType(for: row.id) == .bRoll && assets.isEmpty
+    }
     private var rowFill: Color {
         if isDropTarget { return Color.accentColor.opacity(0.13) }
         return Color.primary.opacity(0.02)
@@ -1291,9 +1380,9 @@ private struct AnchorRowView: View {
                             .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary.opacity(0.72))
                         Spacer(minLength: 8)
                         RollTypeTag(
-                            isBroll: isAssigned,
+                            isBroll: model.rollType(for: row.id) == .bRoll,
                             assetCount: assets.count,
-                            onTap: { model.explainARollTag() }
+                            onTap: { model.toggleRollType(for: row.id) }
                         )
                     }
                     if isEditing {
@@ -1321,7 +1410,10 @@ private struct AnchorRowView: View {
             }
             .contentShape(Rectangle())
 
-            if !assets.isEmpty {
+            if isPendingBinding {
+                PendingAssetChip()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            } else if !assets.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(assets) { asset in
                         AssetChip(
@@ -1352,6 +1444,35 @@ private struct AnchorRowView: View {
             delegate: FileDropDelegate(rowID: row.id, model: model, feedback: model.dropFeedback, rowState: dropState)
         )
         .animation(.snappy(duration: 0.2), value: assets.count)
+        .animation(.snappy(duration: 0.2), value: isPendingBinding)
+    }
+}
+
+private struct PendingAssetChip: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo.stack")
+                .foregroundStyle(Color.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("待绑定素材")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.green)
+                Text("从素材列表拖拽素材到这条文案")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.green.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(Color.green.opacity(0.35), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("B-roll 待绑定素材；从素材列表拖拽素材到这条文案")
     }
 }
 
@@ -1473,18 +1594,15 @@ private struct RollTypeTag: View {
     let assetCount: Int
     let onTap: () -> Void
 
+    private var isPendingBinding: Bool { isBroll && assetCount == 0 }
     private var tint: Color { isBroll ? .green : .accentColor }
 
     var body: some View {
-        if isBroll {
+        Button(action: onTap) {
             tag
-        } else {
-            Button(action: onTap) {
-                tag
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
         }
+        .buttonStyle(.plain)
+        .pointerCursor()
     }
 
     private var tag: some View {
@@ -1505,11 +1623,13 @@ private struct RollTypeTag: View {
             Capsule()
                 .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
         }
-        .hoverHelp(isBroll
-            ? "已绑定 \(assetCount) 个视频或图片，文件已复制到归档目录"
-            : "点击查看 A-roll 说明和绑定方法"
+        .hoverHelp(isPendingBinding
+            ? "B-roll 待绑定；可从素材列表拖拽素材到这条文案。点击切换为 A-roll。"
+            : (isBroll
+                ? "已绑定 \(assetCount) 个视频或图片，点击切换为 A-roll。"
+                : "点击切换为 B-roll，之后可绑定视频或图片。")
         )
-        .accessibilityLabel(isBroll ? "B-roll，已绑定 \(assetCount) 个素材" : "A-roll，尚未绑定 B-roll 素材")
+        .accessibilityLabel("\(isBroll ? "B-roll" : "A-roll")，点击切换为\(isBroll ? "A-roll" : "B-roll")")
     }
 }
 
@@ -1661,6 +1781,7 @@ private struct MaterialListHeader: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(.separator.opacity(0.55), lineWidth: 0.5)
                 }
+                .modifier(DirectoryDropTargetModifier { model.acceptSourceDirectoryDrop($0) })
 
                 Divider()
                     .frame(height: 24)
@@ -1673,6 +1794,7 @@ private struct MaterialListHeader: View {
             .overlay(alignment: .bottom) {
                 Divider()
             }
+
         }
     }
 
@@ -1722,7 +1844,15 @@ private struct DirectoryManagerPopover: View {
                 }
             }
 
-            DirectoryPopoverAction(title: "选择素材目录…", systemImage: "folder.badge.plus", isPrimary: true) {
+            DirectoryPopoverAction(
+                title: "选择素材目录…",
+                systemImage: "folder.badge.plus",
+                isPrimary: true,
+                onDirectoryDrop: { url in
+                    model.acceptSourceDirectoryDrop(url)
+                    dismiss()
+                }
+            ) {
                 model.chooseSourceDirectory()
                 dismiss()
             }
@@ -1734,7 +1864,14 @@ private struct DirectoryManagerPopover: View {
                 }
             }
 
-            DirectoryPopoverAction(title: "选择并收藏新目录…", systemImage: "bookmark") {
+            DirectoryPopoverAction(
+                title: "选择并收藏新目录…",
+                systemImage: "bookmark",
+                onDirectoryDrop: { url in
+                    model.acceptSourceDirectoryDrop(url, saveAsFavorite: true)
+                    dismiss()
+                }
+            ) {
                 model.chooseAndSaveSourceDirectory()
                 dismiss()
             }
@@ -1778,8 +1915,23 @@ private struct DirectoryPopoverAction: View {
     let title: String
     let systemImage: String
     var isPrimary = false
+    var onDirectoryDrop: ((URL) -> Void)?
     let action: () -> Void
     @State private var isHovered = false
+
+    init(
+        title: String,
+        systemImage: String,
+        isPrimary: Bool = false,
+        onDirectoryDrop: ((URL) -> Void)? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.isPrimary = isPrimary
+        self.onDirectoryDrop = onDirectoryDrop
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
@@ -1803,6 +1955,20 @@ private struct DirectoryPopoverAction: View {
         .foregroundStyle(isPrimary ? Color.accentColor : Color.primary)
         .onHover { isHovered = $0 }
         .pointerCursor()
+        .modifier(OptionalDirectoryDropTargetModifier(onDrop: onDirectoryDrop))
+    }
+}
+
+private struct OptionalDirectoryDropTargetModifier: ViewModifier {
+    let onDrop: ((URL) -> Void)?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let onDrop {
+            content.modifier(DirectoryDropTargetModifier(onDrop: onDrop))
+        } else {
+            content
+        }
     }
 }
 
@@ -1887,6 +2053,7 @@ private struct DetailView: View {
                         }
                         .buttonStyle(.bordered)
                         .pointerCursor()
+                        .modifier(DirectoryDropTargetModifier { model.acceptSourceDirectoryDrop($0) })
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -2290,6 +2457,23 @@ private struct SourceFileRow: View {
     let isAssigned: Bool
     let isSelected: Bool
 
+    private var rowFill: Color {
+        if isSelected { return Color.orange.opacity(0.17) }
+        if isAssigned { return Color.green.opacity(0.035) }
+        return .clear
+    }
+
+    private var rowBorder: Color {
+        if isAssigned { return Color.green.opacity(0.72) }
+        if isSelected { return Color.orange.opacity(0.8) }
+        return .clear
+    }
+
+    private var rowBorderWidth: CGFloat {
+        if isAssigned { return 1.1 }
+        return isSelected ? 1 : 0
+    }
+
     private var assignedAssets: [BrollAsset] {
         model.assignedAssets(forSourceName: file.name)
     }
@@ -2316,28 +2500,23 @@ private struct SourceFileRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(isSelected ? Color.orange : Color.primary)
-                Text(isAssigned ? "已绑定" : MediaFormatting.bytes(file.byteCount))
+                Text(MediaFormatting.bytes(file.byteCount))
                     .font(.system(size: 14))
-                    .foregroundStyle(isAssigned ? .green : .secondary)
+                    .foregroundStyle(.secondary)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 5)
-            if isAssigned {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(isSelected ? Color.orange : Color.green)
-                    .font(.caption)
-            }
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            isSelected ? Color.orange.opacity(0.17) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
+        .background(rowFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isSelected ? Color.orange.opacity(0.8) : Color.clear, lineWidth: 1)
+                .strokeBorder(
+                    rowBorder,
+                    lineWidth: rowBorderWidth
+                )
         }
         .contentShape(Rectangle())
         .onDrag {
@@ -2828,7 +3007,13 @@ private struct ScriptEditorSheet: View {
                     }
 
                 HStack {
-                    Picker("拆分方式", selection: $model.splitMode) {
+                    Picker(
+                        "拆分方式",
+                        selection: Binding(
+                            get: { model.splitMode },
+                            set: { model.setSplitMode($0) }
+                        )
+                    ) {
                         ForEach(SplitMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
@@ -2874,9 +3059,6 @@ private struct ScriptEditorSheet: View {
         }
         .frame(minWidth: 680, minHeight: 500)
         .onChange(of: model.scriptText) { _, _ in
-            model.parseScript()
-        }
-        .onChange(of: model.splitMode) { _, _ in
             model.parseScript()
         }
     }
