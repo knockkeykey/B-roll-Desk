@@ -1208,6 +1208,7 @@ private struct PaneHeader: View {
     let showsWaveUnderline: Bool
     let titleFont: Font?
     let count: String?
+    let disablesTitleIconAnimation: Bool
     let actions: [PaneHeaderAction]
 
     init(
@@ -1217,6 +1218,7 @@ private struct PaneHeader: View {
         showsWaveUnderline: Bool = false,
         titleFont: Font? = nil,
         count: String? = nil,
+        disablesTitleIconAnimation: Bool = false,
         actions: [PaneHeaderAction] = []
     ) {
         self.title = title
@@ -1225,6 +1227,7 @@ private struct PaneHeader: View {
         self.showsWaveUnderline = showsWaveUnderline
         self.titleFont = titleFont
         self.count = count
+        self.disablesTitleIconAnimation = disablesTitleIconAnimation
         self.actions = actions
     }
 
@@ -1262,6 +1265,11 @@ private struct PaneHeader: View {
                 HStack(spacing: 8) {
                     if showsTitleIcon {
                         Image(systemName: systemImage)
+                            .transaction { transaction in
+                                if disablesTitleIconAnimation {
+                                    transaction.animation = nil
+                                }
+                            }
                             .accessibilityHidden(true)
                     }
                     Text(title)
@@ -1403,7 +1411,6 @@ private struct AnchorRowView: View {
                             .lineSpacing(2)
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2, perform: beginEditing)
-                            .hoverHelp("双击编辑文案；回车拆分，块首 Backspace 合并到上一条")
                             .pointerCursor()
                     }
                 }
@@ -2225,6 +2232,7 @@ private struct MediaPreviewView: View {
                 title: "当前媒体",
                 systemImage: file?.kind.systemImage ?? "photo.stack",
                 count: file == nil ? "未选择" : nil,
+                disablesTitleIconAnimation: true,
                 actions: [
                     PaneHeaderAction(systemImage: "chevron.right", help: "收起当前媒体栏") {
                         withAnimation(.easeInOut(duration: 0.18)) {
@@ -2305,6 +2313,9 @@ private struct MediaPreviewView: View {
             } else {
                 ContentUnavailableView {
                     Label("选择素材", systemImage: "photo.stack")
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
                 } description: {
                     Text("从素材列表选择")
                 }
