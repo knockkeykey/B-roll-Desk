@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import Observation
 import UniformTypeIdentifiers
@@ -15,6 +16,7 @@ final class AppModel {
 
     var scriptText: String
     var splitMode: SplitMode
+    private var preservesEmptyAnchors: Bool
     var prefix: String
     var anchorSearchText = ""
     let dropFeedback = DropFeedbackModel()
@@ -52,6 +54,7 @@ final class AppModel {
 
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
+    private let preservesEmptyAnchorsKey = "broll-namer-preserves-empty-anchors"
     private let prefixKey = "broll-namer-prefix"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
@@ -60,6 +63,7 @@ final class AppModel {
     init() {
         scriptText = defaults.string(forKey: scriptKey) ?? ""
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
+        preservesEmptyAnchors = defaults.bool(forKey: preservesEmptyAnchorsKey)
         prefix = defaults.string(forKey: prefixKey) ?? ""
 
         restoreSavedDirectories()
@@ -156,12 +160,13 @@ final class AppModel {
     func persistPreferences() {
         defaults.set(scriptText, forKey: scriptKey)
         defaults.set(splitMode.rawValue, forKey: splitModeKey)
+        defaults.set(preservesEmptyAnchors, forKey: preservesEmptyAnchorsKey)
         defaults.set(prefix, forKey: prefixKey)
         saveAssignments()
     }
 
     func parseScript(persist: Bool = true) {
-        let chunks = ScriptParser.split(scriptText, mode: splitMode)
+        let chunks = ScriptParser.split(scriptText, mode: splitMode, preservingEmptyLines: preservesEmptyAnchors)
         var occurrences: [String: Int] = [:]
 
         rows = chunks.enumerated().map { offset, text in
@@ -179,6 +184,65 @@ final class AppModel {
         if persist {
             persistPreferences()
         }
+    }
+
+    func replaceInlineRow(at index: Int, with text: String) {
+        guard rows.indices.contains(index) else { return }
+        var texts = rows.map(\.text)
+        texts[index] = inlineText(text)
+        applyInlineRows(texts, sourceIndices: rows.indices.map { [$0] })
+    }
+
+    func splitInlineRow(at index: Int, text: String, selection: NSRange) {
+        guard rows.indices.contains(index) else { return }
+        let value = inlineText(text) as NSString
+        let safeLocation = min(max(selection.location, 0), value.length)
+        let safeLength = min(max(selection.length, 0), value.length - safeLocation)
+        let upper = value.substring(to: safeLocation)
+        let lower = value.substring(from: safeLocation + safeLength)
+
+        var texts = rows.map(\.text)
+        texts.replaceSubrange(index...index, with: [upper, lower])
+        var sourceIndices = rows.indices.map { [$0] }
+        sourceIndices.replaceSubrange(index...index, with: [[index], []])
+        applyInlineRows(texts, sourceIndices: sourceIndices)
+    }
+
+    func mergeInlineRowWithPrevious(at index: Int, text: String) -> Int? {
+        guard rows.indices.contains(index), index > 0 else { return nil }
+        let insertionPoint = (rows[index - 1].text as NSString).length
+        var texts = rows.map(\.text)
+        texts.replaceSubrange((index - 1)...index, with: [rows[index - 1].text + inlineText(text)])
+        var sourceIndices = rows.indices.map { [$0] }
+        sourceIndices.replaceSubrange((index - 1)...index, with: [[index - 1, index]])
+        applyInlineRows(texts, sourceIndices: sourceIndices)
+        return insertionPoint
+    }
+
+    private func inlineText(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private func applyInlineRows(_ texts: [String], sourceIndices: [[Int]]) {
+        let previousRows = rows
+        let previousAssignments = assignments
+        splitMode = .line
+        preservesEmptyAnchors = true
+        scriptText = texts.joined(separator: "\n")
+        parseScript(persist: false)
+        assignments = AnchorAssignmentMigration.migrate(
+            previousAssignments,
+            from: previousRows,
+            to: rows,
+            sourceIndices: sourceIndices
+        )
+        rebuildAssignmentIndexes()
+        persistPreferences()
+        if destinationDirectoryURL != nil {
+            _ = saveManifest(showMessage: false)
+        }
+        lastSaved = "本机已保存 \(Self.timeString())"
     }
 
     func chooseSourceDirectory() {
@@ -414,8 +478,42 @@ final class AppModel {
         }
         guard saveManifest(showMessage: false) else { return }
         let url = destinationDirectoryURL.appendingPathComponent("broll-manifest.json")
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        guard revealInFinder(url) else { return }
         statusMessage = "已在 Finder 中定位 JSON 清单"
+    }
+
+    @discardableResult
+    func revealInFinder(_ url: URL) -> Bool {
+        do {
+            try FinderTabOpener.reveal(url)
+            return true
+        } catch let error as FinderTabError {
+            showError(
+                title: "无法在 Finder 标签页中定位",
+                message: error.localizedDescription,
+                action: error.alertAction
+            )
+            return false
+        } catch {
+            showError(title: "无法在 Finder 标签页中定位", message: error.localizedDescription)
+            return false
+        }
+    }
+
+    func openAccessibilitySettings() {
+        guard let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
+            return
+        }
+
+        guard NSWorkspace.shared.open(settingsURL) else {
+            showError(
+                title: "无法打开辅助功能设置",
+                message: "请手动前往“系统设置 > 隐私与安全性 > 辅助功能”，启用 B-roll 配对台。"
+            )
+            return
+        }
+
+        statusMessage = "请在辅助功能中启用 B-roll 配对台，然后返回重试"
     }
 
     func previewManifest() {
@@ -441,6 +539,7 @@ final class AppModel {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             scriptText = try String(contentsOf: url, encoding: .utf8)
+            preservesEmptyAnchors = false
             parseScript()
             statusMessage = "已导入文案：\(url.lastPathComponent)"
         } catch {
@@ -451,7 +550,7 @@ final class AppModel {
     func reveal(_ asset: BrollAsset) {
         guard let destinationDirectoryURL else { return }
         let url = destinationDirectoryURL.appendingPathComponent(asset.outputName)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        revealInFinder(url)
     }
 
     func sourceFile(for asset: BrollAsset) -> SourceFile? {
@@ -477,7 +576,7 @@ final class AppModel {
         guard !isBusy else { return }
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
         guard isPrefixValid else {
-            showError(title: "请填写期数 / 前缀", message: "绑定素材前，请先在左侧“归档设置”中填写期数或前缀。")
+            showError(title: "请填写命名前缀", message: "绑定素材前，请先在左侧“归档设置”中填写命名前缀。")
             return
         }
         guard sourceDirectoryURL != nil else {
@@ -925,7 +1024,7 @@ final class AppModel {
 
     private func revealDirectory(_ url: URL?) {
         guard let url else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        revealInFinder(url)
     }
 
     private func restoreDirectories() {
@@ -993,12 +1092,95 @@ final class AppModel {
         }
     }
 
-    private func showError(title: String, message: String) {
+    private func showError(title: String, message: String, action: AppAlertAction? = nil) {
         statusMessage = message
-        alert = AppAlert(title: title, message: message)
+        alert = AppAlert(title: title, message: message, action: action)
     }
 
     private static func timeString() -> String {
         DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .short)
+    }
+}
+
+private enum FinderTabOpener {
+    static func reveal(_ url: URL) throws {
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        let options = [promptKey: true] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(options) else {
+            throw FinderTabError.accessibilityPermissionRequired
+        }
+
+        let targetURL = url.standardizedFileURL
+        let isDirectory = (try? targetURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        let folderURL = isDirectory ? targetURL : targetURL.deletingLastPathComponent()
+        let shouldSelectTarget = !isDirectory && FileManager.default.fileExists(atPath: targetURL.path)
+        let folderPath = appleScriptString(folderURL.path)
+        let targetPath = appleScriptString(targetURL.path)
+
+        let selectionCommand = shouldSelectTarget
+            ? "set selection to {(POSIX file \"\(targetPath)\") as alias}"
+            : ""
+
+        let source = """
+        tell application "Finder"
+            activate
+            set existingWindowCount to count of Finder windows
+        end tell
+
+        if existingWindowCount > 0 then
+            tell application "System Events"
+                tell process "Finder"
+                    keystroke "t" using {command down}
+                end tell
+            end tell
+            delay 0.12
+        else
+            tell application "Finder"
+                make new Finder window
+            end tell
+        end if
+
+        tell application "Finder"
+            set target of front Finder window to (POSIX file "\(folderPath)" as alias)
+            \(selectionCommand)
+        end tell
+        """
+
+        var errorInfo: NSDictionary?
+        guard NSAppleScript(source: source)?.executeAndReturnError(&errorInfo) != nil else {
+            throw FinderTabError.automationFailed(errorInfo?.description ?? "Finder 自动化未完成。")
+        }
+    }
+
+    private static func appleScriptString(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\t", with: "\\t")
+    }
+}
+
+private enum FinderTabError: LocalizedError {
+    case accessibilityPermissionRequired
+    case automationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .accessibilityPermissionRequired:
+            return "请在辅助功能设置中启用 B-roll 配对台，然后返回这里再试一次。"
+        case .automationFailed(let details):
+            return "请允许 B-roll 配对台控制 Finder 和 System Events，然后重试。\n\n\(details)"
+        }
+    }
+
+    var alertAction: AppAlertAction? {
+        switch self {
+        case .accessibilityPermissionRequired:
+            return .openAccessibilitySettings
+        case .automationFailed:
+            return nil
+        }
     }
 }

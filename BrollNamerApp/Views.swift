@@ -15,6 +15,8 @@ struct ContentView: View {
     @Bindable var model: AppModel
     @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
     @State private var isSidebarVisible = true
+    @State private var isSidebarMounted = true
+    @State private var isMediaPreviewVisible = true
 
     private var theme: AppTheme {
         AppTheme(rawValue: themeRawValue) ?? .system
@@ -28,17 +30,69 @@ struct ContentView: View {
         }
     }
 
+    private var sidebarVisibility: Binding<Bool> {
+        Binding(
+            get: { isSidebarVisible },
+            set: { setSidebarVisible($0) }
+        )
+    }
+
+    private var minimumContentWidth: CGFloat {
+        let sidebarWidth: CGFloat = isSidebarVisible ? 270 : 0
+        let detailWidth: CGFloat = isMediaPreviewVisible ? 780 : 420
+        let outerDividerCount: CGFloat = isSidebarMounted ? 2 : 1
+        let previewDividerCount: CGFloat = isMediaPreviewVisible ? 1 : 0
+        return sidebarWidth + 390 + detailWidth + (outerDividerCount + previewDividerCount) * 8
+    }
+
+    private func setSidebarVisible(_ isVisible: Bool) {
+        guard isVisible != isSidebarVisible else { return }
+
+        if isVisible {
+            isSidebarMounted = true
+            DispatchQueue.main.async {
+                withAnimation(.easeInOut(duration: 0.24)) {
+                    isSidebarVisible = true
+                }
+            }
+        } else {
+            withAnimation(.easeInOut(duration: 0.24)) {
+                isSidebarVisible = false
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
+                if !isSidebarVisible {
+                    isSidebarMounted = false
+                }
+            }
+        }
+    }
+
     var body: some View {
         HSplitView {
-            if isSidebarVisible {
-                SidebarView(model: model, themeRawValue: $themeRawValue, isSidebarVisible: $isSidebarVisible)
-                    .frame(minWidth: 238, idealWidth: 276, maxWidth: 340)
+            if isSidebarMounted {
+                SidebarView(model: model, themeRawValue: $themeRawValue, isSidebarVisible: sidebarVisibility)
+                    .frame(
+                        minWidth: isSidebarVisible ? 270 : 0,
+                        idealWidth: isSidebarVisible ? 300 : 0,
+                        maxWidth: isSidebarVisible ? 360 : 0
+                    )
+                    .opacity(isSidebarVisible ? 1 : 0)
+                    .clipped()
+                    .allowsHitTesting(isSidebarVisible)
+                    .accessibilityHidden(!isSidebarVisible)
+                    .animation(.easeInOut(duration: 0.24), value: isSidebarVisible)
             }
-            AnchorListView(model: model, isSidebarVisible: $isSidebarVisible)
+            AnchorListView(model: model, isSidebarVisible: sidebarVisibility)
                 .frame(minWidth: 390, idealWidth: 540, maxWidth: 760)
-            DetailView(model: model)
-                .frame(minWidth: 780, idealWidth: 820)
+                .background(SplitViewAutosaveInstaller(
+                    name: isSidebarMounted
+                        ? "com.keyknock.BrollNamer.main-columns-v2-with-sidebar"
+                        : "com.keyknock.BrollNamer.main-columns-v2-without-sidebar"
+                ))
+            DetailView(model: model, isMediaPreviewVisible: $isMediaPreviewVisible)
+                .frame(minWidth: isMediaPreviewVisible ? 780 : 420, idealWidth: 820)
         }
+        .frame(minWidth: minimumContentWidth)
         .padding(.top, -28)
         .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $model.isScriptEditorPresented) {
@@ -48,7 +102,18 @@ struct ContentView: View {
             ManifestPreviewSheet(text: model.manifestPreviewText)
         }
         .alert(item: $model.alert) { alert in
-            Alert(
+            if alert.action == .openAccessibilitySettings {
+                return Alert(
+                    title: Text(alert.title),
+                    message: Text(alert.message),
+                    primaryButton: .default(Text("打开辅助功能设置")) {
+                        model.openAccessibilitySettings()
+                    },
+                    secondaryButton: .cancel(Text("好"))
+                )
+            }
+
+            return Alert(
                 title: Text(alert.title),
                 message: Text(alert.message),
                 dismissButton: .default(Text("好"))
@@ -69,12 +134,15 @@ struct ContentView: View {
             Text("将删除当前归档位置中已绑定及符合命名规则的旧素材副本，并更新 JSON 和 Markdown 清单。素材目录中的原始文件会保留。")
         }
         .preferredColorScheme(preferredColorScheme)
-        .background(OverlayScrollerStyleInstaller().allowsHitTesting(false).accessibilityHidden(true))
+        .font(.system(size: 16))
     }
 }
 
-private struct OverlayScrollerStyleInstaller: NSViewRepresentable {
+private struct SplitViewAutosaveInstaller: NSViewRepresentable {
+    let name: String
+
     final class Coordinator {
+        weak var splitView: NSSplitView?
         var isScheduling = false
     }
 
@@ -85,177 +153,113 @@ private struct OverlayScrollerStyleInstaller: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         view.isHidden = true
-        Self.installWhenAttached(view, coordinator: context.coordinator)
+        installWhenAttached(view, coordinator: context.coordinator)
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        Self.installWhenAttached(view, coordinator: context.coordinator)
+        installWhenAttached(view, coordinator: context.coordinator)
     }
 
-    private static func installWhenAttached(
-        _ view: NSView,
-        coordinator: Coordinator,
-        attemptsRemaining: Int = 20
-    ) {
-        guard !coordinator.isScheduling else { return }
-        coordinator.isScheduling = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            coordinator.isScheduling = false
-            guard let window = view.window else {
-                if attemptsRemaining > 0 {
-                    installWhenAttached(view, coordinator: coordinator, attemptsRemaining: attemptsRemaining - 1)
-                }
-                return
-            }
-            applyOverlayStyle(in: window.contentView)
-        }
-    }
-
-    private static func applyOverlayStyle(in root: NSView?) {
-        guard let root else { return }
-        var pendingViews = [root]
-
-        while let view = pendingViews.popLast() {
-            if let scrollView = view as? NSScrollView {
-                scrollView.scrollerStyle = .overlay
-                scrollView.scrollerKnobStyle = .default
-                scrollView.autohidesScrollers = true
-
-                if scrollView.hasVerticalScroller {
-                    if !(scrollView.verticalScroller is InsetOverlayScroller) {
-                        scrollView.verticalScroller = InsetOverlayScroller(frame: .zero)
-                    }
-                    scrollView.verticalScroller?.controlSize = .regular
-                }
-                if scrollView.hasHorizontalScroller {
-                    if !(scrollView.horizontalScroller is InsetOverlayScroller) {
-                        scrollView.horizontalScroller = InsetOverlayScroller(frame: .zero)
-                    }
-                    scrollView.horizontalScroller?.controlSize = .regular
-                }
-            }
-            pendingViews.append(contentsOf: view.subviews)
-        }
-    }
-}
-
-private final class InsetOverlayScroller: NSScroller {
-    override class var isCompatibleWithOverlayScrollers: Bool { true }
-    private var isHovered = false
-    private var hoverTrackingArea: NSTrackingArea?
-
-    override func updateTrackingAreas() {
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
-        }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        hoverTrackingArea = area
-        super.updateTrackingAreas()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        isHovered = true
-        needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        isHovered = false
-        needsDisplay = true
-    }
-
-    override func drawKnob() {
-        // Keep the native scroll and drag behavior, but draw an Element Plus sized thumb.
-        let isVertical = bounds.height >= bounds.width
-        let knobRect = rect(for: .knob).insetBy(
-            dx: isVertical ? 4 : 2,
-            dy: isVertical ? 2 : 4
-        )
-        guard knobRect.width > 0, knobRect.height > 0 else { return }
-
-        NSColor.labelColor.withAlphaComponent(isHovered ? 0.28 : 0.16).setFill()
-        NSBezierPath(
-            roundedRect: knobRect,
-            xRadius: min(knobRect.width, knobRect.height) / 2,
-            yRadius: min(knobRect.width, knobRect.height) / 2
-        ).fill()
-    }
-
-    override func drawKnobSlot(in rect: NSRect, highlight: Bool) {
-        // An overlay scrollbar has a transparent rail; AppKit fades the thumb for us.
-    }
-}
-
-// SwiftUI's macOS scroll view can reserve a full scroller column even for overlay
-// indicators. The material pane uses its own overlay so the content reaches the divider.
-private struct MaterialScrollbarInstaller: NSViewRepresentable {
-    final class Coordinator {
-        weak var scrollView: NSScrollView?
-        var indicator: MaterialScrollbar?
-        var isScheduling = false
-    }
-
-    fileprivate func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        installLater(from: view, coordinator: context.coordinator)
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        installLater(from: view, coordinator: context.coordinator)
-    }
-
-    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
-        coordinator.indicator?.removeFromSuperview()
-        coordinator.indicator = nil
-    }
-
-    private func installLater(from view: NSView, coordinator: Coordinator, attempts: Int = 20) {
+    private func installWhenAttached(_ view: NSView, coordinator: Coordinator, attemptsRemaining: Int = 20) {
         guard !coordinator.isScheduling else { return }
         coordinator.isScheduling = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             coordinator.isScheduling = false
             var ancestor = view.superview
-            while let candidate = ancestor, !(candidate is NSScrollView) {
+            while let candidate = ancestor, !(candidate is NSSplitView) {
                 ancestor = candidate.superview
             }
-            guard let scrollView = ancestor as? NSScrollView else {
+            guard let splitView = ancestor as? NSSplitView else {
+                if attemptsRemaining > 0 {
+                    installWhenAttached(view, coordinator: coordinator, attemptsRemaining: attemptsRemaining - 1)
+                }
+                return
+            }
+
+            if coordinator.splitView !== splitView || splitView.autosaveName != name {
+                splitView.autosaveName = name
+                coordinator.splitView = splitView
+            }
+        }
+    }
+}
+
+private struct ListScrollbarOverlay: NSViewRepresentable {
+    final class Coordinator {
+        weak var scrollView: NSScrollView?
+        var isScheduling = false
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> ListScrollbar {
+        let view = ListScrollbar(frame: .zero)
+        installLater(from: view, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateNSView(_ view: ListScrollbar, context: Context) {
+        installLater(from: view, coordinator: context.coordinator)
+    }
+
+    private func installLater(from view: ListScrollbar, coordinator: Coordinator, attempts: Int = 20) {
+        guard !coordinator.isScheduling else { return }
+        coordinator.isScheduling = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            coordinator.isScheduling = false
+            guard let scrollView = findScrollView(around: view) else {
                 if attempts > 0 {
                     installLater(from: view, coordinator: coordinator, attempts: attempts - 1)
                 }
                 return
             }
-
             if coordinator.scrollView !== scrollView {
-                coordinator.indicator?.removeFromSuperview()
-                let indicator = MaterialScrollbar(scrollView: scrollView)
-                indicator.translatesAutoresizingMaskIntoConstraints = false
-                scrollView.addSubview(indicator, positioned: .above, relativeTo: nil)
-                NSLayoutConstraint.activate([
-                    indicator.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
-                    indicator.topAnchor.constraint(equalTo: scrollView.topAnchor),
-                    indicator.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-                    indicator.widthAnchor.constraint(equalToConstant: 10)
-                ])
+                view.attach(to: scrollView)
                 coordinator.scrollView = scrollView
-                coordinator.indicator = indicator
             }
+            scrollView.scrollerStyle = .overlay
             scrollView.hasVerticalScroller = false
-            coordinator.indicator?.needsDisplay = true
+            view.needsDisplay = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                scrollView.hasVerticalScroller = false
+                view.needsDisplay = true
+            }
         }
+    }
+
+    private func findScrollView(around view: NSView) -> NSScrollView? {
+        var ancestor = view.superview
+        while let candidate = ancestor {
+            if let scrollView = candidate as? NSScrollView { return scrollView }
+            ancestor = candidate.superview
+        }
+
+        guard let root = view.window?.contentView else { return nil }
+        let marker = view.convert(view.bounds, to: nil)
+        let point = NSPoint(x: marker.midX, y: marker.midY)
+        var candidates: [NSScrollView] = []
+        var pending = [root]
+        while let current = pending.popLast() {
+            if let scrollView = current as? NSScrollView,
+               scrollView.convert(scrollView.bounds, to: nil).contains(point) {
+                candidates.append(scrollView)
+            }
+            pending.append(contentsOf: current.subviews)
+        }
+        return candidates.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
     }
 }
 
-private final class MaterialScrollbar: NSView {
+private final class ListScrollbar: NSView {
+    private var isPaneHovered = false {
+        didSet {
+            if oldValue != isPaneHovered { needsDisplay = true }
+        }
+    }
     private weak var scrollView: NSScrollView?
+    private var paneTrackingArea: NSTrackingArea?
+    private var mouseMonitor: Any?
     private var clipObserver: NSObjectProtocol?
     private var documentObserver: NSObjectProtocol?
     private weak var trackedDocument: NSView?
@@ -266,15 +270,42 @@ private final class MaterialScrollbar: NSView {
 
     override var isFlipped: Bool { true }
 
-    init(scrollView: NSScrollView) {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+    }
+
+    func attach(to scrollView: NSScrollView) {
+        if let oldScrollView = self.scrollView, let paneTrackingArea {
+            oldScrollView.removeTrackingArea(paneTrackingArea)
+        }
         self.scrollView = scrollView
-        super.init(frame: .zero)
+        let paneTrackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow],
+            owner: self,
+            userInfo: nil
+        )
+        scrollView.addTrackingArea(paneTrackingArea)
+        self.paneTrackingArea = paneTrackingArea
+        if mouseMonitor == nil {
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp, .scrollWheel]
+            ) { [weak self] event in
+                guard let self else { return event }
+                self.updatePaneHover(at: event.window === self.window ? event.locationInWindow : nil)
+                return event
+            }
+        }
         observeScrollView()
+        updatePaneHover(at: scrollView.window?.mouseLocationOutsideOfEventStream)
+        needsDisplay = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     deinit {
+        if let scrollView, let paneTrackingArea { scrollView.removeTrackingArea(paneTrackingArea) }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
         if let clipObserver { NotificationCenter.default.removeObserver(clipObserver) }
         if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
     }
@@ -288,7 +319,10 @@ private final class MaterialScrollbar: NSView {
             forName: NSView.boundsDidChangeNotification,
             object: clipView,
             queue: .main
-        ) { [weak self] _ in self?.needsDisplay = true }
+        ) { [weak self] _ in
+            if scrollView.hasVerticalScroller { scrollView.hasVerticalScroller = false }
+            self?.needsDisplay = true
+        }
 
         if trackedDocument !== scrollView.documentView {
             if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
@@ -298,7 +332,10 @@ private final class MaterialScrollbar: NSView {
                 forName: NSView.frameDidChangeNotification,
                 object: trackedDocument,
                 queue: .main
-            ) { [weak self] _ in self?.needsDisplay = true }
+            ) { [weak self] _ in
+                if scrollView.hasVerticalScroller { scrollView.hasVerticalScroller = false }
+                self?.needsDisplay = true
+            }
         }
     }
 
@@ -316,13 +353,35 @@ private final class MaterialScrollbar: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        isHovered = true
+        if event.trackingArea === trackingArea { isHovered = true }
+        updatePaneHover(at: event.locationInWindow)
         needsDisplay = true
     }
 
     override func mouseExited(with event: NSEvent) {
-        isHovered = false
+        if event.trackingArea === trackingArea { isHovered = false }
+        updatePaneHover(at: event.locationInWindow)
         needsDisplay = true
+    }
+
+    private func updatePaneHover(at location: NSPoint?) {
+        guard let location, let scrollView, let window,
+              window === scrollView.window,
+              let contentView = window.contentView else {
+            isPaneHovered = false
+            return
+        }
+        let scrollFrame = scrollView.convert(scrollView.bounds, to: nil)
+        let contentTop = contentView.convert(contentView.bounds, to: nil).maxY
+        let paneFrame = NSRect(
+            x: scrollFrame.minX,
+            y: scrollFrame.minY,
+            width: scrollFrame.width,
+            height: max(0, contentTop - scrollFrame.minY)
+        )
+        let overPane = paneFrame.contains(location)
+        let overThumbOverlay = bounds.contains(convert(location, from: nil))
+        isPaneHovered = overPane || overThumbOverlay
     }
 
     private var thumbRect: NSRect? {
@@ -340,13 +399,14 @@ private final class MaterialScrollbar: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let thumbRect else { return }
-        let trackRect = NSRect(x: bounds.midX - 1, y: 2, width: 2, height: max(0, bounds.height - 4))
-        NSColor.labelColor.withAlphaComponent(isHovered || isDragging ? 0.10 : 0.055).setFill()
-        NSBezierPath(roundedRect: trackRect, xRadius: 1, yRadius: 1).fill()
-
-        NSColor.labelColor.withAlphaComponent(isHovered || isDragging ? 0.62 : 0.38).setFill()
+        guard isPaneHovered || isDragging, let thumbRect else { return }
+        NSColor.labelColor.withAlphaComponent(isHovered || isDragging ? 0.45 : 0.25).setFill()
         NSBezierPath(roundedRect: thumbRect, xRadius: 3, yRadius: 3).fill()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isPaneHovered || isDragging, thumbRect != nil else { return nil }
+        return super.hitTest(point)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -399,10 +459,14 @@ private struct SidebarView: View {
         VStack(spacing: 0) {
             PaneHeader(
                 title: "B-roll 配对台",
-                systemImage: "film.stack",
+                systemImage: "photo.stack",
+                showsTitleIcon: false,
+                titleFont: .custom("SmileySans-Oblique", size: 27).weight(.bold),
                 actions: [
                     PaneHeaderAction(systemImage: "sidebar.left", help: "收起侧边栏") {
-                        isSidebarVisible = false
+                        withAnimation(.easeInOut(duration: 0.24)) {
+                            isSidebarVisible = false
+                        }
                     },
                     PaneHeaderAction(
                         systemImage: theme.icon,
@@ -415,7 +479,7 @@ private struct SidebarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    SidebarSection(title: "归档设置", systemImage: "archivebox") {
+                    SidebarSection(title: "归档设置", systemImage: "archivebox", showsHeading: false) {
                         VStack(alignment: .leading, spacing: 14) {
                             DirectoryChoiceRow(
                                 title: "归档位置",
@@ -428,40 +492,33 @@ private struct SidebarView: View {
                             Divider()
 
                             HStack(spacing: 6) {
-                                Label("命名规则", systemImage: "pencil.and.list.clipboard")
-                                    .font(.subheadline.weight(.semibold))
+                                Label("命名前缀", systemImage: "pencil.and.list.clipboard")
+                                    .font(.system(size: 17, weight: .semibold))
                                     .foregroundStyle(.primary)
                                 ConfigurationStatusIcon(isConfigured: model.isPrefixValid,
                                                         readyHelp: "命名前缀已填写",
-                                                        waitingHelp: "填写期数或前缀后可绑定素材")
+                                                        waitingHelp: "填写命名前缀后可绑定素材")
                                 Spacer(minLength: 0)
                             }
 
-                            VStack(alignment: .leading, spacing: 7) {
-                                HStack {
-                                    Label("期数 / 前缀", systemImage: "number")
-                                        .font(.subheadline)
-                                    Spacer()
+                            TextField("例如 第15期", text: $model.prefix)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 17))
+                                .focused($isPrefixFocused)
+                                .background(PrefixFocusDismissView(isFocused: isPrefixFocused) {
+                                    isPrefixFocused = false
+                                })
+                                .frame(height: 40)
+                                .padding(.horizontal, 10)
+                                .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(isPrefixFocused ? Color.accentColor : Color(nsColor: .separatorColor).opacity(0.55),
+                                                      lineWidth: isPrefixFocused ? 1.5 : 0.5)
                                 }
-                                TextField("例如 第15期", text: $model.prefix)
-                                    .textFieldStyle(.plain)
-                                    .font(.callout)
-                                    .focused($isPrefixFocused)
-                                    .background(PrefixFocusDismissView(isFocused: isPrefixFocused) {
-                                        isPrefixFocused = false
-                                    })
-                                    .frame(height: 40)
-                                    .padding(.horizontal, 10)
-                                    .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .strokeBorder(isPrefixFocused ? Color.accentColor : Color(nsColor: .separatorColor).opacity(0.55),
-                                                          lineWidth: isPrefixFocused ? 1.5 : 0.5)
-                                    }
-                            }
 
                             Text("示例：\(model.isPrefixValid ? ScriptParser.sanitizePart(model.prefix, maxLength: 30) : "期数")_BR001_文案短句.ext")
-                                .font(.caption.monospaced())
+                                .font(.system(size: 14, weight: .regular, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
@@ -469,14 +526,21 @@ private struct SidebarView: View {
                         }
                     }
 
-                    SidebarSection(title: "清单", systemImage: "doc.text") {
+                    SidebarSection(title: "清单", systemImage: "doc.text", showsHeading: false) {
                         VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 6) {
+                                Label("清单", systemImage: "doc.text")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                Spacer(minLength: 0)
+                            }
+
                             HStack(spacing: 8) {
                                 Label("JSON 文件", systemImage: "curlybraces")
-                                    .font(.caption.weight(.medium))
+                                    .font(.system(size: 16, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Spacer(minLength: 0)
-                                ManifestIconButton(title: "在 Finder 中显示 JSON 清单", systemImage: "folder") {
+                                ManifestIconButton(title: "在 Finder 新标签页中显示 JSON 清单", systemImage: "arrow.up.forward.app") {
                                     model.revealManifest()
                                 }
                                 ManifestIconButton(title: "预览 JSON 清单内容", systemImage: "eye") {
@@ -499,8 +563,13 @@ private struct SidebarView: View {
             }
         }
         .background(.windowBackground)
-        .defaultFocus($isPrefixFocused, false)
-        .onAppear { isPrefixFocused = false }
+        .onAppear {
+            // SwiftUI can assign the first key-window responder after onAppear.
+            // Clear it on the next run loop so the naming field only focuses on user click.
+            DispatchQueue.main.async {
+                isPrefixFocused = false
+            }
+        }
         .onChange(of: model.prefix) { _, _ in
             model.persistPreferences()
         }
@@ -510,24 +579,29 @@ private struct SidebarView: View {
 private struct SidebarSection<Content: View>: View {
     let title: String
     let systemImage: String
+    var showsHeading = true
     @ViewBuilder let content: () -> Content
 
     init(
         title: String,
         systemImage: String,
+        showsHeading: Bool = true,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.title = title
         self.systemImage = systemImage
+        self.showsHeading = showsHeading
         self.content = content
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: systemImage)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 2)
+        VStack(alignment: .leading, spacing: showsHeading ? 8 : 0) {
+            if showsHeading {
+                Label(title, systemImage: systemImage)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 2)
+            }
 
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -552,16 +626,16 @@ private struct SidebarStatusView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: isConnected ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .foregroundStyle(isConnected ? Color.green : Color.secondary)
-                .font(.body)
+                .font(.system(size: 17))
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(model.statusMessage)
-                    .font(.caption)
+                    .font(.system(size: 16))
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
 
                 Text(model.lastSaved)
-                    .font(.caption2)
+                    .font(.system(size: 14))
                     .foregroundStyle(.tertiary)
             }
 
@@ -596,19 +670,20 @@ private struct DirectoryChoiceRow: View {
                 Image(systemName: "folder")
                     .foregroundStyle(Color.primary)
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 16, weight: .semibold))
                 ConfigurationStatusIcon(isConfigured: isConfigured,
                                         readyHelp: "归档位置已选择",
                                         waitingHelp: "请选择归档位置")
             }
 
-            HStack(spacing: 9) {
+            HStack(spacing: 7) {
                 Image(systemName: isConfigured ? "folder.fill" : "folder")
                     .foregroundStyle(isConfigured ? Color.accentColor : Color.orange)
                 Text(value == "未选择" ? "请选择归档文件夹" : value)
-                    .font(.callout)
+                    .font(.system(size: 16))
                     .foregroundStyle(isConfigured ? Color.secondary : Color.orange)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.94)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -626,13 +701,13 @@ private struct DirectoryChoiceRow: View {
                     }
                     .buttonStyle(IconActionButtonStyle())
                     .foregroundStyle(.secondary)
-                    .hoverHelp("在 Finder 中打开归档目录")
-                    .accessibilityLabel("在 Finder 中打开归档目录")
+                    .hoverHelp("在 Finder 新标签页中打开归档目录")
+                    .accessibilityLabel("在 Finder 新标签页中打开归档目录")
                     .pointerCursor()
                 }
             }
-            .frame(height: 40)
-            .padding(.horizontal, 10)
+            .frame(height: 44)
+            .padding(.horizontal, 8)
             .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -650,7 +725,7 @@ private struct ConfigurationStatusIcon: View {
 
     var body: some View {
         Image(systemName: isConfigured ? "checkmark.circle.fill" : "circle.dotted")
-            .font(.caption)
+            .font(.system(size: 14))
             .foregroundStyle(isConfigured ? Color.green : Color.orange)
             .hoverHelp(isConfigured ? readyHelp : waitingHelp)
             .accessibilityLabel(isConfigured ? readyHelp : waitingHelp)
@@ -733,6 +808,7 @@ private struct SidebarActionButton: View {
                 Text(title)
                 Spacer(minLength: 0)
             }
+            .font(.system(size: 16))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -751,7 +827,7 @@ private struct ManifestIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.body)
+                .font(.system(size: 16))
                 .frame(width: 42, height: 36)
         }
         .buttonStyle(SidebarActionButtonStyle(tint: .primary))
@@ -769,7 +845,7 @@ private struct ManifestPreviewSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Label("JSON 清单预览", systemImage: "curlybraces")
-                    .font(.headline)
+                    .font(.system(size: 17, weight: .semibold))
                 Spacer()
                 Button("完成") { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -781,7 +857,7 @@ private struct ManifestPreviewSheet: View {
 
             ScrollView {
                 Text(text)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.system(size: 16, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
@@ -882,6 +958,11 @@ private struct AnchorHeaderMetric: View {
 private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
+    @State private var editingIndex: Int?
+    @State private var editingText = ""
+    @State private var editingCursor = 0
+    @State private var editingSession = UUID()
+    @State private var pendingScrollRowID: String?
 
     var body: some View {
         let filteredRows = model.filteredRows
@@ -889,7 +970,11 @@ private struct AnchorListView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 if !isSidebarVisible {
-                    Button { isSidebarVisible = true } label: {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.24)) {
+                            isSidebarVisible = true
+                        }
+                    } label: {
                         Image(systemName: "sidebar.left")
                     }
                     .buttonStyle(IconActionButtonStyle())
@@ -897,8 +982,8 @@ private struct AnchorListView: View {
                     .accessibilityLabel("展开侧边栏")
                     .pointerCursor()
                 }
-                Label("文案锚点", systemImage: "text.badge.checkmark")
-                    .font(.headline)
+                Label("文案列表", systemImage: "text.badge.checkmark")
+                    .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 HStack(spacing: 4) {
@@ -907,7 +992,7 @@ private struct AnchorListView: View {
                     AnchorHeaderMetric(value: model.bRollAnchorCount, label: "B-roll 锚点", shortLabel: "B", detail: "已绑定 \(model.assignedCount) 个素材", tint: .green)
                 }
                 Button { model.isScriptEditorPresented = true } label: {
-                    Image(systemName: "doc.text")
+                    Image(systemName: "square.and.pencil")
                 }
                 .buttonStyle(IconActionButtonStyle())
                 .hoverHelp("编辑或导入视频文案")
@@ -974,20 +1059,93 @@ private struct AnchorListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
-                    ForEach(filteredRows) { row in
-                        AnchorRowView(row: row, model: model)
+                ScrollViewReader { proxy in
+                    List {
+                        ForEach(filteredRows) { row in
+                            AnchorRowView(
+                                row: row,
+                                model: model,
+                                isEditing: editingIndex == row.index - 1,
+                                editingText: $editingText,
+                                editingCursor: editingCursor,
+                                editingSession: editingSession,
+                                beginEditing: { beginEditing(row) },
+                                finishEditing: { session in finishEditing(session: session) },
+                                splitAtSelection: { text, selection in
+                                    splitRow(row, text: text, selection: selection)
+                                },
+                                mergeWithPrevious: { text in mergeRow(row, text: text) }
+                            )
+                            .id(row.id)
                             .listRowSeparator(.hidden)
+                        }
+                    }
+                    .listStyle(.inset)
+                    .scrollIndicators(.hidden)
+                    .overlay {
+                        AnchorListDropOutline(feedback: model.dropFeedback)
+                    }
+                    .overlay(alignment: .trailing) {
+                        ListScrollbarOverlay()
+                            .frame(width: 8)
+                            .accessibilityHidden(true)
+                    }
+                    .onDrop(of: [UTType.fileURL], delegate: AnchorListDropDelegate(feedback: model.dropFeedback))
+                    .onChange(of: pendingScrollRowID) { _, rowID in
+                        guard let rowID else { return }
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(rowID, anchor: .center)
+                            if pendingScrollRowID == rowID {
+                                pendingScrollRowID = nil
+                            }
+                        }
                     }
                 }
-                .listStyle(.inset)
-                .overlay {
-                    AnchorListDropOutline(feedback: model.dropFeedback)
-                }
-                .onDrop(of: [UTType.fileURL], delegate: AnchorListDropDelegate(feedback: model.dropFeedback))
             }
         }
         .background(.windowBackground)
+    }
+
+    private func beginEditing(_ row: AnchorRow) {
+        if editingIndex != row.index - 1 {
+            finishEditing(session: editingSession)
+        }
+        model.anchorSearchText = ""
+        editingIndex = row.index - 1
+        editingText = row.text
+        editingCursor = (row.text as NSString).length
+        editingSession = UUID()
+    }
+
+    private func finishEditing(session: UUID) {
+        guard session == editingSession, let index = editingIndex else { return }
+        let text = editingText
+        editingIndex = nil
+        guard model.rows.indices.contains(index), model.rows[index].text != text else { return }
+        model.replaceInlineRow(at: index, with: text)
+    }
+
+    private func splitRow(_ row: AnchorRow, text: String, selection: NSRange) {
+        guard editingIndex == row.index - 1 else { return }
+        let index = row.index - 1
+        editingSession = UUID()
+        model.splitInlineRow(at: index, text: text, selection: selection)
+        editingIndex = index + 1
+        editingText = model.rows[index + 1].text
+        editingCursor = 0
+        pendingScrollRowID = model.rows[index + 1].id
+    }
+
+    private func mergeRow(_ row: AnchorRow, text: String) {
+        guard editingIndex == row.index - 1 else { return }
+        let index = row.index - 1
+        guard index > 0 else { return }
+        editingSession = UUID()
+        guard let cursor = model.mergeInlineRowWithPrevious(at: index, text: text) else { return }
+        editingIndex = index - 1
+        editingText = model.rows[index - 1].text
+        editingCursor = cursor
+        pendingScrollRowID = model.rows[index - 1].id
     }
 }
 
@@ -1009,30 +1167,43 @@ private struct AnchorListDropOutline: View {
 private struct PaneHeader: View {
     let title: String
     let systemImage: String
+    let showsTitleIcon: Bool
+    let titleFont: Font?
     let count: String?
     let actions: [PaneHeaderAction]
 
     init(
         title: String,
         systemImage: String,
+        showsTitleIcon: Bool = true,
+        titleFont: Font? = nil,
         count: String? = nil,
         actions: [PaneHeaderAction] = []
     ) {
         self.title = title
         self.systemImage = systemImage
+        self.showsTitleIcon = showsTitleIcon
+        self.titleFont = titleFont
         self.count = count
         self.actions = actions
     }
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
+            HStack(spacing: 8) {
+                if showsTitleIcon {
+                    Image(systemName: systemImage)
+                        .accessibilityHidden(true)
+                }
+                Text(title)
+            }
+                .font(titleFont ?? .system(size: 17, weight: .semibold))
                 .lineLimit(1)
+                .minimumScaleFactor(0.78)
             Spacer(minLength: 8)
             if let count {
                 Text(count)
-                    .font(.caption)
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .contentTransition(.numericText())
             }
@@ -1078,12 +1249,19 @@ private struct PaneHeaderAction {
 private struct AnchorRowView: View {
     let row: AnchorRow
     @Bindable var model: AppModel
+    let isEditing: Bool
+    @Binding var editingText: String
+    let editingCursor: Int
+    let editingSession: UUID
+    let beginEditing: () -> Void
+    let finishEditing: (UUID) -> Void
+    let splitAtSelection: (String, NSRange) -> Void
+    let mergeWithPrevious: (String) -> Void
     @StateObject private var dropState = AnchorDropState()
 
     private var assets: [BrollAsset] { model.assets(for: row.id) }
     private var isDropTarget: Bool { dropState.isActive }
     private var isAssigned: Bool { !assets.isEmpty }
-    private var hasAvailableSource: Bool { assets.contains { model.sourceFile(for: $0) != nil } }
     private var rowFill: Color {
         if isDropTarget { return Color.accentColor.opacity(0.13) }
         return Color.primary.opacity(0.02)
@@ -1118,16 +1296,30 @@ private struct AnchorRowView: View {
                             onTap: { model.explainARollTag() }
                         )
                     }
-                    Text(row.text)
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                        .lineSpacing(2)
-                        .textSelection(.enabled)
-                        .hoverHelp("从素材目录或 Finder 拖入图片 / 视频，绑定到这条文案锚点")
+                    if isEditing {
+                        InlineAnchorEditor(
+                            text: $editingText,
+                            initialCursor: editingCursor,
+                            session: editingSession,
+                            onFinish: finishEditing,
+                            onSplit: splitAtSelection,
+                            onMerge: mergeWithPrevious
+                        )
+                        .id(editingSession)
+                        .frame(minHeight: 26)
+                    } else {
+                        Text(row.text.isEmpty ? "双击输入文案" : row.text)
+                            .font(.system(size: 16))
+                            .foregroundStyle(row.text.isEmpty ? .tertiary : .primary)
+                            .lineSpacing(2)
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 2, perform: beginEditing)
+                            .hoverHelp("双击编辑文案；回车拆分，块首 Backspace 合并到上一条")
+                            .pointerCursor()
+                    }
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture(perform: jumpToBoundSource)
 
             if !assets.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
@@ -1150,7 +1342,6 @@ private struct AnchorRowView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(rowFill)
                 .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .onTapGesture(perform: jumpToBoundSource)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1160,15 +1351,120 @@ private struct AnchorRowView: View {
             of: [UTType.fileURL],
             delegate: FileDropDelegate(rowID: row.id, model: model, feedback: model.dropFeedback, rowState: dropState)
         )
-        .pointerCursor(hasAvailableSource ? .pointingHand : .arrow)
         .animation(.snappy(duration: 0.2), value: assets.count)
     }
+}
 
-    private func jumpToBoundSource() {
-        let selectedName = model.selectedSourceFileURL?.lastPathComponent
-        let availableAssets = assets.filter { model.sourceFile(for: $0) != nil }
-        guard let asset = availableAssets.first(where: { $0.sourceName == selectedName }) ?? availableAssets.first else { return }
-        model.jumpToSourceFile(for: asset)
+private struct InlineAnchorEditor: NSViewRepresentable {
+    @Binding var text: String
+    let initialCursor: Int
+    let session: UUID
+    let onFinish: (UUID) -> Void
+    let onSplit: (String, NSRange) -> Void
+    let onMerge: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> AnchorTextView {
+        let view = AnchorTextView()
+        view.delegate = context.coordinator
+        view.string = text
+        view.font = .systemFont(ofSize: 16)
+        view.textColor = .labelColor
+        view.drawsBackground = false
+        view.isRichText = false
+        view.isVerticallyResizable = false
+        view.isHorizontallyResizable = false
+        view.textContainer?.widthTracksTextView = true
+        view.textContainer?.heightTracksTextView = true
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainerInset = .zero
+        view.onSplit = { [weak coordinator = context.coordinator] value, selection in
+            coordinator?.parent.onSplit(value, selection)
+        }
+        view.onMerge = { [weak coordinator = context.coordinator] value in
+            coordinator?.parent.onMerge(value)
+        }
+        view.onEscape = { [weak coordinator = context.coordinator] in
+            guard let coordinator else { return }
+            coordinator.parent.onFinish(coordinator.creationSession)
+        }
+
+        let cursor = initialCursor
+        DispatchQueue.main.async { [weak view] in
+            guard let view, let window = view.window else { return }
+            window.makeFirstResponder(view)
+            view.setSelectedRange(NSRange(location: min(cursor, (view.string as NSString).length), length: 0))
+        }
+        return view
+    }
+
+    func updateNSView(_ view: AnchorTextView, context: Context) {
+        context.coordinator.parent = self
+        if view.string != text {
+            view.string = text
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: AnchorTextView, context: Context) -> CGSize? {
+        let width = max(proposal.width ?? 300, 40)
+        let displayText = text.isEmpty ? " " : text
+        let bounds = (displayText as NSString).boundingRect(
+            with: CGSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: NSFont.systemFont(ofSize: 16)]
+        )
+        return CGSize(width: width, height: max(26, ceil(bounds.height) + 4))
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: InlineAnchorEditor
+        let creationSession: UUID
+
+        init(parent: InlineAnchorEditor) {
+            self.parent = parent
+            creationSession = parent.session
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            parent.text = view.string
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            parent.onFinish(creationSession)
+        }
+    }
+}
+
+private final class AnchorTextView: NSTextView {
+    var onSplit: ((String, NSRange) -> Void)?
+    var onMerge: ((String) -> Void)?
+    var onEscape: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if hasMarkedText() {
+            super.keyDown(with: event)
+            return
+        }
+
+        let hasCommandModifier = !event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+        if !hasCommandModifier && (event.keyCode == 36 || event.keyCode == 76) {
+            onSplit?(string, selectedRange())
+            return
+        }
+        if !hasCommandModifier && event.keyCode == 51 {
+            let selection = selectedRange()
+            if selection.location == 0 && selection.length == 0 {
+                onMerge?(string)
+                return
+            }
+        }
+        if event.keyCode == 53 {
+            onEscape?()
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
@@ -1193,7 +1489,7 @@ private struct RollTypeTag: View {
 
     private var tag: some View {
         HStack(spacing: 4) {
-            Image(systemName: isBroll ? "film" : "waveform")
+            Image(systemName: isBroll ? "photo.stack" : "waveform")
             Text(isBroll ? "B-roll" : "A-roll")
             if isBroll, assetCount > 1 {
                 Text("×\(assetCount)")
@@ -1239,11 +1535,11 @@ private struct AssetChip: View {
                         .foregroundStyle(isSelected ? Color.orange : Color.secondary)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(asset.outputName)
-                            .font(.callout.monospaced())
+                            .font(.system(size: 15, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Text("源文件：\(asset.sourceName)")
-                            .font(.caption2)
+                            .font(.system(size: 14))
                             .foregroundStyle(isSelected ? Color.orange : Color.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -1303,7 +1599,7 @@ private struct AssetChip: View {
             Button {
                 model.reveal(asset)
             } label: {
-                Label("在 Finder 中显示", systemImage: "magnifyingglass")
+                Label("在 Finder 新标签页中显示", systemImage: "arrow.up.forward.app")
             }
         }
     }
@@ -1312,18 +1608,14 @@ private struct AssetChip: View {
 private struct MaterialListHeader: View {
     @Bindable var model: AppModel
     @Binding var isDirectoryPopoverPresented: Bool
+    @Binding var isMediaPreviewVisible: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(
                 title: "素材列表",
-                systemImage: "film.stack",
-                count: "\(model.visibleSourceFiles.count) 个素材",
-                actions: [
-                    PaneHeaderAction(systemImage: "arrow.clockwise", help: "刷新素材列表") {
-                        model.refreshSourceFiles()
-                    }
-                ]
+                systemImage: "photo.stack",
+                actions: paneHeaderActions
             )
 
             HStack(spacing: 8) {
@@ -1331,7 +1623,7 @@ private struct MaterialListHeader: View {
                     Image(systemName: model.sourceDirectoryURL == nil ? "folder" : "folder.fill")
                         .foregroundStyle(model.sourceDirectoryURL == nil ? Color.orange : Color.accentColor)
                     Text(model.sourceDirectoryURL == nil ? "未选择目录" : model.sourceDirectoryName)
-                        .font(.callout)
+                        .font(.system(size: 16))
                         .foregroundStyle(model.sourceDirectoryURL == nil ? Color.orange : Color.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -1353,7 +1645,6 @@ private struct MaterialListHeader: View {
                         Image(systemName: "ellipsis")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .hoverHelp("管理常用素材目录")
                     .accessibilityLabel("管理常用素材目录")
                     .pointerCursor()
                     .popover(isPresented: $isDirectoryPopoverPresented, arrowEdge: .trailing) {
@@ -1384,6 +1675,26 @@ private struct MaterialListHeader: View {
             }
         }
     }
+
+    private var paneHeaderActions: [PaneHeaderAction] {
+        var actions = [
+            PaneHeaderAction(systemImage: "arrow.clockwise", help: "刷新素材列表") {
+                model.refreshSourceFiles()
+            }
+        ]
+
+        if !isMediaPreviewVisible {
+            actions.append(
+                PaneHeaderAction(systemImage: "chevron.left", help: "展开当前媒体栏") {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isMediaPreviewVisible = true
+                    }
+                }
+            )
+        }
+
+        return actions
+    }
 }
 
 private struct DirectoryManagerPopover: View {
@@ -1394,7 +1705,7 @@ private struct DirectoryManagerPopover: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("素材目录", systemImage: "folder.badge.gearshape")
-                    .font(.headline)
+                    .font(.system(size: 17, weight: .semibold))
                 Spacer()
                 if model.sourceDirectoryURL != nil && !model.isCurrentSourceDirectorySaved {
                     Button {
@@ -1404,7 +1715,7 @@ private struct DirectoryManagerPopover: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .font(.caption)
+                    .font(.system(size: 14))
                     .accessibilityLabel("收藏当前素材目录")
                     .hoverHelp("将当前目录加入常用目录")
                     .pointerCursor()
@@ -1417,7 +1728,7 @@ private struct DirectoryManagerPopover: View {
             }
 
             if model.sourceDirectoryURL != nil {
-                DirectoryPopoverAction(title: "在 Finder 中打开当前目录", systemImage: "arrow.up.forward.app") {
+                DirectoryPopoverAction(title: "在 Finder 新标签页中打开当前目录", systemImage: "arrow.up.forward.app") {
                     model.revealSourceDirectory()
                     dismiss()
                 }
@@ -1431,12 +1742,12 @@ private struct DirectoryManagerPopover: View {
             Divider()
 
             Text("常用目录")
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             if model.savedDirectories.isEmpty {
                 Text("收藏目录后，可从这里快速切换。")
-                    .font(.caption)
+                    .font(.system(size: 14))
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -1457,7 +1768,6 @@ private struct DirectoryManagerPopover: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: min(CGFloat(model.savedDirectories.count) * 36, 220))
-                .background(OverlayScrollerStyleInstaller().allowsHitTesting(false).accessibilityHidden(true))
             }
         }
         .padding(14)
@@ -1475,10 +1785,10 @@ private struct DirectoryPopoverAction: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
-                    .font(.body)
+                    .font(.system(size: 16))
                     .frame(width: 20)
                 Text(title)
-                    .font(.callout.weight(isPrimary ? .semibold : .regular))
+                    .font(.system(size: 16, weight: isPrimary ? .semibold : .regular))
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
@@ -1514,11 +1824,11 @@ private struct SavedDirectoryRow: View {
                     Spacer(minLength: 0)
                     if isSelected {
                         Text("当前")
-                            .font(.caption2)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
                 }
-                .font(.callout)
+                .font(.system(size: 16))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 6)
                 .contentShape(Rectangle())
@@ -1536,7 +1846,6 @@ private struct SavedDirectoryRow: View {
                     .foregroundStyle(.secondary)
             }
             .menuStyle(.borderlessButton)
-            .hoverHelp("管理常用目录")
             .accessibilityLabel("管理常用目录")
             .pointerCursor()
         }
@@ -1546,6 +1855,7 @@ private struct SavedDirectoryRow: View {
 
 private struct DetailView: View {
     @Bindable var model: AppModel
+    @Binding var isMediaPreviewVisible: Bool
     @State private var selectedSourceFileURLs: Set<URL> = []
     @State private var isDirectoryPopoverPresented = false
     @FocusState private var isMaterialListFocused: Bool
@@ -1558,13 +1868,17 @@ private struct DetailView: View {
     var body: some View {
         let visibleFiles = model.visibleSourceFiles
 
-        HStack(spacing: 0) {
+        HSplitView {
             VStack(spacing: 0) {
-                MaterialListHeader(model: model, isDirectoryPopoverPresented: $isDirectoryPopoverPresented)
+                MaterialListHeader(
+                    model: model,
+                    isDirectoryPopoverPresented: $isDirectoryPopoverPresented,
+                    isMediaPreviewVisible: $isMediaPreviewVisible
+                )
 
                 if visibleFiles.isEmpty {
                     ContentUnavailableView {
-                        Label("还没有素材", systemImage: "film")
+                        Label("还没有素材", systemImage: "photo.stack")
                     } description: {
                         Text(model.sourceDirectoryURL == nil ? "选择素材目录" : "没有符合条件的素材")
                     } actions: {
@@ -1603,15 +1917,14 @@ private struct DetailView: View {
                                     }
                                 }
                                 .frame(width: geometry.size.width)
-                                .background(alignment: .topLeading) {
-                                    MaterialScrollbarInstaller()
-                                        .frame(width: 1, height: 1)
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
-                                }
                             }
                             .scrollIndicators(.hidden)
                             .contentMargins(.trailing, 0, for: .scrollContent)
+                            .overlay(alignment: .trailing) {
+                                ListScrollbarOverlay()
+                                    .frame(width: 8)
+                                    .accessibilityHidden(true)
+                            }
                             .task(id: model.sourceFileJumpID) {
                                 guard model.sourceFileJumpID != nil,
                                       let url = model.selectedSourceFileURL,
@@ -1652,14 +1965,21 @@ private struct DetailView: View {
 
             }
             .frame(minWidth: 420, idealWidth: 440, maxWidth: .infinity)
+            .background(SplitViewAutosaveInstaller(
+                name: isMediaPreviewVisible
+                    ? "com.keyknock.BrollNamer.media-columns-with-preview"
+                    : "com.keyknock.BrollNamer.media-columns-without-preview"
+            ))
 
-            Divider()
-
-            MediaPreviewView(
-                file: selectedSourceFileURL.flatMap(model.sourceFile(at:)),
-                controller: previewController
-            )
-            .frame(minWidth: 340, idealWidth: 480, maxWidth: .infinity)
+            if isMediaPreviewVisible {
+                MediaPreviewView(
+                    file: selectedSourceFileURL.flatMap(model.sourceFile(at:)),
+                    controller: previewController,
+                    model: model,
+                    isMediaPreviewVisible: $isMediaPreviewVisible
+                )
+                .frame(minWidth: 340, idealWidth: 480, maxWidth: .infinity)
+            }
         }
         .background(.windowBackground)
         .onChange(of: model.sourceFiles) { _, files in
@@ -1669,6 +1989,9 @@ private struct DetailView: View {
         }
         .onChange(of: selectedSourceFileURLs) { _, urls in
             model.selectedSourceFileURL = urls.first
+            if urls.isEmpty {
+                previewController.load(url: nil)
+            }
         }
     }
 
@@ -1726,13 +2049,22 @@ private struct MediaFilterPicker: View {
 private struct MediaPreviewView: View {
     let file: SourceFile?
     @ObservedObject var controller: MediaPreviewController
+    @Bindable var model: AppModel
+    @Binding var isMediaPreviewVisible: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(
                 title: "当前媒体",
-                systemImage: file?.kind.systemImage ?? "play.rectangle",
-                count: file == nil ? "未选择" : nil
+                systemImage: file?.kind.systemImage ?? "photo.stack",
+                count: file == nil ? "未选择" : nil,
+                actions: [
+                    PaneHeaderAction(systemImage: "chevron.right", help: "收起当前媒体栏") {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isMediaPreviewVisible = false
+                        }
+                    }
+                ]
             )
 
             HStack(spacing: 8) {
@@ -1745,7 +2077,7 @@ private struct MediaPreviewView: View {
                             .truncationMode(.middle)
                             .hoverHelp(file.name)
                         Text(MediaFormatting.bytes(file.byteCount))
-                            .font(.caption2)
+                            .font(.system(size: 14))
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 4)
@@ -1760,13 +2092,13 @@ private struct MediaPreviewView: View {
                     .pointerCursor()
 
                     Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([file.url])
+                        model.revealInFinder(file.url)
                     } label: {
                         Image(systemName: "arrow.up.forward.app")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .hoverHelp("在 Finder 中显示素材")
-                    .accessibilityLabel("在 Finder 中显示素材")
+                    .hoverHelp("在 Finder 新标签页中显示素材")
+                    .accessibilityLabel("在 Finder 新标签页中显示素材")
                     .pointerCursor()
                 } else {
                     Text("从素材列表选择文件")
@@ -1774,7 +2106,7 @@ private struct MediaPreviewView: View {
                     Spacer()
                 }
             }
-            .font(.caption)
+            .font(.system(size: 14))
             .padding(.horizontal, 16)
             .frame(height: ListPaneMetrics.toolsHeight)
             .background(.quaternary.opacity(0.2))
@@ -1802,13 +2134,10 @@ private struct MediaPreviewView: View {
                     .onAppear {
                         controller.load(url: file.url)
                     }
-                    .onDisappear {
-                        controller.pause()
-                    }
                 }
             } else {
                 ContentUnavailableView {
-                    Label("选择素材", systemImage: "play.rectangle")
+                    Label("选择素材", systemImage: "photo.stack")
                 } description: {
                     Text("从素材列表选择")
                 }
@@ -1988,9 +2317,10 @@ private struct SourceFileRow: View {
                     .truncationMode(.middle)
                     .foregroundStyle(isSelected ? Color.orange : Color.primary)
                 Text(isAssigned ? "已绑定" : MediaFormatting.bytes(file.byteCount))
-                    .font(.caption2)
+                    .font(.system(size: 14))
                     .foregroundStyle(isAssigned ? .green : .secondary)
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 5)
             if isAssigned {
                 Image(systemName: "checkmark.circle.fill")
@@ -2190,7 +2520,7 @@ private struct HoverTooltip: View {
     private static let maximumTextWidth: CGFloat = 360
 
     static func preferredSize(for text: String) -> CGSize {
-        let font = NSFont.systemFont(ofSize: 13)
+        let font = NSFont.systemFont(ofSize: 14)
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = 2
         let attributes: [NSAttributedString.Key: Any] = [
@@ -2210,7 +2540,7 @@ private struct HoverTooltip: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 13))
+            .font(.system(size: 14))
             .lineSpacing(2)
             .frame(width: Self.preferredSize(for: text).width - 20, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
@@ -2488,7 +2818,7 @@ private struct ScriptEditorSheet: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 14) {
                 TextEditor(text: $model.scriptText)
-                    .font(.body)
+                    .font(.system(size: 16))
                     .scrollContentBackground(.hidden)
                     .padding(8)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -2510,7 +2840,7 @@ private struct ScriptEditorSheet: View {
                     Spacer()
 
                     Text("当前生成 \(model.rows.count) 个锚点")
-                        .font(.caption)
+                        .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                         .contentTransition(.numericText())
                 }
@@ -2519,13 +2849,13 @@ private struct ScriptEditorSheet: View {
                     Button {
                         model.importScript()
                     } label: {
-                        Label("导入 .txt / .md", systemImage: "square.and.arrow.down")
+                        Label("导入 .txt / .md", systemImage: "doc.badge.plus")
                     }
                     .buttonStyle(.bordered)
                     .pointerCursor()
 
                     Text("一行一个锚点；句号模式会按中文和英文句末标点拆分。")
-                        .font(.caption)
+                        .font(.system(size: 14))
                         .foregroundStyle(.tertiary)
                 }
             }

@@ -13,6 +13,8 @@
 		0A0000000000000000000024 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000014 /* Views.swift */; };
 		0A0000000000000000000025 /* FileDropDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000015 /* FileDropDelegate.swift */; };
 		0A0000000000000000000026 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000017 /* Assets.xcassets */; };
+		0A0000000000000000000027 /* SmileySans-Oblique.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000019 /* SmileySans-Oblique.ttf */; };
+		0A0000000000000000000028 /* OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0A000000000000000000001A /* OFL.txt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +26,8 @@
 		0A0000000000000000000015 /* FileDropDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDropDelegate.swift; sourceTree = "<group>"; };
 		0A0000000000000000000016 /* BrollNamer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BrollNamer.entitlements; sourceTree = "<group>"; };
 		0A0000000000000000000017 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		0A0000000000000000000019 /* SmileySans-Oblique.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SmileySans-Oblique.ttf"; sourceTree = "<group>"; };
+		0A000000000000000000001A /* OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OFL.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,6 +58,7 @@
 				0A0000000000000000000014 /* Views.swift */,
 				0A0000000000000000000015 /* FileDropDelegate.swift */,
 				0A0000000000000000000016 /* BrollNamer.entitlements */,
+				0A0000000000000000000018 /* Fonts */,
 				0A0000000000000000000017 /* Assets.xcassets */,
 			);
 			path = BrollNamerApp;
@@ -65,6 +70,15 @@
 				0A0000000000000000000003 /* B-roll 配对台.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		0A0000000000000000000018 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				0A0000000000000000000019 /* SmileySans-Oblique.ttf */,
+				0A000000000000000000001A /* OFL.txt */,
+			);
+			path = Fonts;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -126,6 +140,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				0A0000000000000000000026 /* Assets.xcassets in Resources */,
+				0A0000000000000000000027 /* SmileySans-Oblique.ttf in Resources */,
+				0A0000000000000000000028 /* OFL.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -180,10 +196,12 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "B-roll 配对台";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "为在现有 Finder 窗口中新建标签页并定位素材，B-roll 配对台需要控制 Finder 和 System Events。";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -208,9 +226,11 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "B-roll 配对台";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "为在现有 Finder 窗口中新建标签页并定位素材，B-roll 配对台需要控制 Finder 和 System Events。";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

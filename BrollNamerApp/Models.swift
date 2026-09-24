@@ -133,6 +133,41 @@ struct BrollAsset: Identifiable, Codable, Hashable {
     }
 }
 
+enum AnchorAssignmentMigration {
+    static func migrate(
+        _ assignments: [String: [BrollAsset]],
+        from oldRows: [AnchorRow],
+        to newRows: [AnchorRow],
+        sourceIndices: [[Int]]
+    ) -> [String: [BrollAsset]] {
+        let visibleKeys = Set(oldRows.map(\.id))
+        var migrated = assignments.filter { !visibleKeys.contains($0.key) }
+
+        for (offset, row) in newRows.enumerated() where sourceIndices.indices.contains(offset) {
+            let assets = sourceIndices[offset].flatMap { sourceIndex -> [BrollAsset] in
+                guard oldRows.indices.contains(sourceIndex) else { return [] }
+                return assignments[oldRows[sourceIndex].id] ?? []
+            }
+            guard !assets.isEmpty else { continue }
+            migrated[row.id] = assets.map { asset in
+                BrollAsset(
+                    id: asset.id,
+                    anchorKey: row.id,
+                    anchorIndex: row.index,
+                    anchorText: row.text,
+                    sourceName: asset.sourceName,
+                    outputName: asset.outputName,
+                    mode: asset.mode,
+                    targetTrack: asset.targetTrack,
+                    audio: asset.audio,
+                    copiedAt: asset.copiedAt
+                )
+            }
+        }
+        return migrated
+    }
+}
+
 struct ManifestPlacement: Codable, Hashable {
     let id: String
     let text: String
@@ -293,14 +328,32 @@ struct SavedDirectory: Identifiable, Codable, Hashable {
     var bookmarkData: Data
 }
 
+enum AppAlertAction: Equatable {
+    case openAccessibilitySettings
+}
+
 struct AppAlert: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+    let action: AppAlertAction?
+
+    init(title: String, message: String, action: AppAlertAction? = nil) {
+        self.title = title
+        self.message = message
+        self.action = action
+    }
 }
 
 enum ScriptParser {
-    static func split(_ raw: String, mode: SplitMode) -> [String] {
+    static func split(_ raw: String, mode: SplitMode, preservingEmptyLines: Bool = false) -> [String] {
+        if mode == .line && preservingEmptyLines {
+            return raw
+                .replacingOccurrences(of: "\r", with: "")
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+
         let normalized = raw.replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return [] }
 

@@ -1,8 +1,15 @@
 import SwiftUI
+import CoreText
 
 @main
 struct BrollNamerApp: App {
     @State private var model = AppModel()
+
+    init() {
+        if let fontURL = Bundle.main.url(forResource: "SmileySans-Oblique", withExtension: "ttf") {
+            _ = CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
+        }
+    }
 
     var body: some Scene {
         WindowGroup("B-roll 配对台") {
@@ -25,7 +32,7 @@ struct BrollNamerApp: App {
 
                 Divider()
 
-                Button("在 Finder 中打开 JSON 清单") {
+                Button("在 Finder 新标签页中打开 JSON 清单") {
                     model.revealManifest()
                 }
 
