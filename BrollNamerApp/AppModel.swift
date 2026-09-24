@@ -1,10 +1,11 @@
 import AppKit
-import Combine
 import Foundation
+import Observation
 import UniformTypeIdentifiers
 
+@Observable
 @MainActor
-final class AppModel: ObservableObject {
+final class AppModel {
     static let videoExtensions: Set<String> = [
         "mp4", "mov", "m4v", "webm", "avi", "mkv", "mts", "m2ts"
     ]
@@ -12,32 +13,32 @@ final class AppModel: ObservableObject {
         "jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "tif", "tiff", "bmp"
     ]
 
-    @Published var scriptText: String
-    @Published var splitMode: SplitMode
-    @Published var prefix: String
-    @Published var anchorSearchText = ""
+    var scriptText: String
+    var splitMode: SplitMode
+    var prefix: String
+    var anchorSearchText = ""
     let dropFeedback = DropFeedbackModel()
-    @Published var selectedSourceFileURL: URL?
-    @Published var sourceFileJumpID: UUID?
-    @Published var mediaFilter: MediaFilter = .all {
+    var selectedSourceFileURL: URL?
+    var sourceFileJumpID: UUID?
+    var mediaFilter: MediaFilter = .all {
         didSet { rebuildVisibleSourceFiles() }
     }
-    @Published var isScriptEditorPresented = false
-    @Published var isManifestPreviewPresented = false
-    @Published private(set) var manifestPreviewText = ""
-    @Published var isClearConfirmationPresented = false
-    @Published var isBusy = false
-    @Published var statusMessage = "请设置素材来源和归档位置"
-    @Published var lastSaved = "尚未保存"
-    @Published var alert: AppAlert?
+    var isScriptEditorPresented = false
+    var isManifestPreviewPresented = false
+    private(set) var manifestPreviewText = ""
+    var isClearConfirmationPresented = false
+    var isBusy = false
+    var statusMessage = "请设置素材来源和归档位置"
+    var lastSaved = "尚未保存"
+    var alert: AppAlert?
 
-    @Published private(set) var rows: [AnchorRow] = []
-    @Published private(set) var assignments: [String: [BrollAsset]] = [:]
-    @Published private(set) var sourceFiles: [SourceFile] = []
-    @Published private(set) var visibleSourceFiles: [SourceFile] = []
-    @Published private(set) var sourceDirectoryURL: URL?
-    @Published private(set) var destinationDirectoryURL: URL?
-    @Published private(set) var savedDirectories: [SavedDirectory] = []
+    private(set) var rows: [AnchorRow] = []
+    private(set) var assignments: [String: [BrollAsset]] = [:]
+    private(set) var sourceFiles: [SourceFile] = []
+    private(set) var visibleSourceFiles: [SourceFile] = []
+    private(set) var sourceDirectoryURL: URL?
+    private(set) var destinationDirectoryURL: URL?
+    private(set) var savedDirectories: [SavedDirectory] = []
 
     private let defaults = UserDefaults.standard
     private var sourceAccessActive = false

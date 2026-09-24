@@ -12,7 +12,7 @@ private enum ListPaneMetrics {
 }
 
 struct ContentView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
     @State private var isSidebarVisible = true
 
@@ -386,7 +386,7 @@ private final class MaterialScrollbar: NSView {
 }
 
 private struct SidebarView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @Binding var themeRawValue: String
     @Binding var isSidebarVisible: Bool
     @FocusState private var isPrefixFocused: Bool
@@ -542,7 +542,7 @@ private struct SidebarSection<Content: View>: View {
 }
 
 private struct SidebarStatusView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
 
     private var isConnected: Bool {
         model.sourceDirectoryURL != nil && model.destinationDirectoryURL != nil
@@ -880,10 +880,12 @@ private struct AnchorHeaderMetric: View {
 }
 
 private struct AnchorListView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
 
     var body: some View {
+        let filteredRows = model.filteredRows
+
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 if !isSidebarVisible {
@@ -958,7 +960,7 @@ private struct AnchorListView: View {
                     .pointerCursor()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.filteredRows.isEmpty {
+            } else if filteredRows.isEmpty {
                 ContentUnavailableView {
                     Label("没有匹配的文案", systemImage: "magnifyingglass")
                 } description: {
@@ -973,7 +975,7 @@ private struct AnchorListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(model.filteredRows) { row in
+                    ForEach(filteredRows) { row in
                         AnchorRowView(row: row, model: model)
                             .listRowSeparator(.hidden)
                     }
@@ -1075,7 +1077,7 @@ private struct PaneHeaderAction {
 
 private struct AnchorRowView: View {
     let row: AnchorRow
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @StateObject private var dropState = AnchorDropState()
 
     private var assets: [BrollAsset] { model.assets(for: row.id) }
@@ -1217,7 +1219,7 @@ private struct RollTypeTag: View {
 
 private struct AssetChip: View {
     let asset: BrollAsset
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     let isDropTarget: Bool
     let isSelected: Bool
     @State private var isUnbindConfirmationPresented = false
@@ -1308,7 +1310,7 @@ private struct AssetChip: View {
 }
 
 private struct MaterialListHeader: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @Binding var isDirectoryPopoverPresented: Bool
 
     var body: some View {
@@ -1385,7 +1387,7 @@ private struct MaterialListHeader: View {
 }
 
 private struct DirectoryManagerPopover: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     let dismiss: () -> Void
 
     var body: some View {
@@ -1543,7 +1545,7 @@ private struct SavedDirectoryRow: View {
 }
 
 private struct DetailView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @State private var selectedSourceFileURLs: Set<URL> = []
     @State private var isDirectoryPopoverPresented = false
     @FocusState private var isMaterialListFocused: Bool
@@ -1955,7 +1957,7 @@ private final class MediaPreviewController: ObservableObject {
 private struct SourceFileRow: View {
     let file: SourceFile
     let index: Int
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     let isAssigned: Bool
     let isSelected: Bool
 
@@ -2480,7 +2482,7 @@ private enum VideoThumbnailLoader {
 
 private struct ScriptEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
 
     var body: some View {
         NavigationStack {

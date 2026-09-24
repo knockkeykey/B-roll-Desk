@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct BrollNamerApp: App {
-    @StateObject private var model = AppModel()
+    @State private var model = AppModel()
 
     var body: some Scene {
         WindowGroup("B-roll 配对台") {
