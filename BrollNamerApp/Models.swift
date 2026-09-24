@@ -132,45 +132,15 @@ struct BrollAsset: Identifiable, Codable, Hashable {
     }
 }
 
-struct ManifestNaming: Codable, Hashable {
-    let filenamePattern: String
-    let defaultTrack: String
-    let defaultAudio: String
-    let copyMode: Bool
-}
-
-struct ManifestAnchor: Codable, Hashable {
+struct ManifestPlacement: Codable, Hashable {
     let id: String
-    let index: Int
     let text: String
-    let assets: [BrollAsset]
+    let files: [String]
 }
 
 struct BrollManifest: Codable, Hashable {
-    let schema: String
-    let generatedAt: String
-    let tool: String
-    let destinationDirectory: String?
-    let naming: ManifestNaming
-    let anchors: [ManifestAnchor]
-
-    var fullScreen: BrollManifest {
-        BrollManifest(
-            schema: schema,
-            generatedAt: generatedAt,
-            tool: tool,
-            destinationDirectory: destinationDirectory,
-            naming: naming,
-            anchors: anchors.map { anchor in
-                ManifestAnchor(
-                    id: anchor.id,
-                    index: anchor.index,
-                    text: anchor.text,
-                    assets: anchor.assets.map(\.fullScreen)
-                )
-            }
-        )
-    }
+    let defaultAudio: String
+    let placements: [ManifestPlacement]
 }
 
 struct AssignmentStore: Codable {

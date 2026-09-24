@@ -118,6 +118,13 @@ final class AppModel: ObservableObject {
         assignments[rowID] ?? []
     }
 
+    func explainARollTag() {
+        alert = AppAlert(
+            title: "A-roll 锚点",
+            message: "这句文案还没有绑定 B-roll。把素材列表中的视频或图片拖到这条文案上，就会复制并归档；绑定后，这里会显示 B-roll。"
+        )
+    }
+
     func isAssigned(_ file: SourceFile) -> Bool {
         assignedNames.contains(file.name)
     }
@@ -339,7 +346,7 @@ final class AppModel: ObservableObject {
 
     func previewManifest() {
         do {
-            let data = try encodedJSON(currentManifest().fullScreen)
+            let data = try encodedJSON(currentManifest())
             manifestPreviewText = String(decoding: data, as: UTF8.self)
             isManifestPreviewPresented = true
         } catch {
@@ -566,18 +573,15 @@ final class AppModel: ObservableObject {
 
     private func currentManifest() -> BrollManifest {
         BrollManifest(
-            schema: "broll-manifest.v1",
-            generatedAt: ISO8601DateFormatter().string(from: Date()),
-            tool: "B-roll 配对台",
-            destinationDirectory: destinationDirectoryURL?.lastPathComponent,
-            naming: ManifestNaming(
-                filenamePattern: "期数或前缀_BR###_文案短句.ext",
-                defaultTrack: "V2",
-                defaultAudio: "mute",
-                copyMode: true
-            ),
-            anchors: rows.map { row in
-                ManifestAnchor(id: row.id, index: row.index, text: row.text, assets: assets(for: row.id))
+            defaultAudio: "mute",
+            placements: rows.compactMap { row in
+                let rowAssets = assets(for: row.id)
+                guard !rowAssets.isEmpty else { return nil }
+                return ManifestPlacement(
+                    id: "BR\(String(format: "%03d", row.index))",
+                    text: row.text,
+                    files: rowAssets.map(\.outputName)
+                )
             }
         )
     }
@@ -589,12 +593,11 @@ final class AppModel: ObservableObject {
     }
 
     private func writeManifest(_ manifest: BrollManifest, to directoryURL: URL) throws {
-        let fullScreenManifest = manifest.fullScreen
-        try encodedJSON(fullScreenManifest).write(
+        try encodedJSON(manifest).write(
             to: directoryURL.appendingPathComponent("broll-manifest.json"),
             options: .atomic
         )
-        try manifestMarkdown(fullScreenManifest).write(
+        try manifestMarkdown(manifest).write(
             to: directoryURL.appendingPathComponent("broll-manifest.md"),
             atomically: true,
             encoding: .utf8
@@ -605,22 +608,16 @@ final class AppModel: ObservableObject {
         var lines = [
             "# B-roll placement map",
             "",
-            "- Generated: \(manifest.generatedAt)",
-            "- Destination: \(manifest.destinationDirectory ?? "not selected")",
-            "- Default track: V2",
-            "- Default audio: mute",
+            "- Default video audio: \(manifest.defaultAudio)",
+            "- Track: choose an available track above the matching A-roll in the current ChatCut timeline",
             "",
-            "| ID | Anchor text | Output file | Mode | Track | Audio |",
-            "|---|---|---|---|---|---|"
+            "| ID | Anchor text | B-roll file |",
+            "|---|---|---|"
         ]
 
-        for anchor in manifest.anchors {
-            if anchor.assets.isEmpty {
-                lines.append("| BR\(String(format: "%03d", anchor.index)) | \(anchor.text.replacingOccurrences(of: "|", with: "\\|")) |  |  |  |  |")
-                continue
-            }
-            for asset in anchor.assets {
-                lines.append("| BR\(String(format: "%03d", anchor.index)) | \(anchor.text.replacingOccurrences(of: "|", with: "\\|")) | \(asset.outputName) | \(asset.mode.rawValue) | \(asset.targetTrack) | \(asset.audio) |")
+        for placement in manifest.placements {
+            for file in placement.files {
+                lines.append("| \(placement.id) | \(placement.text.replacingOccurrences(of: "|", with: "\\|")) | \(file) |")
             }
         }
 
@@ -628,7 +625,7 @@ final class AppModel: ObservableObject {
             "",
             "## Codex handoff",
             "",
-            "读取同目录的 `broll-manifest.json`，按 anchor text 在当前最终 A-roll 中定位，再把 output file 放到 V2。不要重新改动 A-roll。",
+            "读取同目录的 `broll-manifest.json`，按 text 在当前最终 A-roll 中定位。将 files 中的素材放到对应位置上方的可用轨道；同一文案有多个文件时，按列表顺序处理并结合当前时间线安排轨道。视频静音，不修改 A-roll。",
             ""
         ])
         return lines.joined(separator: "\n")
@@ -642,31 +639,28 @@ final class AppModel: ObservableObject {
         do {
             let data = try Data(contentsOf: manifestURL)
             let manifest = try JSONDecoder().decode(BrollManifest.self, from: data)
-            guard manifest.schema == "broll-manifest.v1" else { return }
-            let fullScreenManifest = manifest.fullScreen
-
-            if fullScreenManifest != manifest {
-                do {
-                    try writeManifest(fullScreenManifest, to: destinationDirectoryURL)
-                } catch {
-                    statusMessage = "旧清单已在应用内改为全屏，但写回归档位置失败：\(error.localizedDescription)"
-                }
-            }
-
             var changed = false
-            for anchor in fullScreenManifest.anchors {
-                var current = assignments[anchor.id] ?? []
-                var known = Set(current.map(assetIdentity))
-                for asset in anchor.assets where !known.contains(assetIdentity(asset)) {
-                    current.append(asset)
-                    known.insert(assetIdentity(asset))
-                    changed = true
+            for placement in manifest.placements {
+                guard let row = matchingRow(for: placement) else { continue }
+                let fileNames = placement.files.filter { file in
+                    !file.isEmpty && file == (file as NSString).lastPathComponent && file != "." && file != ".."
                 }
-                if !current.isEmpty {
-                    assignments[anchor.id] = current
+                let assets = fileNames.map { file in
+                    BrollAsset(
+                        id: "manifest-\(row.id)-\(file)",
+                        anchorKey: row.id,
+                        anchorIndex: row.index,
+                        anchorText: row.text,
+                        sourceName: file,
+                        outputName: file,
+                        mode: .fs,
+                        targetTrack: "",
+                        audio: manifest.defaultAudio,
+                        copiedAt: ""
+                    )
                 }
+                changed = mergeManifestAssets(assets, into: row) || changed
             }
-
             if changed {
                 saveAssignments()
                 lastSaved = "已从 manifest 恢复"
@@ -677,7 +671,31 @@ final class AppModel: ObservableObject {
     }
 
     private func assetIdentity(_ asset: BrollAsset) -> String {
-        asset.id.isEmpty ? "\(asset.outputName)|\(asset.sourceName)" : asset.id
+        "\(asset.anchorKey)|\(asset.outputName)"
+    }
+
+    private func mergeManifestAssets(_ assets: [BrollAsset], into row: AnchorRow) -> Bool {
+        var current = assignments[row.id] ?? []
+        var known = Set(current.map(assetIdentity))
+        var changed = false
+        for asset in assets where !known.contains(assetIdentity(asset)) {
+            current.append(asset)
+            known.insert(assetIdentity(asset))
+            changed = true
+        }
+        if !current.isEmpty {
+            assignments[row.id] = current
+        }
+        return changed
+    }
+
+    private func matchingRow(for placement: ManifestPlacement) -> AnchorRow? {
+        let textMatches = rows.filter { $0.text == placement.text }
+        if let index = Int(placement.id.dropFirst(2)),
+           let exactMatch = textMatches.first(where: { $0.index == index }) {
+            return exactMatch
+        }
+        return textMatches.count == 1 ? textMatches.first : nil
     }
 
     private func restoreAssignments() {

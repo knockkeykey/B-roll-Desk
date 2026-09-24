@@ -200,7 +200,7 @@ private struct MaterialScrollbarInstaller: NSViewRepresentable {
         var isScheduling = false
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    fileprivate func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -236,9 +236,14 @@ private struct MaterialScrollbarInstaller: NSViewRepresentable {
             if coordinator.scrollView !== scrollView {
                 coordinator.indicator?.removeFromSuperview()
                 let indicator = MaterialScrollbar(scrollView: scrollView)
-                indicator.frame = NSRect(x: scrollView.bounds.width - 10, y: 0, width: 10, height: scrollView.bounds.height)
-                indicator.autoresizingMask = [.minXMargin, .height]
+                indicator.translatesAutoresizingMaskIntoConstraints = false
                 scrollView.addSubview(indicator, positioned: .above, relativeTo: nil)
+                NSLayoutConstraint.activate([
+                    indicator.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+                    indicator.topAnchor.constraint(equalTo: scrollView.topAnchor),
+                    indicator.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+                    indicator.widthAnchor.constraint(equalToConstant: 10)
+                ])
                 coordinator.scrollView = scrollView
                 coordinator.indicator = indicator
             }
@@ -330,12 +335,16 @@ private final class MaterialScrollbar: NSView {
             ? visible.minY - documentRect.minY
             : documentRect.maxY - visible.maxY
         let progress = min(1, max(0, offset / range))
-        return NSRect(x: 2, y: (bounds.height - height) * progress, width: 6, height: height)
+        return NSRect(x: 1, y: (bounds.height - height) * progress, width: max(4, bounds.width - 2), height: height)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let thumbRect else { return }
-        NSColor.labelColor.withAlphaComponent(isHovered || isDragging ? 0.28 : 0.16).setFill()
+        let trackRect = NSRect(x: bounds.midX - 1, y: 2, width: 2, height: max(0, bounds.height - 4))
+        NSColor.labelColor.withAlphaComponent(isHovered || isDragging ? 0.10 : 0.055).setFill()
+        NSBezierPath(roundedRect: trackRect, xRadius: 1, yRadius: 1).fill()
+
+        NSColor.labelColor.withAlphaComponent(isHovered || isDragging ? 0.62 : 0.38).setFill()
         NSBezierPath(roundedRect: thumbRect, xRadius: 3, yRadius: 3).fill()
     }
 
@@ -606,7 +615,7 @@ private struct DirectoryChoiceRow: View {
                     Image(systemName: "folder.badge.plus")
                 }
                 .buttonStyle(IconActionButtonStyle())
-                .instantHelp("选择或更换归档位置")
+                .hoverHelp("选择或更换归档位置")
                 .accessibilityLabel("选择或更换归档位置，当前：\(value)")
                 .pointerCursor()
 
@@ -616,7 +625,7 @@ private struct DirectoryChoiceRow: View {
                     }
                     .buttonStyle(IconActionButtonStyle())
                     .foregroundStyle(.secondary)
-                    .instantHelp("在 Finder 中打开归档目录")
+                    .hoverHelp("在 Finder 中打开归档目录")
                     .accessibilityLabel("在 Finder 中打开归档目录")
                     .pointerCursor()
                 }
@@ -642,7 +651,7 @@ private struct ConfigurationStatusIcon: View {
         Image(systemName: isConfigured ? "checkmark.circle.fill" : "circle.dotted")
             .font(.caption)
             .foregroundStyle(isConfigured ? Color.green : Color.orange)
-            .instantHelp(isConfigured ? readyHelp : waitingHelp)
+            .hoverHelp(isConfigured ? readyHelp : waitingHelp)
             .accessibilityLabel(isConfigured ? readyHelp : waitingHelp)
     }
 }
@@ -745,7 +754,7 @@ private struct ManifestIconButton: View {
                 .frame(width: 42, height: 36)
         }
         .buttonStyle(SidebarActionButtonStyle(tint: .primary))
-        .instantHelp(title)
+        .hoverHelp(title)
         .accessibilityLabel(title)
         .pointerCursor()
     }
@@ -863,7 +872,7 @@ private struct AnchorHeaderMetric: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 5)
         .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .instantHelp("\(label)：\(value)，\(detail)")
+        .hoverHelp("\(label)：\(value)，\(detail)")
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label) \(value)，\(detail)")
     }
@@ -881,7 +890,7 @@ private struct AnchorListView: View {
                         Image(systemName: "sidebar.left")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .instantHelp("展开侧边栏")
+                    .hoverHelp("展开侧边栏")
                     .accessibilityLabel("展开侧边栏")
                     .pointerCursor()
                 }
@@ -898,7 +907,7 @@ private struct AnchorListView: View {
                     Image(systemName: "doc.text")
                 }
                 .buttonStyle(IconActionButtonStyle())
-                .instantHelp("编辑或导入视频文案")
+                .hoverHelp("编辑或导入视频文案")
                 .accessibilityLabel("编辑或导入视频文案")
                 .pointerCursor()
             }
@@ -920,7 +929,7 @@ private struct AnchorListView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .instantHelp("清除搜索")
+                    .hoverHelp("清除搜索")
                     .accessibilityLabel("清除搜索")
                     .pointerCursor()
                 }
@@ -965,6 +974,7 @@ private struct AnchorListView: View {
                 List {
                     ForEach(model.filteredRows) { row in
                         AnchorRowView(row: row, model: model)
+                            .listRowSeparator(.hidden)
                     }
                 }
                 .listStyle(.inset)
@@ -1030,7 +1040,7 @@ private struct PaneHeader: View {
                 }
                 .buttonStyle(IconActionButtonStyle())
                 .foregroundStyle(.secondary)
-                .instantHelp(headerAction.help)
+                .hoverHelp(headerAction.help)
                 .accessibilityLabel(headerAction.accessibilityLabel)
                 .pointerCursor()
             }
@@ -1071,25 +1081,18 @@ private struct AnchorRowView: View {
     private var isDropTarget: Bool { dropState.isActive }
     private var isAssigned: Bool { !assets.isEmpty }
     private var hasAvailableSource: Bool { assets.contains { model.sourceFile(for: $0) != nil } }
-    private var matchesSelectedSource: Bool {
-        guard let sourceName = model.selectedSourceFileURL?.lastPathComponent else { return false }
-        return assets.contains { $0.sourceName == sourceName }
-    }
-
     private var rowFill: Color {
         if isDropTarget { return Color.accentColor.opacity(0.13) }
-        if matchesSelectedSource { return Color.orange.opacity(0.17) }
         return Color.primary.opacity(0.02)
     }
 
     private var rowBorder: Color {
         if isDropTarget { return Color.accentColor.opacity(0.78) }
-        if matchesSelectedSource { return Color.orange.opacity(0.95) }
-        return .clear
+        return Color.primary.opacity(0.08)
     }
 
     private var rowBorderWidth: CGFloat {
-        isDropTarget || matchesSelectedSource ? 2 : 0
+        isDropTarget ? 2 : 0.7
     }
 
     var body: some View {
@@ -1106,14 +1109,18 @@ private struct AnchorRowView: View {
                             .font(.caption2.monospaced())
                             .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary.opacity(0.72))
                         Spacer(minLength: 8)
-                        RollTypeTag(isBroll: isAssigned, assetCount: assets.count)
+                        RollTypeTag(
+                            isBroll: isAssigned,
+                            assetCount: assets.count,
+                            onTap: { model.explainARollTag() }
+                        )
                     }
                     Text(row.text)
                         .font(.body)
                         .foregroundStyle(.primary)
                         .lineSpacing(2)
                         .textSelection(.enabled)
-                        .instantHelp("从素材目录或 Finder 拖入图片 / 视频，绑定到这条文案锚点")
+                        .hoverHelp("从素材目录或 Finder 拖入图片 / 视频，绑定到这条文案锚点")
                 }
             }
             .contentShape(Rectangle())
@@ -1165,10 +1172,23 @@ private struct AnchorRowView: View {
 private struct RollTypeTag: View {
     let isBroll: Bool
     let assetCount: Int
+    let onTap: () -> Void
 
     private var tint: Color { isBroll ? .green : .accentColor }
 
     var body: some View {
+        if isBroll {
+            tag
+        } else {
+            Button(action: onTap) {
+                tag
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+    }
+
+    private var tag: some View {
         HStack(spacing: 4) {
             Image(systemName: isBroll ? "film" : "waveform")
             Text(isBroll ? "B-roll" : "A-roll")
@@ -1186,9 +1206,9 @@ private struct RollTypeTag: View {
             Capsule()
                 .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
         }
-        .instantHelp(isBroll
+        .hoverHelp(isBroll
             ? "已绑定 \(assetCount) 个视频或图片，文件已复制到归档目录"
-            : "默认 A-roll，尚未绑定 B-roll 素材"
+            : "点击查看 A-roll 说明和绑定方法"
         )
         .accessibilityLabel(isBroll ? "B-roll，已绑定 \(assetCount) 个素材" : "A-roll，尚未绑定 B-roll 素材")
     }
@@ -1199,6 +1219,7 @@ private struct AssetChip: View {
     @ObservedObject var model: AppModel
     let isDropTarget: Bool
     let isSelected: Bool
+    @State private var isUnbindConfirmationPresented = false
 
     private var mediaSymbol: String {
         let ext = URL(fileURLWithPath: asset.sourceName).pathExtension.lowercased()
@@ -1231,14 +1252,12 @@ private struct AssetChip: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(model.sourceFile(for: asset) == nil)
-            .instantHelp(model.sourceFile(for: asset) == nil
-                ? "当前素材目录中没有此源文件"
-                : "在素材目录中定位 \(asset.sourceName)")
+            .hoverHelp("归档名：\(asset.outputName)\n\n完整媒体文件名：\(asset.sourceName)")
             .accessibilityLabel("定位源文件 \(asset.sourceName)")
             .pointerCursor(model.sourceFile(for: asset) == nil ? .arrow : .pointingHand)
 
             Button {
-                model.unbind(asset)
+                isUnbindConfirmationPresented = true
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.semibold))
@@ -1246,9 +1265,21 @@ private struct AssetChip: View {
             }
             .buttonStyle(IconActionButtonStyle())
             .foregroundStyle(.secondary)
-            .instantHelp("取消绑定并删除归档副本；原始素材保留")
+            .hoverHelp("取消绑定并删除归档副本；原始素材保留")
             .accessibilityLabel("取消绑定并删除归档副本 \(asset.sourceName)")
             .pointerCursor()
+            .confirmationDialog(
+                "取消绑定这个素材？",
+                isPresented: $isUnbindConfirmationPresented,
+                titleVisibility: .visible
+            ) {
+                Button("删除归档副本并取消绑定", role: .destructive) {
+                    model.unbind(asset)
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("归档副本将被删除，素材目录中的原始文件会保留。")
+            }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
@@ -1302,14 +1333,14 @@ private struct MaterialListHeader: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(minWidth: 55, maxWidth: .infinity, alignment: .leading)
-                        .instantHelp(model.sourceDirectoryURL?.path ?? "尚未选择素材来源")
+                        .hoverHelp(model.sourceDirectoryURL?.path ?? "尚未选择素材来源")
                     Button {
                         model.chooseSourceDirectory()
                     } label: {
                         Image(systemName: "folder.badge.plus")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .instantHelp(model.sourceDirectoryURL == nil ? "选择素材来源目录" : "更换素材来源目录")
+                    .hoverHelp(model.sourceDirectoryURL == nil ? "选择素材来源目录" : "更换素材来源目录")
                     .accessibilityLabel(model.sourceDirectoryURL == nil ? "选择素材来源目录" : "更换素材来源目录")
                     .pointerCursor()
 
@@ -1319,7 +1350,7 @@ private struct MaterialListHeader: View {
                         Image(systemName: "ellipsis")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .instantHelp("管理常用素材目录")
+                    .hoverHelp("管理常用素材目录")
                     .accessibilityLabel("管理常用素材目录")
                     .pointerCursor()
                     .popover(isPresented: $isDirectoryPopoverPresented, arrowEdge: .trailing) {
@@ -1372,7 +1403,7 @@ private struct DirectoryManagerPopover: View {
                     .controlSize(.small)
                     .font(.caption)
                     .accessibilityLabel("收藏当前素材目录")
-                    .instantHelp("将当前目录加入常用目录")
+                    .hoverHelp("将当前目录加入常用目录")
                     .pointerCursor()
                 }
             }
@@ -1490,7 +1521,7 @@ private struct SavedDirectoryRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .instantHelp("切换到素材目录：\(directory.name)")
+            .hoverHelp("切换到素材目录：\(directory.name)")
             .accessibilityLabel("切换素材目录：\(directory.name)")
             .pointerCursor()
 
@@ -1502,7 +1533,7 @@ private struct SavedDirectoryRow: View {
                     .foregroundStyle(.secondary)
             }
             .menuStyle(.borderlessButton)
-            .instantHelp("管理常用目录")
+            .hoverHelp("管理常用目录")
             .accessibilityLabel("管理常用目录")
             .pointerCursor()
         }
@@ -1547,6 +1578,7 @@ private struct DetailView: View {
                                     ForEach(Array(model.visibleSourceFiles.enumerated()), id: \.element.id) { index, file in
                                         SourceFileRow(
                                             file: file,
+                                            index: index + 1,
                                             model: model,
                                             isAssigned: model.isAssigned(file),
                                             isSelected: selectedSourceFileURLs.contains(file.url)
@@ -1560,7 +1592,7 @@ private struct DetailView: View {
 
                                         if index < model.visibleSourceFiles.count - 1 {
                                             Divider()
-                                                .padding(.leading, 128)
+                                                .padding(.leading, 174)
                                                 .padding(.trailing, 16)
                                         }
                                     }
@@ -1683,7 +1715,7 @@ private struct MediaFilterPicker: View {
         .labelsHidden()
         .controlSize(.large)
         .frame(width: 156, height: 40)
-        .instantHelp("筛选素材类型")
+        .hoverHelp("筛选素材类型")
         .pointerCursor()
     }
 }
@@ -1697,7 +1729,7 @@ private struct MediaPreviewView: View {
             PaneHeader(
                 title: "当前媒体",
                 systemImage: file?.kind.systemImage ?? "play.rectangle",
-                count: file == nil ? "未选择" : "已选择"
+                count: file == nil ? "未选择" : nil
             )
 
             HStack(spacing: 8) {
@@ -1708,7 +1740,7 @@ private struct MediaPreviewView: View {
                         Text(file.name)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .instantHelp(file.name)
+                            .hoverHelp(file.name)
                         Text(MediaFormatting.bytes(file.byteCount))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -1720,7 +1752,7 @@ private struct MediaPreviewView: View {
                         Image(systemName: "eye")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .instantHelp("使用 Quick Look 打开素材")
+                    .hoverHelp("使用 Quick Look 打开素材")
                     .accessibilityLabel("使用 Quick Look 打开素材")
                     .pointerCursor()
 
@@ -1730,7 +1762,7 @@ private struct MediaPreviewView: View {
                         Image(systemName: "arrow.up.forward.app")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .instantHelp("在 Finder 中显示素材")
+                    .hoverHelp("在 Finder 中显示素材")
                     .accessibilityLabel("在 Finder 中显示素材")
                     .pointerCursor()
                 } else {
@@ -1751,34 +1783,15 @@ private struct MediaPreviewView: View {
                 if file.kind == .image {
                     ImagePreviewContent(file: file)
                 } else {
-                    VStack(spacing: 12) {
-                        NativePlayerView(player: controller.player)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(.black)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(.separator.opacity(0.75), lineWidth: 0.5)
-                            }
-
-                        HStack {
-                            Button {
-                                controller.togglePlayback()
-                            } label: {
-                                Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
-                                    .frame(width: 16)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .instantHelp(controller.isPlaying ? "暂停视频" : "播放视频")
-                            .accessibilityLabel(controller.isPlaying ? "暂停视频" : "播放视频")
-                            .pointerCursor()
-
-                            Spacer(minLength: 8)
-                        }
+                    NativePlayerView(player: controller.player)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.black)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(.separator.opacity(0.75), lineWidth: 0.5)
                     }
                     .padding(16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.windowBackground)
                     .onChange(of: file.url) { _, url in
                         controller.load(url: url)
@@ -1939,12 +1952,31 @@ private final class MediaPreviewController: ObservableObject {
 
 private struct SourceFileRow: View {
     let file: SourceFile
+    let index: Int
     @ObservedObject var model: AppModel
     let isAssigned: Bool
     let isSelected: Bool
 
+    private var assignedAssets: [BrollAsset] {
+        model.rows.flatMap { model.assets(for: $0.id) }
+            .filter { $0.sourceName == file.name }
+    }
+
+    private var hoverDetails: String {
+        let archiveNames = assignedAssets.map(\.outputName)
+        let archiveLines = archiveNames.isEmpty
+            ? "归档名：未归档"
+            : archiveNames.map { "归档名：\($0)" }.joined(separator: "\n\n")
+        return "\(archiveLines)\n\n完整媒体文件名：\(file.name)"
+    }
+
     var body: some View {
         HStack(spacing: 12) {
+            Text(String(format: "%03d", index))
+                .font(.caption.monospacedDigit().weight(.medium))
+                .foregroundStyle(.tertiary)
+                .frame(width: 34, alignment: .trailing)
+
             MediaThumbnailView(file: file)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1979,18 +2011,212 @@ private struct SourceFileRow: View {
             return NSItemProvider(object: file.url as NSURL)
         }
         .pointerCursor()
-        .instantHelp(file.kind == .video ? "点击后在当前媒体播放，或拖拽到文案锚点" : "点击后在当前媒体预览，或拖拽到文案锚点")
+        .hoverHelp(hoverDetails)
         .accessibilityValue(isSelected ? "已选中" : "未选中")
     }
 }
 
-private struct ImmediateHelpModifier: ViewModifier {
+private struct HoverHelpModifier: ViewModifier {
     let text: String
+
+    @State private var isHovering = false
+    @State private var isTooltipVisible = false
+    @State private var showTask: Task<Void, Never>?
 
     func body(content: Content) -> some View {
         content
-            .help(text)
+            .background {
+                HoverTooltipPopoverHost(text: wrappedText, isPresented: isTooltipVisible)
+                    .allowsHitTesting(false)
+            }
             .accessibilityHint(Text(text))
+            .onHover { hovering in
+                showTask?.cancel()
+                isHovering = hovering
+
+                guard hovering else {
+                    isTooltipVisible = false
+                    return
+                }
+
+                showTask = Task { @MainActor in
+                    do {
+                        try await Task.sleep(for: .milliseconds(500))
+                    } catch {
+                        return
+                    }
+                    guard isHovering else { return }
+                    isTooltipVisible = true
+                }
+            }
+            .onDisappear {
+                showTask?.cancel()
+                isHovering = false
+                isTooltipVisible = false
+            }
+    }
+
+    private var wrappedText: String {
+        let maxLineWidth: CGFloat = 360
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13)]
+
+        return text.components(separatedBy: "\n").flatMap { paragraph -> [String] in
+            guard !paragraph.isEmpty else { return [""] }
+
+            var wrappedLines: [String] = []
+            var currentLine = ""
+            for character in paragraph {
+                let candidate = currentLine + String(character)
+                if !currentLine.isEmpty,
+                   (candidate as NSString).size(withAttributes: attributes).width > maxLineWidth {
+                    wrappedLines.append(currentLine)
+                    currentLine = String(character)
+                } else {
+                    currentLine = candidate
+                }
+            }
+            wrappedLines.append(currentLine)
+            return wrappedLines
+        }
+        .joined(separator: "\n")
+    }
+}
+
+private struct HoverTooltipPopoverHost: NSViewRepresentable {
+    let text: String
+    let isPresented: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> HoverTooltipAnchorView {
+        let view = HoverTooltipAnchorView(frame: .zero)
+        context.coordinator.anchorView = view
+        return view
+    }
+
+    func updateNSView(_ view: HoverTooltipAnchorView, context: Context) {
+        context.coordinator.update(text: text, isPresented: isPresented, anchorView: view)
+    }
+
+    fileprivate static func dismantleNSView(_ view: HoverTooltipAnchorView, coordinator: Coordinator) {
+        coordinator.close()
+    }
+
+    fileprivate final class Coordinator {
+        weak var anchorView: NSView?
+        private var popover: NSPopover?
+        private var presentedText: String?
+
+        func update(text: String, isPresented: Bool, anchorView: NSView) {
+            self.anchorView = anchorView
+            guard isPresented else {
+                close()
+                return
+            }
+
+            show(text: text, from: anchorView)
+        }
+
+        func show(text: String, from anchorView: NSView) {
+            guard let window = anchorView.window else { return }
+
+            let popover: NSPopover
+            if let existing = self.popover {
+                popover = existing
+            } else {
+                let created = NSPopover()
+                created.behavior = .transient
+                created.animates = false
+                self.popover = created
+                popover = created
+            }
+
+            if presentedText != text || popover.contentViewController == nil {
+                let controller = NSHostingController(rootView: HoverTooltip(text: text))
+                popover.contentViewController = controller
+                popover.contentSize = HoverTooltip.preferredSize(for: text)
+                presentedText = text
+            }
+
+            guard !popover.isShown else { return }
+
+            let mouseLocation = NSEvent.mouseLocation
+            let windowPoint = window.convertPoint(fromScreen: mouseLocation)
+            let anchorPoint = anchorView.convert(windowPoint, from: nil)
+            let anchorRect = NSRect(x: anchorPoint.x, y: anchorPoint.y, width: 1, height: 1)
+            let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? window.screen
+            let edge = preferredEdge(
+                around: mouseLocation,
+                popoverSize: popover.contentSize,
+                visibleFrame: screen?.visibleFrame ?? window.frame
+            )
+
+            popover.show(relativeTo: anchorRect, of: anchorView, preferredEdge: edge)
+        }
+
+        private func preferredEdge(around point: NSPoint, popoverSize: CGSize, visibleFrame: NSRect) -> NSRectEdge {
+            let safeFrame = visibleFrame.insetBy(dx: 12, dy: 12)
+            let roomOnRight = safeFrame.maxX - point.x
+            let roomOnLeft = point.x - safeFrame.minX
+            if roomOnRight >= popoverSize.width + 18 { return .maxX }
+            if roomOnLeft >= popoverSize.width + 18 { return .minX }
+
+            let roomBelow = point.y - safeFrame.minY
+            let roomAbove = safeFrame.maxY - point.y
+            if roomBelow >= popoverSize.height + 18 { return .minY }
+            if roomAbove >= popoverSize.height + 18 { return .maxY }
+            return roomBelow >= roomAbove ? .minY : .maxY
+        }
+
+        func close() {
+            if popover?.isShown == true {
+                popover?.performClose(nil)
+            }
+            presentedText = nil
+        }
+    }
+}
+
+private final class HoverTooltipAnchorView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct HoverTooltip: View {
+    let text: String
+
+    private static let maximumTextWidth: CGFloat = 360
+
+    static func preferredSize(for text: String) -> CGSize {
+        let font = NSFont.systemFont(ofSize: 13)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 2
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: paragraphStyle
+        ]
+        let measured = (text as NSString).boundingRect(
+            with: NSSize(width: maximumTextWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attributes
+        ).size
+
+        let width = min(380, max(160, ceil(measured.width) + 20))
+        let height = max(38, ceil(measured.height) + 20)
+        return CGSize(width: width, height: height)
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13))
+            .lineSpacing(2)
+            .frame(width: Self.preferredSize(for: text).width - 20, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(10)
+            .frame(
+                width: Self.preferredSize(for: text).width,
+                height: Self.preferredSize(for: text).height,
+                alignment: .leading
+            )
     }
 }
 
@@ -2019,8 +2245,8 @@ private struct PointerCursorModifier: ViewModifier {
 }
 
 private extension View {
-    func instantHelp(_ text: String) -> some View {
-        modifier(ImmediateHelpModifier(text: text))
+    func hoverHelp(_ text: String) -> some View {
+        modifier(HoverHelpModifier(text: text))
     }
 
     func pointerCursor(_ cursor: NSCursor = .pointingHand) -> some View {
