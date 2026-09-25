@@ -33,11 +33,11 @@ struct BrollNamerApp: App {
 
                 Divider()
 
-                Button("在 Finder 新标签页中打开 JSON 清单") {
+                Button("在 Finder 新标签页中打开给 Codex 的 JSON 清单") {
                     model.revealManifest()
                 }
 
-                Button("预览 JSON 清单") {
+                Button("预览给 Codex 的 JSON 清单") {
                     model.previewManifest()
                 }
             }

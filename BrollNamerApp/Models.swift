@@ -191,6 +191,15 @@ struct BrollManifest: Codable, Hashable {
     let placements: [ManifestPlacement]
 }
 
+struct CodexBrollPlacement: Codable, Hashable {
+    let text: String
+    let files: [String]
+}
+
+struct CodexBrollManifest: Codable, Hashable {
+    let placements: [CodexBrollPlacement]
+}
+
 struct AssignmentStore: Codable {
     let version: Int
     let assignments: [String: [BrollAsset]]

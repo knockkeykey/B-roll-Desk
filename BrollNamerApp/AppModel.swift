@@ -574,13 +574,13 @@ final class AppModel {
 
     func revealManifest() {
         guard let destinationDirectoryURL else {
-            showError(title: "还没有归档位置", message: "请先选择归档文件夹，才能在 Finder 中定位 JSON 清单。")
+            showError(title: "还没有归档位置", message: "请先选择归档文件夹，才能在 Finder 中定位 Codex JSON 清单。")
             return
         }
         guard saveManifest(showMessage: false) else { return }
-        let url = destinationDirectoryURL.appendingPathComponent("broll-manifest.json")
+        let url = destinationDirectoryURL.appendingPathComponent("broll-for-codex.json")
         guard revealInFinder(url) else { return }
-        statusMessage = "已在 Finder 中定位 JSON 清单"
+        statusMessage = "已在 Finder 中定位 Codex JSON 清单"
     }
 
     @discardableResult
@@ -619,11 +619,11 @@ final class AppModel {
 
     func previewManifest() {
         do {
-            let data = try encodedJSON(currentManifest())
+            let data = try encodedJSON(currentCodexManifest())
             manifestPreviewText = String(decoding: data, as: UTF8.self)
             isManifestPreviewPresented = true
         } catch {
-            showError(title: "无法预览 JSON 清单", message: error.localizedDescription)
+            showError(title: "无法预览 Codex JSON 清单", message: error.localizedDescription)
         }
     }
 
@@ -989,7 +989,16 @@ final class AppModel {
         )
     }
 
-    private func encodedJSON(_ manifest: BrollManifest) throws -> Data {
+    private func currentCodexManifest() -> CodexBrollManifest {
+        let manifest = currentManifest()
+        return CodexBrollManifest(
+            placements: manifest.placements.map { placement in
+                CodexBrollPlacement(text: placement.text, files: placement.files)
+            }
+        )
+    }
+
+    private func encodedJSON<T: Encodable>(_ manifest: T) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(manifest)
@@ -998,6 +1007,15 @@ final class AppModel {
     private func writeManifest(_ manifest: BrollManifest, to directoryURL: URL) throws {
         try encodedJSON(manifest).write(
             to: directoryURL.appendingPathComponent("broll-manifest.json"),
+            options: .atomic
+        )
+        let codexManifest = CodexBrollManifest(
+            placements: manifest.placements.map { placement in
+                CodexBrollPlacement(text: placement.text, files: placement.files)
+            }
+        )
+        try encodedJSON(codexManifest).write(
+            to: directoryURL.appendingPathComponent("broll-for-codex.json"),
             options: .atomic
         )
         try manifestMarkdown(manifest).write(
@@ -1028,7 +1046,7 @@ final class AppModel {
             "",
             "## Codex handoff",
             "",
-            "读取同目录的 `broll-manifest.json`，按 text 在当前最终 A-roll 中定位。将 files 中的素材放到对应位置上方的可用轨道；同一文案有多个文件时，按列表顺序处理并结合当前时间线安排轨道。视频静音，不修改 A-roll。",
+            "读取同目录的 `broll-for-codex.json`，根据 placements 中的 text 在当前最终 A-roll 中定位，并把 files 中列出的素材放到对应位置上方的可用轨道。不修改 A-roll。",
             ""
         ])
         return lines.joined(separator: "\n")

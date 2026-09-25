@@ -1,6 +1,6 @@
 # B-roll 配对台
 
-一个本地 macOS 小工具：把拍摄素材目录里的视频或图片拖到对应的文案句子上，自动复制到归档目录、生成稳定文件名，并生成供 Codex 使用的 `broll-manifest.json`。
+一个本地 macOS 小工具：把拍摄素材目录里的视频或图片拖到对应的文案句子上，自动复制到归档目录、生成稳定文件名，并生成供 Codex 使用的 `broll-for-codex.json`。
 
 ## 使用方法
 
@@ -18,17 +18,16 @@
 
 7. 同一目录会自动生成：
 
-   - `broll-manifest.json`：给 Codex / ChatCut 读取的精简映射，只列出已绑定素材的文案
-   - `broll-manifest.md`：人可以直接查看的表格
+   - `broll-for-codex.json`：给 Codex 读取的精简映射，只含文案和对应素材文件名
+   - `broll-manifest.json`：App 用于恢复配对记录，包含内部编号和默认视频音频设置
+   - `broll-manifest.md`：人可以直接查看的表格和 Codex 操作提示
 
-JSON 中每条映射包含 `id`、完整 `text` 和归档文件名数组 `files`。轨道由 Codex 根据 ChatCut 当前时间线安排；视频默认静音。`BR001` 是文案锚点的顺序编号，用来核对文案与文件，不是时间码；实际匹配以完整文案为准。
+给 Codex 的 JSON 只保留完整文案 `text` 和归档文件名数组 `files`。Codex 根据当前 ChatCut 时间线找到文案位置并放入对应素材。`BR001` 等编号仍用于文件命名和人工核对，不是时间码。
 
 ```json
 {
-  "defaultAudio": "mute",
   "placements": [
     {
-      "id": "BR001",
       "text": "文案的完整句子",
       "files": ["BR001_文案的完整句子.mp4", "BR001_文案的完整句子_02.png"]
     }
@@ -41,11 +40,11 @@ JSON 中每条映射包含 `id`、完整 `text` 和归档文件名数组 `files`
 ## 给 Codex 的固定要求
 
 ```text
-读取 B-roll 目录中的 broll-manifest.json。
+读取 B-roll 目录中的 broll-for-codex.json。
 读取当前 ChatCut 项目的最终 A-roll 文字稿和时间线。
 根据 placements 中的 text 找到对应口播位置，
-把 files 中的素材放到该位置上方的可用轨道；同一句有多个文件时，根据当前时间线安排轨道。
-视频默认静音，不修改 A-roll。
+把 files 中列出的素材放到该位置上方的可用轨道。
+不修改 A-roll。
 完成后检查每个素材是否真正出现在正确时间线上。
 ```
 
@@ -53,7 +52,7 @@ JSON 中每条映射包含 `id`、完整 `text` 和归档文件名数组 `files`
 
 这是浏览器本地工具，采用“复制”模式：原始 Finder 文件不会被删除或移动。这样更安全，也避免误操作丢失相机原片。
 
-如果清除了浏览器网站数据，浏览器本地缓存会被清空；目标目录中的 `broll-manifest.json` 仍可用于恢复配对记录。
+如果清除了浏览器网站数据，浏览器本地缓存会被清空；目标目录中的 `broll-manifest.json` 仍可用于恢复配对记录。`broll-for-codex.json` 专门供 Codex 剪辑时读取。
 
 Chrome / Edge 才支持选择本地目录并写入文件。若后续需要“拖入后直接移动原文件”，应改做原生 macOS 小应用或 Finder Quick Action，而不是纯 HTML。
 

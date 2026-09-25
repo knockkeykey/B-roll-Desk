@@ -554,10 +554,10 @@ private struct SidebarView: View {
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.72)
                                 Spacer(minLength: 0)
-                                ManifestIconButton(title: "在 Finder 新标签页中显示 JSON 清单", systemImage: "arrow.up.forward.app") {
+                                ManifestIconButton(title: "在 Finder 中显示给 Codex 的 JSON 清单", systemImage: "arrow.up.forward.app") {
                                     model.revealManifest()
                                 }
-                                ManifestIconButton(title: "预览 JSON 清单内容", systemImage: "eye") {
+                                ManifestIconButton(title: "预览给 Codex 的 JSON 清单", systemImage: "eye") {
                                     model.previewManifest()
                                 }
                                 ManifestIconButton(
@@ -881,7 +881,7 @@ private struct ManifestPreviewSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("JSON 清单预览", systemImage: "curlybraces")
+                Label("Codex JSON 清单预览", systemImage: "curlybraces")
                     .font(.system(size: 17, weight: .semibold))
                 Spacer()
                 Button("完成") { dismiss() }
