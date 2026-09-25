@@ -6,14 +6,90 @@ import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum WindowHeaderMetrics {
+    static let height: CGFloat = 70
+}
+
 private enum ListPaneMetrics {
-    static let headerHeight: CGFloat = 70
+    static let headerHeight: CGFloat = WindowHeaderMetrics.height
     static let toolsHeight: CGFloat = 54
 }
 
 private enum AnchorCaptureFilter: Hashable {
     case all
     case pendingCapture
+}
+
+private struct WorkflowHelpStep: Identifiable {
+    let number: Int
+    let title: String
+    let instruction: String
+
+    var id: Int { number }
+}
+
+private struct WorkflowHelpPopover: View {
+    private let steps = [
+        WorkflowHelpStep(number: 1, title: "写文案", instruction: "完成这期口播文案，后续 A-roll 剪辑以它为准。"),
+        WorkflowHelpStep(number: 2, title: "录制口播（A-roll）", instruction: "录制本期视频的口播。"),
+        WorkflowHelpStep(number: 3, title: "准备配对项目", instruction: "选择剪辑项目文件夹，设置统一命名前缀，再导入文案并按换行拆分。"),
+        WorkflowHelpStep(number: 4, title: "标记需要 B-roll 的文案", instruction: "逐条切换为 B-roll；需要时添加场景、拍摄或素材搜索备注。"),
+        WorkflowHelpStep(number: 5, title: "准备 B-roll 素材", instruction: "对照待拍摄列表拍摄、制作或寻找素材，并把素材放进一个目录。"),
+        WorkflowHelpStep(number: 6, title: "打开素材目录", instruction: "在素材列表中打开刚才整理好的 B-roll 素材目录。"),
+        WorkflowHelpStep(number: 7, title: "绑定对应素材", instruction: "把每条待拍摄文案与素材列表中的对应项目拖拽绑定；绑定后会自动复制到剪辑项目文件夹。"),
+        WorkflowHelpStep(number: 8, title: "检查剪辑项目文件夹", instruction: "确认里面有按规则命名的 B-roll 素材，以及文案与素材映射关系对照表。"),
+        WorkflowHelpStep(number: 9, title: "放入 A-roll 和文案", instruction: "把口播视频和第一步写好的文案放进同一个剪辑项目文件夹。"),
+        WorkflowHelpStep(number: 10, title: "交给 AI 剪辑", instruction: "把整个剪辑项目文件夹交给 AI，按文案剪辑 A-roll，并按对照表插入 B-roll。")
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "list.number")
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("粗剪流程")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("从文案准备到交给 AI 剪辑")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(steps) { step in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text(String(step.number))
+                                .font(.custom("SmileySans-Oblique", size: 15).weight(.bold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 25, height: 25)
+                                .background(Color.accentColor.opacity(0.1), in: Circle())
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(step.title)
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text(step.instruction)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 8)
+
+                        if step.number != steps.last?.number {
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 480, height: 620)
+    }
 }
 
 struct ContentView: View {
@@ -139,7 +215,7 @@ struct ContentView: View {
                     Button("取消", role: .cancel) {}
                         .pointerCursor()
         } message: {
-            Text("将删除当前归档位置中已绑定及符合命名规则的旧素材副本，并更新 JSON 和 Markdown 清单。素材目录中的原始文件会保留。")
+            Text("将删除当前剪辑项目文件夹中已绑定及符合命名规则的旧素材副本，并更新 JSON 和 Markdown 对照表。素材目录中的原始文件会保留。")
         }
         .preferredColorScheme(preferredColorScheme)
         .font(.system(size: 16))
@@ -458,6 +534,7 @@ private struct SidebarView: View {
     @Binding var themeRawValue: String
     @Binding var isSidebarVisible: Bool
     @FocusState private var isPrefixFocused: Bool
+    @State private var isWorkflowHelpPresented = false
 
     private var theme: AppTheme {
         AppTheme(rawValue: themeRawValue) ?? .system
@@ -489,10 +566,10 @@ private struct SidebarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    SidebarSection(title: "归档设置", systemImage: "archivebox", showsHeading: false) {
+                    SidebarSection(title: "项目设置", systemImage: "archivebox", showsHeading: false) {
                         VStack(alignment: .leading, spacing: 14) {
                             DirectoryChoiceRow(
-                                title: "归档位置",
+                                title: "剪辑项目文件夹",
                                 value: model.destinationDirectoryName,
                                 isConfigured: model.destinationDirectoryURL != nil,
                                 action: model.chooseDestinationDirectory,
@@ -537,10 +614,10 @@ private struct SidebarView: View {
                         }
                     }
 
-                    SidebarSection(title: "清单", systemImage: "doc.text", showsHeading: false) {
+                    SidebarSection(title: "对照表", systemImage: "doc.text", showsHeading: false) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 6) {
-                                Label("清单", systemImage: "doc.text")
+                                Label("对照表", systemImage: "doc.text")
                                     .font(.system(size: 17, weight: .semibold))
                                     .foregroundStyle(.primary)
                                 Spacer(minLength: 0)
@@ -553,10 +630,10 @@ private struct SidebarView: View {
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.72)
                                 Spacer(minLength: 0)
-                                ManifestIconButton(title: "在 Finder 中显示给 Codex 的 JSON 清单", systemImage: "arrow.up.forward.app") {
+                                ManifestIconButton(title: "在 Finder 中显示给 Codex 的 JSON 对照表", systemImage: "arrow.up.forward.app") {
                                     model.revealManifest()
                                 }
-                                ManifestIconButton(title: "预览给 Codex 的 JSON 清单", systemImage: "eye") {
+                                ManifestIconButton(title: "预览给 Codex 的 JSON 对照表", systemImage: "eye") {
                                     model.previewManifest()
                                 }
                                 ManifestIconButton(
@@ -577,6 +654,26 @@ private struct SidebarView: View {
                 }
                 .padding(16)
             }
+
+            HStack {
+                Spacer()
+                Button {
+                    isWorkflowHelpPresented = true
+                } label: {
+                    Image(systemName: "questionmark.circle")
+                }
+                .buttonStyle(IconActionButtonStyle(usesAnimation: false))
+                .help("查看粗剪流程")
+                .accessibilityLabel("查看粗剪流程")
+                .pointerCursor()
+                .popover(isPresented: $isWorkflowHelpPresented, arrowEdge: .bottom) {
+                    WorkflowHelpPopover()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.windowBackground)
+            .overlay(alignment: .top) { Divider() }
         }
         .background(.windowBackground)
         .onAppear {
@@ -688,14 +785,14 @@ private struct DirectoryChoiceRow: View {
                 Text(title)
                     .font(.system(size: 16, weight: .semibold))
                 ConfigurationStatusIcon(isConfigured: isConfigured,
-                                        readyHelp: "归档位置已选择",
-                                        waitingHelp: "请选择归档位置")
+                                        readyHelp: "剪辑项目文件夹已选择",
+                                        waitingHelp: "请选择剪辑项目文件夹")
             }
 
             HStack(spacing: 7) {
                 Image(systemName: isConfigured ? "folder.fill" : "folder")
                     .foregroundStyle(isConfigured ? Color.accentColor : Color.orange)
-                Text(value == "未选择" ? "请选择归档文件夹" : value)
+                Text(value == "未选择" ? "请选择剪辑项目文件夹" : value)
                     .font(.system(size: 16))
                     .foregroundStyle(isConfigured ? Color.secondary : Color.orange)
                     .lineLimit(1)
@@ -707,8 +804,8 @@ private struct DirectoryChoiceRow: View {
                     Image(systemName: "folder.badge.plus")
                 }
                 .buttonStyle(IconActionButtonStyle())
-                .hoverHelp("选择或更换归档位置")
-                .accessibilityLabel("选择或更换归档位置，当前：\(value)")
+                .hoverHelp("选择或更换剪辑项目文件夹")
+                .accessibilityLabel("选择或更换剪辑项目文件夹，当前：\(value)")
                 .pointerCursor()
 
                 if isConfigured {
@@ -880,7 +977,7 @@ private struct ManifestPreviewSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("Codex JSON 清单预览", systemImage: "curlybraces")
+                Label("Codex JSON 对照表预览", systemImage: "curlybraces")
                     .font(.system(size: 17, weight: .semibold))
                 Spacer()
                 Button("完成") { dismiss() }
@@ -1090,7 +1187,7 @@ private struct AnchorListView: View {
                 Divider()
             }
 
-            if model.rows.isEmpty {
+            if !model.hasScriptContent {
                 ContentUnavailableView {
                     Label("先导入文案", systemImage: "doc.text.magnifyingglass")
                 } description: {
@@ -1410,8 +1507,11 @@ private struct AnchorRowView: View {
     let splitAtSelection: (String, NSRange) -> Void
     let mergeWithPrevious: (String) -> Void
     @StateObject private var dropState = AnchorDropState()
+    @State private var isNoteEditorPresented = false
+    @State private var noteDraft = ""
 
     private var assets: [BrollAsset] { model.assets(for: row.id) }
+    private var rowNote: String { model.note(for: row.id) }
     private var isDropTarget: Bool { dropState.isActive }
     private var isPendingBinding: Bool {
         model.rollType(for: row.id) == .bRoll && assets.isEmpty
@@ -1444,6 +1544,32 @@ private struct AnchorRowView: View {
                             .font(.caption2.monospaced())
                             .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary.opacity(0.72))
                         Spacer(minLength: 8)
+                        Button {
+                            noteDraft = rowNote
+                            isNoteEditorPresented = true
+                        } label: {
+                            Label("备注", systemImage: rowNote.isEmpty ? "square.and.pencil" : "note.text")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(rowNote.isEmpty ? Color.secondary : Color.accentColor)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(Color.primary.opacity(0.045), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help(rowNote.isEmpty ? "添加备注" : "编辑备注")
+                        .accessibilityLabel(rowNote.isEmpty ? "为这条文案添加备注" : "编辑这条文案的备注")
+                        .pointerCursor()
+                        .popover(isPresented: $isNoteEditorPresented, arrowEdge: .top) {
+                            AnchorNoteEditorView(
+                                rowNumber: row.index,
+                                text: $noteDraft,
+                                onCancel: { isNoteEditorPresented = false },
+                                onSave: {
+                                    model.setNote(noteDraft, for: row.id)
+                                    isNoteEditorPresented = false
+                                }
+                            )
+                        }
                         if model.rollType(for: row.id) == .bRoll {
                             BrollCaptureTag(
                                 isCaptured: model.isBrollCaptured(for: row.id),
@@ -1477,6 +1603,19 @@ private struct AnchorRowView: View {
                             .onTapGesture(count: 2, perform: beginEditing)
                             .pointerCursor()
                     }
+                    if !rowNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "note.text")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(rowNote)
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                                .truncationMode(.tail)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
                 }
             }
             .contentShape(Rectangle())
@@ -1491,7 +1630,8 @@ private struct AnchorRowView: View {
                             asset: asset,
                             model: model,
                             isDropTarget: isDropTarget,
-                            isSelected: model.selectedSourceFileURL?.lastPathComponent == asset.sourceName
+                            isSelected: model.sourceFile(for: asset)?.url.standardizedFileURL
+                                == model.selectedSourceFileURL?.standardizedFileURL
                         )
                     }
                 }
@@ -1516,6 +1656,53 @@ private struct AnchorRowView: View {
         )
         .animation(.snappy(duration: 0.2), value: assets.count)
         .animation(.snappy(duration: 0.2), value: isPendingBinding)
+    }
+}
+
+private struct AnchorNoteEditorView: View {
+    let rowNumber: Int
+    @Binding var text: String
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("BR\(String(format: "%03d", rowNumber)) 拍摄备注")
+                .font(.system(size: 15, weight: .semibold))
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $text)
+                    .font(.system(size: 14))
+                    .scrollContentBackground(.hidden)
+                    .padding(5)
+
+                if text.isEmpty {
+                    Text("记下要拍的内容、动作或场景…")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 13)
+                        .padding(.leading, 11)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(height: 128)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(.separator, lineWidth: 1)
+            }
+
+            HStack {
+                Spacer()
+                Button("取消", action: onCancel)
+                    .pointerCursor()
+                Button("保存", action: onSave)
+                    .buttonStyle(.borderedProminent)
+                    .pointerCursor()
+            }
+        }
+        .padding(14)
+        .frame(width: 320)
     }
 }
 
@@ -1762,7 +1949,7 @@ private struct AssetChip: View {
                             .font(.system(size: 15, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Text("源文件：\(asset.sourceName)")
+                        Text("源文件：\(model.sourceOriginLabel(for: asset))")
                             .font(.system(size: 14))
                             .foregroundStyle(isSelected ? Color.orange : Color.secondary)
                             .lineLimit(1)
@@ -1844,23 +2031,23 @@ private struct MaterialListHeader: View {
 
             HStack(spacing: 8) {
                 HStack(spacing: 9) {
-                    Image(systemName: model.sourceDirectoryURL == nil ? "folder" : "folder.fill")
-                        .foregroundStyle(model.sourceDirectoryURL == nil ? Color.orange : Color.accentColor)
-                    Text(model.sourceDirectoryURL == nil ? "未选择目录" : model.sourceDirectoryName)
+                    Image(systemName: model.sourceDirectories.isEmpty ? "folder" : "folder.fill")
+                        .foregroundStyle(model.sourceDirectories.isEmpty ? Color.orange : Color.accentColor)
+                    Text(model.sourceDirectoryName)
                         .font(.system(size: 16))
-                        .foregroundStyle(model.sourceDirectoryURL == nil ? Color.orange : Color.secondary)
+                        .foregroundStyle(model.sourceDirectories.isEmpty ? Color.orange : Color.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(minWidth: 55, maxWidth: .infinity, alignment: .leading)
-                        .hoverHelp(model.sourceDirectoryURL?.path ?? "尚未选择素材来源")
+                        .hoverHelp(model.sourceDirectoryTooltip)
                     Button {
                         model.chooseSourceDirectory()
                     } label: {
                         Image(systemName: "folder.badge.plus")
                     }
                     .buttonStyle(IconActionButtonStyle())
-                    .hoverHelp(model.sourceDirectoryURL == nil ? "选择素材来源目录" : "更换素材来源目录")
-                    .accessibilityLabel(model.sourceDirectoryURL == nil ? "选择素材来源目录" : "更换素材来源目录")
+                    .hoverHelp("添加一个或多个素材来源目录")
+                    .accessibilityLabel("添加素材来源目录")
                     .pointerCursor()
 
                     Button {
@@ -1946,7 +2133,7 @@ private struct DirectoryManagerPopover: View {
             }
 
             DirectoryPopoverAction(
-                title: "选择素材目录…",
+                title: "添加素材目录…",
                 systemImage: "folder.badge.plus",
                 isPrimary: true,
                 onDirectoryDrop: { url in
@@ -1966,7 +2153,7 @@ private struct DirectoryManagerPopover: View {
             }
 
             DirectoryPopoverAction(
-                title: "选择并收藏新目录…",
+                title: "添加并收藏新目录…",
                 systemImage: "bookmark",
                 onDirectoryDrop: { url in
                     model.acceptSourceDirectoryDrop(url, saveAsFavorite: true)
@@ -1977,6 +2164,64 @@ private struct DirectoryManagerPopover: View {
                 dismiss()
             }
 
+            if !model.sourceDirectories.isEmpty {
+                Divider()
+
+                Text("本项目来源（\(model.sourceDirectories.count)）")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(model.sourceDirectories) { directory in
+                            HStack(spacing: 8) {
+                                Image(systemName: model.isSourceDirectoryAvailable(id: directory.id)
+                                    ? "folder.fill"
+                                    : "folder.badge.questionmark")
+                                    .foregroundStyle(model.isSourceDirectoryAvailable(id: directory.id)
+                                        ? Color.accentColor
+                                        : Color.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(directory.name)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(directory.path)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer(minLength: 2)
+                                if !model.isSourceDirectoryAvailable(id: directory.id) {
+                                    Button {
+                                        model.reconnectProjectSourceDirectory(directory.id)
+                                    } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                    }
+                                    .buttonStyle(IconActionButtonStyle(usesAnimation: false))
+                                    .hoverHelp("重新连接这个素材来源")
+                                    .accessibilityLabel("重新连接素材目录：\(directory.name)")
+                                    .pointerCursor()
+                                }
+                                Button(role: .destructive) {
+                                    model.removeProjectSourceDirectory(directory.id)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(IconActionButtonStyle(usesAnimation: false))
+                                .hoverHelp("从本项目素材来源中移除")
+                                .accessibilityLabel("移除素材目录：\(directory.name)")
+                                .pointerCursor()
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 5)
+                            .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 7))
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(model.sourceDirectories.count) * 46, 160))
+            }
+
             Divider()
 
             Text("常用目录")
@@ -1984,7 +2229,7 @@ private struct DirectoryManagerPopover: View {
                 .foregroundStyle(.secondary)
 
             if model.savedDirectories.isEmpty {
-                Text("收藏目录后，可从这里快速切换。")
+                Text("选择常用目录后，会将它添加到本项目来源。")
                     .font(.system(size: 14))
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1994,7 +2239,7 @@ private struct DirectoryManagerPopover: View {
                         ForEach(model.savedDirectories) { directory in
                             SavedDirectoryRow(
                                 directory: directory,
-                                isSelected: directory.path == model.sourceDirectoryURL?.standardizedFileURL.path,
+                                isSelected: model.isSourceDirectoryConnected(path: directory.path),
                                 select: {
                                     model.selectSavedDirectory(directory.id)
                                     dismiss()
@@ -2090,7 +2335,7 @@ private struct SavedDirectoryRow: View {
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
                     if isSelected {
-                        Text("当前")
+                        Text("已连接")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
@@ -2101,8 +2346,8 @@ private struct SavedDirectoryRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .hoverHelp("切换到素材目录：\(directory.name)")
-            .accessibilityLabel("切换素材目录：\(directory.name)")
+            .hoverHelp("添加到当前项目素材来源：\(directory.name)")
+            .accessibilityLabel("添加素材目录：\(directory.name)")
             .pointerCursor()
 
             Menu {
@@ -2147,9 +2392,9 @@ private struct DetailView: View {
                     ContentUnavailableView {
                         Label("还没有素材", systemImage: "photo.stack")
                     } description: {
-                        Text(model.sourceDirectoryURL == nil ? "选择素材目录" : "没有符合条件的素材")
+                        Text(model.sourceDirectories.isEmpty ? "添加素材目录" : "没有符合条件的素材")
                     } actions: {
-                        Button("选择素材目录") {
+                        Button("添加素材目录") {
                             model.chooseSourceDirectory()
                         }
                         .buttonStyle(.bordered)
@@ -2345,7 +2590,7 @@ private struct MediaPreviewView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .hoverHelp(file.name)
-                        Text(MediaFormatting.bytes(file.byteCount))
+                        Text("\(file.sourceDirectoryName) · \(MediaFormatting.bytes(file.byteCount))")
                             .font(.system(size: 14))
                             .foregroundStyle(.secondary)
                     }
@@ -2584,7 +2829,7 @@ private struct SourceFileRow: View {
     }
 
     private var assignedAssets: [BrollAsset] {
-        model.assignedAssets(forSourceName: file.name)
+        model.assignedAssets(for: file)
     }
 
     private var hoverDetails: String {
@@ -2592,7 +2837,7 @@ private struct SourceFileRow: View {
         let archiveLines = archiveNames.isEmpty
             ? "归档名：未归档"
             : archiveNames.map { "归档名：\($0)" }.joined(separator: "\n\n")
-        return "\(archiveLines)\n\n完整媒体文件名：\(file.name)"
+        return "\(archiveLines)\n\n来源目录：\(file.sourceDirectoryName)\n\n完整媒体路径：\(file.url.path)"
     }
 
     var body: some View {
@@ -2609,7 +2854,7 @@ private struct SourceFileRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(isSelected ? Color.orange : Color.primary)
-                Text(MediaFormatting.bytes(file.byteCount))
+                Text("\(file.sourceDirectoryName) · \(MediaFormatting.bytes(file.byteCount))")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
@@ -3133,7 +3378,7 @@ private struct ScriptEditorSheet: View {
 
                     Spacer()
 
-                    Text("当前生成 \(model.rows.count) 个锚点")
+                    Text("当前生成 \(model.scriptAnchorCount) 个锚点")
                         .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                         .contentTransition(.numericText())
@@ -3146,9 +3391,13 @@ private struct ScriptEditorSheet: View {
                         Label("导入 .txt / .md", systemImage: "doc.badge.plus")
                     }
                     .buttonStyle(.bordered)
+                    .disabled(model.destinationDirectoryURL == nil)
+                    .hoverHelp(model.destinationDirectoryURL == nil
+                        ? "请先选择剪辑项目文件夹，再导入文案"
+                        : "导入 .txt / .md 文稿")
                     .pointerCursor()
 
-                    Text("一行一个锚点；句号模式会按中文和英文句末标点拆分。")
+                    Text("一行一个锚点；句号模式会按中文和英文句末标点拆分。点击“完成”后保存到 A-roll/正确文案.txt。")
                         .font(.system(size: 14))
                         .foregroundStyle(.tertiary)
                 }
@@ -3158,7 +3407,7 @@ private struct ScriptEditorSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
-                        model.parseScript()
+                        model.confirmScript()
                         dismiss()
                     }
                     .keyboardShortcut(.defaultAction)

@@ -122,6 +122,8 @@ struct BrollAsset: Identifiable, Codable, Hashable {
     let anchorIndex: Int
     let anchorText: String
     let sourceName: String
+    let sourceDirectoryID: String?
+    let sourceRelativePath: String?
     let outputName: String
     let mode: BrollMode
     let targetTrack: String
@@ -136,6 +138,8 @@ struct BrollAsset: Identifiable, Codable, Hashable {
             anchorIndex: anchorIndex,
             anchorText: anchorText,
             sourceName: sourceName,
+            sourceDirectoryID: sourceDirectoryID,
+            sourceRelativePath: sourceRelativePath,
             outputName: outputName,
             mode: .fs,
             targetTrack: targetTrack,
@@ -168,6 +172,8 @@ enum AnchorAssignmentMigration {
                     anchorIndex: row.index,
                     anchorText: row.text,
                     sourceName: asset.sourceName,
+                    sourceDirectoryID: asset.sourceDirectoryID,
+                    sourceRelativePath: asset.sourceRelativePath,
                     outputName: asset.outputName,
                     mode: asset.mode,
                     targetTrack: asset.targetTrack,
@@ -177,6 +183,92 @@ enum AnchorAssignmentMigration {
             }
         }
         return migrated
+    }
+}
+
+enum AnchorNoteMigration {
+    static func migrate(
+        _ notes: [String: String],
+        from oldRows: [AnchorRow],
+        to newRows: [AnchorRow],
+        sourceIndices: [[Int]]
+    ) -> [String: String] {
+        var migrated: [String: String] = [:]
+
+        for (offset, row) in newRows.enumerated() where sourceIndices.indices.contains(offset) {
+            let noteParts = sourceIndices[offset].compactMap { sourceIndex -> String? in
+                guard oldRows.indices.contains(sourceIndex),
+                      let note = notes[oldRows[sourceIndex].id],
+                      !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                return note
+            }
+            if !noteParts.isEmpty {
+                migrated[row.id] = noteParts.joined(separator: "\n\n")
+            }
+        }
+
+        return migrated
+    }
+
+    static func migrateAfterScriptEdit(
+        _ notes: [String: String],
+        from oldRows: [AnchorRow],
+        to newRows: [AnchorRow]
+    ) -> [String: String] {
+        guard !notes.isEmpty, !oldRows.isEmpty else { return [:] }
+
+        let difference = newRows.map(\.id).difference(from: oldRows.map(\.id))
+        let removedOldIndices = Set(difference.compactMap { change -> Int? in
+            guard case let .remove(offset, _, _) = change else { return nil }
+            return offset
+        })
+        let insertedNewIndices = Set(difference.compactMap { change -> Int? in
+            guard case let .insert(offset, _, _) = change else { return nil }
+            return offset
+        })
+
+        var sourceIndices = Array(repeating: [Int](), count: newRows.count)
+        var oldIndex = 0
+        var newIndex = 0
+
+        while oldIndex < oldRows.count || newIndex < newRows.count {
+            let oldIsChanged = removedOldIndices.contains(oldIndex)
+            let newIsChanged = insertedNewIndices.contains(newIndex)
+
+            if oldIndex < oldRows.count, newIndex < newRows.count,
+               !oldIsChanged, !newIsChanged {
+                sourceIndices[newIndex] = [oldIndex]
+                oldIndex += 1
+                newIndex += 1
+                continue
+            }
+
+            var oldGap: [Int] = []
+            while oldIndex < oldRows.count, removedOldIndices.contains(oldIndex) {
+                oldGap.append(oldIndex)
+                oldIndex += 1
+            }
+
+            var newGap: [Int] = []
+            while newIndex < newRows.count, insertedNewIndices.contains(newIndex) {
+                newGap.append(newIndex)
+                newIndex += 1
+            }
+
+            if oldGap.count == newGap.count {
+                for (sourceIndex, targetIndex) in zip(oldGap, newGap) {
+                    sourceIndices[targetIndex] = [sourceIndex]
+                }
+            } else if oldGap.count == 1, let sourceIndex = oldGap.first, let targetIndex = newGap.first {
+                sourceIndices[targetIndex] = [sourceIndex]
+            } else if newGap.count == 1, let targetIndex = newGap.first {
+                sourceIndices[targetIndex] = oldGap
+            }
+        }
+
+        return migrate(notes, from: oldRows, to: newRows, sourceIndices: sourceIndices)
     }
 }
 
@@ -203,6 +295,126 @@ struct CodexBrollManifest: Codable, Hashable {
 struct AssignmentStore: Codable {
     let version: Int
     let assignments: [String: [BrollAsset]]
+}
+
+struct ProjectSourceDirectory: Codable, Hashable, Identifiable {
+    let id: String
+    let name: String
+    let path: String
+    let bookmarkData: Data?
+
+    init(id: String = UUID().uuidString.lowercased(), name: String, path: String, bookmarkData: Data?) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.bookmarkData = bookmarkData
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case path
+        case bookmarkData
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? path
+        bookmarkData = try container.decodeIfPresent(Data.self, forKey: .bookmarkData)
+    }
+}
+
+struct BrollProjectSettings: Codable {
+    let formatVersion: Int
+    let projectID: String
+    var prefix: String
+    var scriptRelativePath: String
+    var sourceDirectories: [ProjectSourceDirectory]
+    var splitMode: SplitMode
+    var preservesEmptyAnchors: Bool
+    var anchorNotes: [String: String]
+    var rollTypeOverrides: [String: AnchorRollType]
+    var capturedBrollRowIDs: [String]
+    var assignments: [String: [BrollAsset]]
+
+    init(
+        projectID: String = UUID().uuidString.lowercased(),
+        prefix: String = "",
+        scriptRelativePath: String = "../A-roll/正确文案.txt",
+        sourceDirectories: [ProjectSourceDirectory] = [],
+        splitMode: SplitMode = .line,
+        preservesEmptyAnchors: Bool = true,
+        anchorNotes: [String: String] = [:],
+        rollTypeOverrides: [String: AnchorRollType] = [:],
+        capturedBrollRowIDs: [String] = [],
+        assignments: [String: [BrollAsset]] = [:]
+    ) {
+        self.formatVersion = 2
+        self.projectID = projectID
+        self.prefix = prefix
+        self.scriptRelativePath = scriptRelativePath
+        self.sourceDirectories = sourceDirectories
+        self.splitMode = splitMode
+        self.preservesEmptyAnchors = preservesEmptyAnchors
+        self.anchorNotes = anchorNotes
+        self.rollTypeOverrides = rollTypeOverrides
+        self.capturedBrollRowIDs = capturedBrollRowIDs
+        self.assignments = assignments
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case formatVersion
+        case projectID
+        case prefix
+        case scriptRelativePath
+        case sourceDirectories
+        case sourceDirectory
+        case splitMode
+        case preservesEmptyAnchors
+        case anchorNotes
+        case rollTypeOverrides
+        case capturedBrollRowIDs
+        case assignments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try container.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
+        projectID = try container.decodeIfPresent(String.self, forKey: .projectID) ?? UUID().uuidString.lowercased()
+        prefix = try container.decodeIfPresent(String.self, forKey: .prefix) ?? ""
+        scriptRelativePath = try container.decodeIfPresent(String.self, forKey: .scriptRelativePath)
+            ?? "../A-roll/正确文案.txt"
+        if let directories = try container.decodeIfPresent([ProjectSourceDirectory].self, forKey: .sourceDirectories) {
+            sourceDirectories = directories
+        } else if let legacyDirectory = try container.decodeIfPresent(ProjectSourceDirectory.self, forKey: .sourceDirectory) {
+            sourceDirectories = [legacyDirectory]
+        } else {
+            sourceDirectories = []
+        }
+        splitMode = try container.decodeIfPresent(SplitMode.self, forKey: .splitMode) ?? .line
+        preservesEmptyAnchors = try container.decodeIfPresent(Bool.self, forKey: .preservesEmptyAnchors) ?? true
+        anchorNotes = try container.decodeIfPresent([String: String].self, forKey: .anchorNotes) ?? [:]
+        rollTypeOverrides = try container.decodeIfPresent([String: AnchorRollType].self, forKey: .rollTypeOverrides) ?? [:]
+        capturedBrollRowIDs = try container.decodeIfPresent([String].self, forKey: .capturedBrollRowIDs) ?? []
+        assignments = try container.decodeIfPresent([String: [BrollAsset]].self, forKey: .assignments) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(formatVersion, forKey: .formatVersion)
+        try container.encode(projectID, forKey: .projectID)
+        try container.encode(prefix, forKey: .prefix)
+        try container.encode(scriptRelativePath, forKey: .scriptRelativePath)
+        try container.encode(sourceDirectories, forKey: .sourceDirectories)
+        try container.encode(splitMode, forKey: .splitMode)
+        try container.encode(preservesEmptyAnchors, forKey: .preservesEmptyAnchors)
+        try container.encode(anchorNotes, forKey: .anchorNotes)
+        try container.encode(rollTypeOverrides, forKey: .rollTypeOverrides)
+        try container.encode(capturedBrollRowIDs, forKey: .capturedBrollRowIDs)
+        try container.encode(assignments, forKey: .assignments)
+    }
 }
 
 struct ArchiveCleanupResult: Sendable {
@@ -272,6 +484,9 @@ struct SourceFile: Identifiable, Hashable, Sendable {
     let byteCount: Int64
     let kind: MediaKind
     let modificationDate: Date?
+    let sourceDirectoryID: String
+    let sourceDirectoryName: String
+    let relativePath: String
 
     var id: URL { url }
     var name: String { url.lastPathComponent }
@@ -285,6 +500,7 @@ struct SourceFile: Identifiable, Hashable, Sendable {
 enum SourceFileScanner {
     static func scan(
         in directoryURL: URL,
+        sourceDirectoryID: String,
         videoExtensions: Set<String>,
         imageExtensions: Set<String>
     ) throws -> [SourceFile] {
@@ -331,7 +547,10 @@ enum SourceFileScanner {
                     url: url,
                     byteCount: Int64(values?.fileSize ?? 0),
                     kind: kind,
-                    modificationDate: values?.contentModificationDate
+                    modificationDate: values?.contentModificationDate,
+                    sourceDirectoryID: sourceDirectoryID,
+                    sourceDirectoryName: directoryURL.lastPathComponent,
+                    relativePath: url.lastPathComponent
                 )
             )
         }

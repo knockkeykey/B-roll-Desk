@@ -13,6 +13,7 @@ final class AppModel {
         let splitMode: SplitMode
         let preservesEmptyAnchors: Bool
         let assignments: [String: [BrollAsset]]
+        let anchorNotes: [String: String]
         let rollTypeOverrides: [String: AnchorRollType]
         let capturedBrollRowIDs: Set<String>
 
@@ -51,7 +52,7 @@ final class AppModel {
     private(set) var manifestPreviewText = ""
     var isClearConfirmationPresented = false
     var isBusy = false
-    var statusMessage = "请设置素材来源和归档位置"
+    var statusMessage = "请设置素材来源和剪辑项目文件夹"
     var lastSaved = "尚未保存"
     var alert: AppAlert?
     private(set) var canUndo = false
@@ -59,30 +60,51 @@ final class AppModel {
 
     private(set) var rows: [AnchorRow] = []
     private(set) var assignments: [String: [BrollAsset]] = [:]
+    private(set) var anchorNotes: [String: String] = [:]
     private(set) var rollTypeOverrides: [String: AnchorRollType] = [:]
     private(set) var capturedBrollRowIDs: Set<String> = []
     private(set) var sourceFiles: [SourceFile] = []
     private(set) var visibleSourceFiles: [SourceFile] = []
+    private(set) var sourceDirectories: [ProjectSourceDirectory] = []
     private(set) var sourceDirectoryURL: URL?
     private(set) var destinationDirectoryURL: URL?
     private(set) var savedDirectories: [SavedDirectory] = []
 
+    private var brollDirectoryURL: URL? {
+        destinationDirectoryURL?.appendingPathComponent("B-roll", isDirectory: true)
+    }
+
+    private var aRollScriptURL: URL? {
+        destinationDirectoryURL?
+            .appendingPathComponent("A-roll", isDirectory: true)
+            .appendingPathComponent("正确文案.txt")
+    }
+
+    private var projectSettingsURL: URL? {
+        brollDirectoryURL?.appendingPathComponent("project-settings.json")
+    }
+
     private let defaults = UserDefaults.standard
     let undoManager = UndoManager()
-    private var sourceAccessActive = false
+    private var sourceAccessActive: [String: Bool] = [:]
     private var destinationAccessActive = false
-    private var sourceFilesByName: [String: SourceFile] = [:]
+    private var sourceFilesByName: [String: [SourceFile]] = [:]
     private var sourceFilesByURL: [URL: SourceFile] = [:]
-    private var assignedNamesIndex: Set<String> = []
-    private var assetsBySourceName: [String: [BrollAsset]] = [:]
-    private var sourceScanTask: Task<[SourceFile], Error>?
+    private var assignedSourceIdentities: Set<String> = []
+    private var assignedLegacySourceNames: Set<String> = []
+    private var assetsBySourceIdentity: [String: [BrollAsset]] = [:]
+    private var assetsByLegacySourceName: [String: [BrollAsset]] = [:]
+    private var sourceDirectoryURLs: [String: URL] = [:]
+    private var sourceScanTask: Task<([SourceFile], [String]), Error>?
     private var sourceScanGeneration = UUID()
-    private var sourceDirectoryWatcher: SourceDirectoryWatcher?
+    private var sourceDirectoryWatchers: [String: SourceDirectoryWatcher] = [:]
     private var sourceRefreshWorkItem: DispatchWorkItem?
+    private var projectID = UUID().uuidString.lowercased()
 
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
     private let preservesEmptyAnchorsKey = "broll-namer-preserves-empty-anchors"
+    private let anchorNotesKey = "broll-namer-anchor-notes"
     private let rollTypeOverridesKey = "broll-namer-roll-type-overrides"
     private let capturedBrollRowsKey = "broll-namer-captured-broll-rows"
     private let prefixKey = "broll-namer-prefix"
@@ -96,6 +118,7 @@ final class AppModel {
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
         preservesEmptyAnchors = defaults.bool(forKey: preservesEmptyAnchorsKey)
         prefix = defaults.string(forKey: prefixKey) ?? ""
+        anchorNotes = defaults.dictionary(forKey: anchorNotesKey) as? [String: String] ?? [:]
         rollTypeOverrides = (defaults.dictionary(forKey: rollTypeOverridesKey) ?? [:]).compactMapValues { value in
             guard let rawValue = value as? String else { return nil }
             return AnchorRollType(rawValue: rawValue)
@@ -112,7 +135,26 @@ final class AppModel {
     }
 
     var sourceDirectoryName: String {
-        sourceDirectoryURL?.lastPathComponent ?? "未选择"
+        switch sourceDirectories.count {
+        case 0: return "未选择目录"
+        case 1: return sourceDirectories[0].name
+        default: return "\(sourceDirectories.count) 个目录"
+        }
+    }
+
+    var sourceDirectoryTooltip: String {
+        sourceDirectories.isEmpty
+            ? "尚未选择素材来源"
+            : sourceDirectories.map { "\($0.name)：\($0.path)" }.joined(separator: "\n\n")
+    }
+
+    func isSourceDirectoryConnected(path: String) -> Bool {
+        let standardizedPath = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+        return sourceDirectories.contains { $0.path == standardizedPath }
+    }
+
+    func isSourceDirectoryAvailable(id: String) -> Bool {
+        sourceDirectoryURLs[id] != nil
     }
 
     var destinationDirectoryName: String {
@@ -124,7 +166,7 @@ final class AppModel {
     }
 
     var assignedCount: Int {
-        rows.reduce(0) { $0 + assets(for: $1.id).count }
+        meaningfulRows.reduce(0) { $0 + assets(for: $1.id).count }
     }
 
     var pendingCount: Int {
@@ -132,7 +174,19 @@ final class AppModel {
     }
 
     var pendingBrollCount: Int {
-        rows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll && assets(for: $1.id).isEmpty ? 1 : 0) }
+        meaningfulRows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll && assets(for: $1.id).isEmpty ? 1 : 0) }
+    }
+
+    var hasScriptContent: Bool {
+        rows.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    var scriptAnchorCount: Int {
+        meaningfulRows.count
+    }
+
+    private var meaningfulRows: [AnchorRow] {
+        rows.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     var scriptCharacterCount: Int {
@@ -144,11 +198,11 @@ final class AppModel {
     }
 
     var aRollAnchorCount: Int {
-        rows.reduce(0) { $0 + (rollType(for: $1.id) == .aRoll ? 1 : 0) }
+        meaningfulRows.reduce(0) { $0 + (rollType(for: $1.id) == .aRoll ? 1 : 0) }
     }
 
     var bRollAnchorCount: Int {
-        rows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll ? 1 : 0) }
+        meaningfulRows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll ? 1 : 0) }
     }
 
     var filteredRows: [AnchorRow] {
@@ -170,6 +224,24 @@ final class AppModel {
 
     func assets(for rowID: String) -> [BrollAsset] {
         assignments[rowID] ?? []
+    }
+
+    func note(for rowID: String) -> String {
+        anchorNotes[rowID] ?? ""
+    }
+
+    func setNote(_ note: String, for rowID: String) {
+        guard rows.contains(where: { $0.id == rowID }) else { return }
+        let before = makeUndoSnapshot()
+        if note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            anchorNotes.removeValue(forKey: rowID)
+        } else {
+            anchorNotes[rowID] = note
+        }
+        guard makeUndoSnapshot() != before else { return }
+        persistPreferences()
+        lastSaved = "本机已保存 \(Self.timeString())"
+        registerUndo(named: "编辑文案备注", restoring: before)
     }
 
     func rollType(for rowID: String) -> AnchorRollType {
@@ -218,15 +290,17 @@ final class AppModel {
     }
 
     func isAssigned(_ file: SourceFile) -> Bool {
-        assignedNamesIndex.contains(file.name)
+        assignedSourceIdentities.contains(sourceIdentity(directoryID: file.sourceDirectoryID, relativePath: file.relativePath))
+            || assignedLegacySourceNames.contains(file.name)
     }
 
-    func assignedAssets(forSourceName sourceName: String) -> [BrollAsset] {
-        assetsBySourceName[sourceName] ?? []
+    func assignedAssets(for file: SourceFile) -> [BrollAsset] {
+        let identity = sourceIdentity(directoryID: file.sourceDirectoryID, relativePath: file.relativePath)
+        return (assetsBySourceIdentity[identity] ?? []) + (assetsByLegacySourceName[file.name] ?? [])
     }
 
     func sourceFile(at url: URL) -> SourceFile? {
-        sourceFilesByURL[url]
+        sourceFilesByURL[url.standardizedFileURL]
     }
 
     var isCurrentSourceDirectorySaved: Bool {
@@ -235,14 +309,20 @@ final class AppModel {
         return savedDirectories.contains { $0.path == identity }
     }
 
+    private func sourceIdentity(directoryID: String, relativePath: String) -> String {
+        "\(directoryID)|\(relativePath)"
+    }
+
     func persistPreferences() {
         defaults.set(scriptText, forKey: scriptKey)
         defaults.set(splitMode.rawValue, forKey: splitModeKey)
         defaults.set(preservesEmptyAnchors, forKey: preservesEmptyAnchorsKey)
+        defaults.set(anchorNotes, forKey: anchorNotesKey)
         defaults.set(prefix, forKey: prefixKey)
         defaults.set(rollTypeOverrides.mapValues(\.rawValue), forKey: rollTypeOverridesKey)
         defaults.set(capturedBrollRowIDs.sorted(), forKey: capturedBrollRowsKey)
         saveAssignments()
+        saveProjectSettings()
     }
 
     func undo() {
@@ -277,6 +357,8 @@ final class AppModel {
     }
 
     func parseScript(persist: Bool = true) {
+        let previousRows = rows
+        let previousNotes = anchorNotes
         let chunks = ScriptParser.split(scriptText, mode: splitMode, preservingEmptyLines: preservesEmptyAnchors)
         var occurrences: [String: Int] = [:]
 
@@ -291,6 +373,11 @@ final class AppModel {
             )
         }
         let currentRowIDs = Set(rows.map(\.id))
+        if previousRows.isEmpty {
+            anchorNotes = previousNotes.filter { currentRowIDs.contains($0.key) }
+        } else {
+            anchorNotes = AnchorNoteMigration.migrateAfterScriptEdit(previousNotes, from: previousRows, to: rows)
+        }
         rollTypeOverrides = rollTypeOverrides.filter { currentRowIDs.contains($0.key) }
         capturedBrollRowIDs = capturedBrollRowIDs.filter { currentRowIDs.contains($0) }
         rebuildAssignmentIndexes()
@@ -347,6 +434,7 @@ final class AppModel {
     private func applyInlineRows(_ texts: [String], sourceIndices: [[Int]]) {
         let previousRows = rows
         let previousAssignments = assignments
+        let previousNotes = anchorNotes
         let previousRollTypeOverrides = rollTypeOverrides
         let previousCapturedBrollRowIDs = capturedBrollRowIDs
         splitMode = .line
@@ -355,6 +443,12 @@ final class AppModel {
         parseScript(persist: false)
         assignments = AnchorAssignmentMigration.migrate(
             previousAssignments,
+            from: previousRows,
+            to: rows,
+            sourceIndices: sourceIndices
+        )
+        anchorNotes = AnchorNoteMigration.migrate(
+            previousNotes,
             from: previousRows,
             to: rows,
             sourceIndices: sourceIndices
@@ -381,6 +475,7 @@ final class AppModel {
         persistPreferences()
         if destinationDirectoryURL != nil {
             _ = saveManifest(showMessage: false)
+            saveConfirmedProjectScriptIfPresent()
         }
         lastSaved = "本机已保存 \(Self.timeString())"
     }
@@ -395,19 +490,26 @@ final class AppModel {
 
     func chooseSourceDirectory(saveAsFavorite: Bool) {
         let panel = NSOpenPanel()
-        panel.title = "选择素材目录"
-        panel.message = "选择一个包含视频素材的文件夹"
+        panel.title = "添加素材目录"
+        panel.message = "可一次选择多个素材文件夹；已添加的目录会继续保留"
         panel.prompt = "选择"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        activateSourceDirectory(url)
-        if saveAsFavorite {
-            saveFavoriteDirectory(url, showMessage: false)
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let previousCount = sourceDirectories.count
+        for url in panel.urls {
+            activateSourceDirectory(url, persistProjectSettings: false, refresh: false)
+            if saveAsFavorite {
+                saveFavoriteDirectory(url, showMessage: false)
+            }
         }
-        statusMessage = "素材目录已连接：\(url.lastPathComponent)"
+        if destinationDirectoryURL != nil {
+            saveProjectSettings()
+        }
+        refreshSourceFiles()
+        statusMessage = "已选择 \(panel.urls.count) 个目录，当前项目共连接 \(sourceDirectories.count) 个来源（新增 \(sourceDirectories.count - previousCount) 个）"
     }
 
     func acceptSourceDirectoryDrop(_ url: URL, saveAsFavorite: Bool = false) {
@@ -415,7 +517,7 @@ final class AppModel {
         if saveAsFavorite {
             saveFavoriteDirectory(url, showMessage: false)
         }
-        statusMessage = "素材目录已连接：\(url.lastPathComponent)"
+        statusMessage = "已添加素材目录：\(url.lastPathComponent)（当前共 \(sourceDirectories.count) 个来源）"
     }
 
     func saveCurrentSourceDirectory() {
@@ -434,7 +536,40 @@ final class AppModel {
         }
 
         activateSourceDirectory(url)
-        statusMessage = "已切换素材目录：\(url.lastPathComponent)"
+        statusMessage = "常用素材目录已连接到本项目：\(url.lastPathComponent)"
+    }
+
+    func removeProjectSourceDirectory(_ id: String) {
+        guard let sourceURL = sourceDirectoryURLs.removeValue(forKey: id) else {
+            sourceDirectories.removeAll { $0.id == id }
+            saveProjectSettings()
+            return
+        }
+        sourceDirectoryWatchers.removeValue(forKey: id)?.stop()
+        if sourceAccessActive.removeValue(forKey: id) == true {
+            sourceURL.stopAccessingSecurityScopedResource()
+        }
+        sourceDirectories.removeAll { $0.id == id }
+        if sourceDirectoryURL?.standardizedFileURL == sourceURL.standardizedFileURL {
+            sourceDirectoryURL = sourceDirectories.reversed().compactMap { sourceDirectoryURLs[$0.id] }.first
+        }
+        persistPreferences()
+        refreshSourceFiles()
+    }
+
+    func reconnectProjectSourceDirectory(_ id: String) {
+        guard let existingReference = sourceDirectories.first(where: { $0.id == id }) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "重新连接素材目录"
+        panel.message = "选择“\(existingReference.name)”现在所在的文件夹"
+        panel.prompt = "重新连接"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        activateSourceDirectory(url, reference: existingReference)
+        statusMessage = "已重新连接素材目录：\(url.lastPathComponent)"
     }
 
     func removeSavedDirectory(_ id: UUID) {
@@ -445,33 +580,36 @@ final class AppModel {
     func chooseDestinationDirectory() {
         guard !isBusy else { return }
         let panel = NSOpenPanel()
-        panel.title = "选择归档目录"
-        panel.message = "选择一个用于保存复制素材和 manifest 的文件夹"
+        panel.title = "选择剪辑项目文件夹"
+        panel.message = "选择项目文件夹；App 会在里面创建 B-roll 和 A-roll 文件夹"
         panel.prompt = "选择"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        activateDestinationDirectory(url)
-        restoreManifestFromDestination()
+        guard activateDestinationDirectory(url) else { return }
+        guard loadProjectState(at: url) else { return }
         refreshSourceFiles()
-        statusMessage = "目标目录已连接：\(url.lastPathComponent)"
+        updateProjectRestoreStatus(for: url)
     }
 
     func acceptDestinationDirectoryDrop(_ url: URL) {
         guard !isBusy else { return }
-        activateDestinationDirectory(url)
-        restoreManifestFromDestination()
+        guard activateDestinationDirectory(url) else { return }
+        guard loadProjectState(at: url) else { return }
         refreshSourceFiles()
-        statusMessage = "目标目录已连接：\(url.lastPathComponent)"
+        updateProjectRestoreStatus(for: url)
     }
 
     func refreshSourceFiles() {
         sourceScanTask?.cancel()
         sourceScanTask = nil
 
-        guard let directoryURL = sourceDirectoryURL else {
+        let roots = sourceDirectories.compactMap { reference in
+            sourceDirectoryURLs[reference.id].map { (reference.id, $0) }
+        }
+        guard !roots.isEmpty else {
             sourceScanGeneration = UUID()
             installSourceFiles([])
             return
@@ -479,29 +617,45 @@ final class AppModel {
 
         let generation = UUID()
         sourceScanGeneration = generation
-        let didStartAccess = directoryURL.startAccessingSecurityScopedResource()
         let videoExtensions = Self.videoExtensions
         let imageExtensions = Self.imageExtensions
         let scanTask = Task.detached(priority: .userInitiated) {
-            defer {
-                if didStartAccess {
-                    directoryURL.stopAccessingSecurityScopedResource()
+            var files: [SourceFile] = []
+            var failures: [String] = []
+            for (directoryID, directoryURL) in roots {
+                try Task<Never, Never>.checkCancellation()
+                do {
+                    files.append(contentsOf: try SourceFileScanner.scan(
+                        in: directoryURL,
+                        sourceDirectoryID: directoryID,
+                        videoExtensions: videoExtensions,
+                        imageExtensions: imageExtensions
+                    ))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failures.append("\(directoryURL.lastPathComponent)：\(error.localizedDescription)")
                 }
             }
-            return try SourceFileScanner.scan(
-                in: directoryURL,
-                videoExtensions: videoExtensions,
-                imageExtensions: imageExtensions
-            )
+            files.sort {
+                let nameOrder = $0.name.localizedStandardCompare($1.name)
+                return nameOrder == .orderedSame
+                    ? $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
+                    : nameOrder == .orderedAscending
+            }
+            return (files, failures)
         }
         sourceScanTask = scanTask
 
         Task { @MainActor [weak self] in
             do {
-                let files = try await scanTask.value
+                let (files, failures) = try await scanTask.value
                 guard let self, self.sourceScanGeneration == generation else { return }
                 self.sourceScanTask = nil
                 self.installSourceFiles(files)
+                if !failures.isEmpty {
+                    self.statusMessage = "部分素材目录无法读取：\(failures.joined(separator: "；"))"
+                }
             } catch is CancellationError {
                 guard let self, self.sourceScanGeneration == generation else { return }
                 self.sourceScanTask = nil
@@ -515,11 +669,11 @@ final class AppModel {
     }
 
     private func installSourceFiles(_ files: [SourceFile]) {
-        var byName: [String: SourceFile] = [:]
+        var byName: [String: [SourceFile]] = [:]
         var byURL: [URL: SourceFile] = [:]
         for file in files {
-            byName[file.name] = file
-            byURL[file.url] = file
+            byName[file.name, default: []].append(file)
+            byURL[file.url.standardizedFileURL] = file
         }
 
         sourceFilesByName = byName
@@ -527,7 +681,7 @@ final class AppModel {
         sourceFiles = files
         rebuildVisibleSourceFiles()
 
-        if let selectedSourceFileURL, byURL[selectedSourceFileURL] == nil {
+        if let selectedSourceFileURL, byURL[selectedSourceFileURL.standardizedFileURL] == nil {
             self.selectedSourceFileURL = nil
         }
     }
@@ -541,7 +695,7 @@ final class AppModel {
     func clearAssignments() {
         guard !isBusy else { return }
         guard let destinationDirectoryURL else {
-            showError(title: "无法清空配对记录", message: "请先重新选择归档位置，才能删除归档副本并更新清单。")
+            showError(title: "无法清空配对记录", message: "请先重新选择剪辑项目文件夹，才能删除其中的副本并更新对照表。")
             return
         }
 
@@ -551,6 +705,7 @@ final class AppModel {
 
         let recordedNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
         let mediaExtensions = Self.videoExtensions.union(Self.imageExtensions)
+        guard let brollDirectoryURL else { return }
         let didStartAccess = destinationDirectoryURL.startAccessingSecurityScopedResource()
         isBusy = true
         statusMessage = "正在清理归档副本…"
@@ -562,11 +717,11 @@ final class AppModel {
                 }
             }
             let discoveredNames = try ArchiveCleaner.discoverCopies(
-                in: destinationDirectoryURL,
+                in: brollDirectoryURL,
                 mediaExtensions: mediaExtensions
             )
             let outputNames = recordedNames.union(discoveredNames)
-            return ArchiveCleaner.removeCopies(named: outputNames, from: destinationDirectoryURL)
+            return ArchiveCleaner.removeCopies(named: outputNames, from: brollDirectoryURL)
         }
 
         Task { @MainActor [weak self] in
@@ -576,7 +731,7 @@ final class AppModel {
                 guard let self, self.destinationDirectoryURL == destinationDirectoryURL else { return }
                 self.finishClearAssignments(cleanup)
             } catch {
-                self?.showError(title: "无法读取归档位置", message: "尚未清空配对记录：\(error.localizedDescription)")
+                self?.showError(title: "无法读取剪辑项目文件夹", message: "尚未清空配对记录：\(error.localizedDescription)")
             }
         }
     }
@@ -595,51 +750,54 @@ final class AppModel {
             let examples = cleanup.failedNames.sorted().prefix(3).joined(separator: "、")
             let suffix = cleanup.failedNames.count > 3 ? "等" : ""
             let manifestNote = manifestSaved
-                ? "清单已更新；未删除的文件仍留在归档位置，对应绑定会保留。"
-                : "清单更新也失败了，请检查归档目录。"
+            ? "对照表已更新；未删除的文件仍留在 B-roll 文件夹，对应绑定会保留。"
+                : "对照表更新也失败了，请检查 B-roll 文件夹。"
             let localNote = localSaved ? "" : "本机记录保存也失败了。"
             showError(
                 title: "部分归档副本删除失败",
-                message: "有 \(cleanup.failedNames.count) 个归档文件未能删除：\(examples)\(suffix)。\(manifestNote)\(localNote)"
+                message: "有 \(cleanup.failedNames.count) 个 B-roll 文件未能删除：\(examples)\(suffix)。\(manifestNote)\(localNote)"
             )
         } else if !localSaved {
             showError(title: "本机配对记录保存失败", message: "归档副本已删除，但本机记录未能保存。请检查应用数据目录。")
         } else if manifestSaved {
             lastSaved = "已清空 \(Self.timeString())"
             let missingNote = cleanup.missingCount > 0 ? "，另有 \(cleanup.missingCount) 个文件原本不存在" : ""
-            statusMessage = "已删除 \(cleanup.deletedCount) 个归档副本\(missingNote)，并更新 JSON / Markdown 清单"
+            statusMessage = "已删除 \(cleanup.deletedCount) 个 B-roll 副本\(missingNote)，并更新 JSON / Markdown 对照表"
         }
     }
 
     func saveManifest(showMessage: Bool = true) -> Bool {
-        guard let destinationDirectoryURL else {
-            showError(title: "还没有归档目录", message: "请先选择一个归档目录，再保存清单。")
+        guard destinationDirectoryURL != nil else {
+            showError(title: "还没有剪辑项目文件夹", message: "请先选择剪辑项目文件夹，再保存对照表。")
             return false
         }
 
         let manifest = currentManifest()
         do {
-            try writeManifest(manifest, to: destinationDirectoryURL)
+            guard let brollDirectoryURL else { return false }
+            try writeManifest(manifest, to: brollDirectoryURL)
+            saveProjectSettings()
             lastSaved = "已保存 \(Self.timeString())"
             if showMessage {
-                statusMessage = "清单已保存到 \(destinationDirectoryURL.lastPathComponent)"
+                statusMessage = "对照表已保存到 B-roll 文件夹"
             }
             return true
         } catch {
-            showError(title: "保存清单失败", message: error.localizedDescription)
+            showError(title: "保存对照表失败", message: error.localizedDescription)
             return false
         }
     }
 
     func revealManifest() {
-        guard let destinationDirectoryURL else {
-            showError(title: "还没有归档位置", message: "请先选择归档文件夹，才能在 Finder 中定位 Codex JSON 清单。")
+        guard destinationDirectoryURL != nil else {
+            showError(title: "还没有剪辑项目文件夹", message: "请先选择剪辑项目文件夹，才能在 Finder 中定位 Codex JSON 对照表。")
             return
         }
         guard saveManifest(showMessage: false) else { return }
-        let url = destinationDirectoryURL.appendingPathComponent("broll-for-codex.json")
+        guard let brollDirectoryURL else { return }
+        let url = brollDirectoryURL.appendingPathComponent("broll-for-codex.json")
         guard revealInFinder(url) else { return }
-        statusMessage = "已在 Finder 中定位 Codex JSON 清单"
+        statusMessage = "已在 Finder 中定位 Codex JSON 对照表"
     }
 
     @discardableResult
@@ -682,11 +840,16 @@ final class AppModel {
             manifestPreviewText = String(decoding: data, as: UTF8.self)
             isManifestPreviewPresented = true
         } catch {
-            showError(title: "无法预览 Codex JSON 清单", message: error.localizedDescription)
+            showError(title: "无法预览 Codex JSON 对照表", message: error.localizedDescription)
         }
     }
 
     func importScript() {
+        guard destinationDirectoryURL != nil else {
+            showError(title: "请先选择剪辑项目文件夹", message: "选择项目文件夹后，才能向这个项目导入文案。")
+            return
+        }
+
         let panel = NSOpenPanel()
         panel.title = "导入文案"
         panel.message = "选择 .txt 或 .md 文稿"
@@ -707,14 +870,102 @@ final class AppModel {
         }
     }
 
+    func confirmScript() {
+        parseScript()
+        guard let destinationDirectoryURL, let aRollScriptURL else {
+            statusMessage = "文案已保存在本机；选择剪辑项目文件夹后，才能保存到 A-roll。"
+            return
+        }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: destinationDirectoryURL.appendingPathComponent("A-roll", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            if scriptText.isEmpty, !FileManager.default.fileExists(atPath: aRollScriptURL.path) {
+                saveProjectSettings()
+                statusMessage = "文案为空，尚未生成 A-roll/正确文案.txt"
+                return
+            }
+            try scriptText.write(to: aRollScriptURL, atomically: true, encoding: .utf8)
+            persistPreferences()
+            lastSaved = "已保存到 A-roll \(Self.timeString())"
+            statusMessage = "已确认并保存：A-roll/正确文案.txt"
+        } catch {
+            showError(title: "保存正确文案失败", message: error.localizedDescription)
+        }
+    }
+
+    private func saveConfirmedProjectScriptIfPresent() {
+        guard let aRollScriptURL,
+              FileManager.default.fileExists(atPath: aRollScriptURL.path) else { return }
+        do {
+            try scriptText.write(to: aRollScriptURL, atomically: true, encoding: .utf8)
+        } catch {
+            showError(title: "同步正确文案失败", message: error.localizedDescription)
+        }
+    }
+
     func reveal(_ asset: BrollAsset) {
-        guard let destinationDirectoryURL else { return }
-        let url = destinationDirectoryURL.appendingPathComponent(asset.outputName)
+        guard let brollDirectoryURL else { return }
+        let url = brollDirectoryURL.appendingPathComponent(asset.outputName)
         revealInFinder(url)
     }
 
     func sourceFile(for asset: BrollAsset) -> SourceFile? {
-        sourceFilesByName[asset.sourceName]
+        if let directoryID = asset.sourceDirectoryID,
+           let relativePath = asset.sourceRelativePath,
+           let directoryURL = sourceDirectoryURLs[directoryID] {
+            let url = directoryURL.appendingPathComponent(relativePath).standardizedFileURL
+            return sourceFilesByURL[url]
+        }
+        let matches = sourceFilesByName[asset.sourceName] ?? []
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    func sourceOriginLabel(for asset: BrollAsset) -> String {
+        guard let directoryID = asset.sourceDirectoryID,
+              let relativePath = asset.sourceRelativePath,
+              let directory = sourceDirectories.first(where: { $0.id == directoryID }) else {
+            return asset.sourceName
+        }
+        return "\(directory.path)/\(relativePath)"
+    }
+
+    private func sourceOrigin(for url: URL) -> (directoryID: String?, relativePath: String?) {
+        let normalizedURL = url.standardizedFileURL
+        if let file = sourceFilesByURL[normalizedURL] {
+            return (file.sourceDirectoryID, file.relativePath)
+        }
+
+        let filePath = normalizedURL.path
+        let matchingRoots = sourceDirectories.compactMap { reference -> (ProjectSourceDirectory, URL)? in
+            guard let directoryURL = sourceDirectoryURLs[reference.id] else { return nil }
+            let rootPath = directoryURL.standardizedFileURL.path
+            let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+            guard filePath.hasPrefix(rootPrefix) else { return nil }
+            return (reference, directoryURL)
+        }
+        guard let (reference, directoryURL) = matchingRoots.max(by: {
+            $0.1.path.count < $1.1.path.count
+        }) else { return (nil, nil) }
+        let rootPath = directoryURL.standardizedFileURL.path
+        let rootPrefixLength = (rootPath.hasSuffix("/") ? rootPath : rootPath + "/").count
+        return (reference.id, String(filePath.dropFirst(rootPrefixLength)))
+    }
+
+    private func sourceURL(for asset: BrollAsset) -> URL? {
+        if let directoryID = asset.sourceDirectoryID,
+           let relativePath = asset.sourceRelativePath,
+           let directoryURL = sourceDirectoryURLs[directoryID] {
+            return directoryURL.appendingPathComponent(relativePath).standardizedFileURL
+        }
+        if let file = sourceFile(for: asset) {
+            return file.url
+        }
+        guard sourceDirectories.count == 1,
+              let onlyDirectoryURL = sourceDirectoryURLs[sourceDirectories[0].id] else { return nil }
+        return onlyDirectoryURL.appendingPathComponent(asset.sourceName)
     }
 
     func jumpToSourceFile(for asset: BrollAsset) {
@@ -736,15 +987,15 @@ final class AppModel {
         guard !isBusy else { return }
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
         guard isPrefixValid else {
-            showError(title: "请填写命名前缀", message: "绑定素材前，请先在左侧“归档设置”中填写命名前缀。")
+            showError(title: "请填写命名前缀", message: "绑定素材前，请先在左侧项目设置中填写命名前缀。")
             return
         }
-        guard sourceDirectoryURL != nil else {
+        guard !sourceDirectoryURLs.isEmpty else {
             showError(title: "请先选择素材来源", message: "绑定素材前，请先在“素材目录”栏头选择素材来源文件夹。")
             return
         }
         guard destinationDirectoryURL != nil else {
-            showError(title: "请先选择归档位置", message: "绑定素材前，请先在左侧“归档设置”中选择归档文件夹。")
+            showError(title: "请先选择剪辑项目文件夹", message: "绑定素材前，请先在左侧选择剪辑项目文件夹。")
             return
         }
 
@@ -769,15 +1020,22 @@ final class AppModel {
 
         for sourceURL in mediaURLs {
             let sourceName = sourceURL.lastPathComponent
-            if assets(for: rowID).contains(where: { $0.sourceName == sourceName }) {
+            let origin = sourceOrigin(for: sourceURL)
+            let isAlreadyAssigned = assets(for: rowID).contains { asset in
+                if let directoryID = origin.directoryID, let relativePath = origin.relativePath {
+                    return asset.sourceDirectoryID == directoryID && asset.sourceRelativePath == relativePath
+                }
+                return asset.sourceDirectoryID == nil && asset.sourceName == sourceName
+            }
+            if isAlreadyAssigned {
                 skippedCount += 1
                 continue
             }
 
             let baseName = "\(prefixPart)\(baseCode)_\(label)\(ScriptParser.extensionForFileName(sourceName))"
             let outputName = uniqueOutputName(baseName)
-            guard let destinationDirectoryURL else { return }
-            let outputURL = destinationDirectoryURL.appendingPathComponent(outputName)
+            guard let brollDirectoryURL else { return }
+            let outputURL = brollDirectoryURL.appendingPathComponent(outputName)
             let didStartAccess = sourceURL.startAccessingSecurityScopedResource()
 
             do {
@@ -789,6 +1047,8 @@ final class AppModel {
                     anchorIndex: row.index,
                     anchorText: row.text,
                     sourceName: sourceName,
+                    sourceDirectoryID: origin.directoryID,
+                    sourceRelativePath: origin.relativePath,
                     outputName: outputName,
                     mode: .fs,
                     targetTrack: "V2",
@@ -820,28 +1080,28 @@ final class AppModel {
         refreshSourceFiles()
         registerUndo(named: "绑定素材", restoring: undoState)
         lastSaved = "本机已保存 \(Self.timeString())"
-        let archiveSummary = "本次新增 \(copiedCount) 个；当前清单共 \(assignedCount) 个已绑定素材"
+        let archiveSummary = "本次新增 \(copiedCount) 个；对照表中共 \(assignedCount) 个素材"
         statusMessage = skippedCount > 0
             ? "\(archiveSummary)，跳过 \(skippedCount) 个重复素材"
-            : "\(archiveSummary)，已保存到 \(destinationDirectoryName)"
+            : "\(archiveSummary)，已保存到 B-roll 文件夹"
     }
 
     func unbind(_ asset: BrollAsset) {
         guard !isBusy else { return }
         guard var rowAssets = assignments[asset.anchorKey] else { return }
         let undoState = makeUndoSnapshot()
-        guard let destinationDirectoryURL else {
-            showError(title: "无法取消绑定", message: "请先重新选择归档目录，才能删除对应的归档副本并更新清单。")
+        guard let brollDirectoryURL else {
+            showError(title: "无法取消绑定", message: "请先重新选择剪辑项目文件夹，才能删除 B-roll 中的副本并更新对照表。")
             return
         }
 
         let outputFileName = URL(fileURLWithPath: asset.outputName).lastPathComponent
-        let archivedURL = destinationDirectoryURL.appendingPathComponent(outputFileName)
+        let archivedURL = brollDirectoryURL.appendingPathComponent(outputFileName)
         if FileManager.default.fileExists(atPath: archivedURL.path) {
             do {
                 try FileManager.default.removeItem(at: archivedURL)
             } catch {
-                showError(title: "删除归档副本失败", message: "\(outputFileName) 仍保留在归档目录，因此这次没有取消绑定。\n\(error.localizedDescription)")
+                showError(title: "删除 B-roll 副本失败", message: "\(outputFileName) 仍保留在 B-roll 文件夹，因此这次没有取消绑定。\n\(error.localizedDescription)")
                 return
             }
         }
@@ -861,8 +1121,8 @@ final class AppModel {
         registerUndo(named: "取消素材绑定", restoring: undoState)
         lastSaved = "本机已保存 \(Self.timeString())"
         statusMessage = manifestSaved
-            ? "已取消绑定并删除归档副本：\(asset.sourceName)"
-            : "已取消绑定并删除归档副本，但清单更新失败：\(asset.sourceName)"
+            ? "已取消绑定并删除 B-roll 副本：\(asset.sourceName)"
+            : "已取消绑定并删除 B-roll 副本，但对照表更新失败：\(asset.sourceName)"
     }
 
     private func copyFile(from sourceURL: URL, to destinationURL: URL) async throws {
@@ -872,9 +1132,9 @@ final class AppModel {
     }
 
     private func uniqueOutputName(_ baseName: String) -> String {
-        guard let destinationDirectoryURL else { return baseName }
+        guard let brollDirectoryURL else { return baseName }
         let fileManager = FileManager.default
-        let baseURL = destinationDirectoryURL.appendingPathComponent(baseName)
+        let baseURL = brollDirectoryURL.appendingPathComponent(baseName)
         if !fileManager.fileExists(atPath: baseURL.path) {
             return baseName
         }
@@ -884,7 +1144,7 @@ final class AppModel {
         let ext = baseNSString.pathExtension.isEmpty ? "" : ".\(baseNSString.pathExtension)"
         for counter in 2..<1000 {
             let candidate = "\(stem)_\(String(format: "%02d", counter))\(ext)"
-            if !fileManager.fileExists(atPath: destinationDirectoryURL.appendingPathComponent(candidate).path) {
+            if !fileManager.fileExists(atPath: brollDirectoryURL.appendingPathComponent(candidate).path) {
                 return candidate
             }
         }
@@ -911,8 +1171,10 @@ final class AppModel {
     }
 
     private func rebuildAssignmentIndexes() {
-        var names: Set<String> = []
-        var assetsByName: [String: [BrollAsset]] = [:]
+        var sourceIdentities: Set<String> = []
+        var legacySourceNames: Set<String> = []
+        var assetsByIdentity: [String: [BrollAsset]] = [:]
+        var assetsByLegacyName: [String: [BrollAsset]] = [:]
         var rowsWithAssets: Set<String> = []
 
         for row in rows {
@@ -921,14 +1183,22 @@ final class AppModel {
                 rowsWithAssets.insert(row.id)
             }
             for asset in assets {
-                names.insert(asset.sourceName)
-                names.insert(asset.outputName)
-                assetsByName[asset.sourceName, default: []].append(asset)
+                if let directoryID = asset.sourceDirectoryID,
+                   let relativePath = asset.sourceRelativePath {
+                    let identity = sourceIdentity(directoryID: directoryID, relativePath: relativePath)
+                    sourceIdentities.insert(identity)
+                    assetsByIdentity[identity, default: []].append(asset)
+                } else {
+                    legacySourceNames.insert(asset.sourceName)
+                    assetsByLegacyName[asset.sourceName, default: []].append(asset)
+                }
             }
         }
 
-        assignedNamesIndex = names
-        assetsBySourceName = assetsByName
+        assignedSourceIdentities = sourceIdentities
+        assignedLegacySourceNames = legacySourceNames
+        assetsBySourceIdentity = assetsByIdentity
+        assetsByLegacySourceName = assetsByLegacyName
 
         let previousCapturedRows = capturedBrollRowIDs
         capturedBrollRowIDs.formUnion(rowsWithAssets)
@@ -943,6 +1213,7 @@ final class AppModel {
             splitMode: splitMode,
             preservesEmptyAnchors: preservesEmptyAnchors,
             assignments: assignments,
+            anchorNotes: anchorNotes,
             rollTypeOverrides: rollTypeOverrides,
             capturedBrollRowIDs: capturedBrollRowIDs
         )
@@ -969,12 +1240,14 @@ final class AppModel {
         preservesEmptyAnchors = snapshot.preservesEmptyAnchors
         parseScript(persist: false)
         assignments = snapshot.assignments
+        anchorNotes = snapshot.anchorNotes
         rollTypeOverrides = snapshot.rollTypeOverrides
         capturedBrollRowIDs = snapshot.capturedBrollRowIDs
         rebuildAssignmentIndexes()
         persistPreferences()
         if destinationDirectoryURL != nil {
             _ = saveManifest(showMessage: false)
+            saveConfirmedProjectScriptIfPresent()
         }
         let action = undoManager.isUndoing ? "已撤回到" : "已恢复到"
         lastSaved = "\(action) \(Self.timeString())"
@@ -982,24 +1255,24 @@ final class AppModel {
 
     private func reconcileArchiveCopies(from current: UndoSnapshot, to target: UndoSnapshot) {
         let removedNames = current.archivedNames.subtracting(target.archivedNames)
-        if let destinationDirectoryURL {
+        if let brollDirectoryURL {
             for name in removedNames where name == (name as NSString).lastPathComponent {
-                try? FileManager.default.removeItem(at: destinationDirectoryURL.appendingPathComponent(name))
+                try? FileManager.default.removeItem(at: brollDirectoryURL.appendingPathComponent(name))
             }
         }
 
         let restoredNames = target.archivedNames.subtracting(current.archivedNames)
-        guard !restoredNames.isEmpty,
-              let sourceDirectoryURL,
-              let destinationDirectoryURL else {
+        guard !restoredNames.isEmpty else {
             if !removedNames.isEmpty { refreshSourceFiles() }
             return
         }
 
+        guard let brollDirectoryURL else { return }
+
         var copies: [ArchiveCopy] = []
         for asset in target.assignments.values.flatMap({ $0 }) where restoredNames.contains(asset.outputName) {
-            let sourceURL = sourceDirectoryURL.appendingPathComponent(asset.sourceName)
-            let destinationURL = destinationDirectoryURL.appendingPathComponent(asset.outputName)
+            guard let sourceURL = sourceURL(for: asset) else { continue }
+            let destinationURL = brollDirectoryURL.appendingPathComponent(asset.outputName)
             guard !FileManager.default.fileExists(atPath: destinationURL.path),
                   FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
             copies.append(ArchiveCopy(
@@ -1012,7 +1285,7 @@ final class AppModel {
 
         guard !copies.isEmpty else {
             if !removedNames.isEmpty { refreshSourceFiles() }
-            statusMessage = "撤回了绑定记录；无法从当前素材目录恢复已删除的归档副本"
+            statusMessage = "撤回了绑定记录；无法从已连接的素材目录恢复已删除的归档副本"
             return
         }
 
@@ -1128,8 +1401,8 @@ final class AppModel {
     }
 
     private func restoreManifestFromDestination() {
-        guard let destinationDirectoryURL else { return }
-        let manifestURL = destinationDirectoryURL.appendingPathComponent("broll-manifest.json")
+        guard let brollDirectoryURL else { return }
+        let manifestURL = brollDirectoryURL.appendingPathComponent("broll-manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else { return }
 
         do {
@@ -1148,6 +1421,8 @@ final class AppModel {
                         anchorIndex: row.index,
                         anchorText: row.text,
                         sourceName: file,
+                        sourceDirectoryID: nil,
+                        sourceRelativePath: nil,
                         outputName: file,
                         mode: .fs,
                         targetTrack: "",
@@ -1163,7 +1438,7 @@ final class AppModel {
                 lastSaved = "已从 manifest 恢复"
             }
         } catch {
-            statusMessage = "无法读取目标目录中的 manifest：\(error.localizedDescription)"
+            statusMessage = "无法读取 B-roll 文件夹中的映射文件：\(error.localizedDescription)"
         }
     }
 
@@ -1225,7 +1500,7 @@ final class AppModel {
             try data.write(to: url, options: .atomic)
             return true
         } catch {
-            statusMessage = "本机配对记录保存失败，请保留目标目录中的 manifest"
+            statusMessage = "本机配对记录保存失败，请保留 B-roll 文件夹中的映射文件"
             return false
         }
     }
@@ -1334,45 +1609,78 @@ final class AppModel {
     }
 
     private func restoreDirectories() {
-        if let url = resolvedBookmark(forKey: sourceBookmarkKey) {
-            sourceDirectoryURL = url
-            sourceAccessActive = url.startAccessingSecurityScopedResource()
-            watchSourceDirectory(url)
-        }
         if let url = resolvedBookmark(forKey: destinationBookmarkKey) {
             destinationDirectoryURL = url
             destinationAccessActive = url.startAccessingSecurityScopedResource()
-            restoreManifestFromDestination()
-            statusMessage = "目标目录：\(url.lastPathComponent)"
+            do {
+                try prepareProjectFolders(at: url)
+                if loadProjectState(at: url) {
+                    updateProjectRestoreStatus(for: url)
+                }
+            } catch {
+                showError(
+                    title: "无法准备剪辑项目文件夹",
+                    message: "创建 B-roll、A-roll 文件夹或整理旧的 B-roll 文件时失败：\(error.localizedDescription)"
+                )
+            }
+        } else if let url = resolvedBookmark(forKey: sourceBookmarkKey) {
+            activateSourceDirectory(url)
         }
         refreshSourceFiles()
     }
 
-    private func activateSourceDirectory(_ url: URL) {
-        if sourceDirectoryURL?.standardizedFileURL != url.standardizedFileURL {
-            discardUndoActions()
+    private func activateSourceDirectory(
+        _ url: URL,
+        reference: ProjectSourceDirectory? = nil,
+        persistProjectSettings: Bool = true,
+        refresh: Bool = true
+    ) {
+        let normalizedURL = url.standardizedFileURL
+        let existingReference = reference ?? sourceDirectories.first {
+            sourceDirectoryURLs[$0.id]?.standardizedFileURL == normalizedURL || $0.path == normalizedURL.path
         }
-        sourceDirectoryWatcher?.stop()
-        sourceDirectoryWatcher = nil
-        sourceRefreshWorkItem?.cancel()
-        sourceRefreshWorkItem = nil
-        if sourceAccessActive {
-            sourceDirectoryURL?.stopAccessingSecurityScopedResource()
+        let sourceReference = makeProjectSourceDirectory(
+            for: normalizedURL,
+            id: existingReference?.id
+        )
+        if let index = sourceDirectories.firstIndex(where: { $0.id == sourceReference.id }) {
+            sourceDirectories[index] = sourceReference
+        } else {
+            sourceDirectories.append(sourceReference)
         }
-        sourceAccessActive = url.startAccessingSecurityScopedResource()
-        sourceDirectoryURL = url
-        storeBookmark(for: url, key: sourceBookmarkKey)
-        watchSourceDirectory(url)
-        refreshSourceFiles()
+
+        if let previousURL = sourceDirectoryURLs[sourceReference.id],
+           previousURL.standardizedFileURL != normalizedURL {
+            sourceDirectoryWatchers.removeValue(forKey: sourceReference.id)?.stop()
+            if sourceAccessActive.removeValue(forKey: sourceReference.id) == true {
+                previousURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        if sourceDirectoryURLs[sourceReference.id] == nil ||
+            sourceDirectoryURLs[sourceReference.id]?.standardizedFileURL != normalizedURL {
+            sourceAccessActive[sourceReference.id] = normalizedURL.startAccessingSecurityScopedResource()
+        }
+
+        sourceDirectoryURLs[sourceReference.id] = normalizedURL
+        sourceDirectoryURL = normalizedURL
+        storeBookmark(for: normalizedURL, key: sourceBookmarkKey)
+        sourceDirectoryWatchers.removeValue(forKey: sourceReference.id)?.stop()
+        watchSourceDirectory(normalizedURL, id: sourceReference.id)
+        if destinationDirectoryURL != nil, persistProjectSettings {
+            saveProjectSettings()
+        }
+        if refresh {
+            refreshSourceFiles()
+        }
     }
 
-    private func watchSourceDirectory(_ url: URL) {
+    private func watchSourceDirectory(_ url: URL, id: String) {
         let watcher = SourceDirectoryWatcher(directoryURL: url) { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 self?.scheduleSourceRefresh()
             }
         }
-        sourceDirectoryWatcher = watcher
+        sourceDirectoryWatchers[id] = watcher
         watcher.start()
     }
 
@@ -1387,16 +1695,302 @@ final class AppModel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
     }
 
-    private func activateDestinationDirectory(_ url: URL) {
-        if destinationDirectoryURL?.standardizedFileURL != url.standardizedFileURL {
+    @discardableResult
+    private func activateDestinationDirectory(_ url: URL) -> Bool {
+        let isSameDirectory = destinationDirectoryURL?.standardizedFileURL == url.standardizedFileURL
+        let didStartAccess = isSameDirectory
+            ? destinationAccessActive
+            : url.startAccessingSecurityScopedResource()
+
+        do {
+            try prepareProjectFolders(at: url)
+        } catch {
+            if !isSameDirectory, didStartAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+            showError(
+                title: "无法准备剪辑项目文件夹",
+                message: "创建 B-roll、A-roll 文件夹或整理旧的 B-roll 文件时失败：\(error.localizedDescription)"
+            )
+            return false
+        }
+
+        if !isSameDirectory {
             discardUndoActions()
+            if destinationAccessActive {
+                destinationDirectoryURL?.stopAccessingSecurityScopedResource()
+            }
+            destinationDirectoryURL = url
+            destinationAccessActive = didStartAccess
         }
-        if destinationAccessActive {
-            destinationDirectoryURL?.stopAccessingSecurityScopedResource()
-        }
-        destinationAccessActive = url.startAccessingSecurityScopedResource()
-        destinationDirectoryURL = url
         storeBookmark(for: url, key: destinationBookmarkKey)
+        return true
+    }
+
+    private func prepareProjectFolders(at projectURL: URL) throws {
+        let fileManager = FileManager.default
+        let brollURL = projectURL.appendingPathComponent("B-roll", isDirectory: true)
+        let aRollURL = projectURL.appendingPathComponent("A-roll", isDirectory: true)
+        try fileManager.createDirectory(at: brollURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: aRollURL, withIntermediateDirectories: true)
+
+        var legacyAssetNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
+        let rootManifestURL = projectURL.appendingPathComponent("broll-manifest.json")
+        if let data = try? Data(contentsOf: rootManifestURL),
+           let manifest = try? JSONDecoder().decode(BrollManifest.self, from: data) {
+            legacyAssetNames.formUnion(manifest.placements.flatMap(\.files))
+        }
+        legacyAssetNames.formUnion(try ArchiveCleaner.discoverCopies(
+            in: projectURL,
+            mediaExtensions: Self.videoExtensions.union(Self.imageExtensions)
+        ))
+
+        let configNames = ["broll-for-codex.json", "broll-manifest.json", "broll-manifest.md"]
+        let assetURLs = legacyAssetNames
+            .filter { !$0.isEmpty && $0 == ($0 as NSString).lastPathComponent && $0 != "." && $0 != ".." }
+            .map { projectURL.appendingPathComponent($0) }
+        for sourceURL in assetURLs + configNames.map({ projectURL.appendingPathComponent($0) })
+        where fileManager.fileExists(atPath: sourceURL.path) {
+            let destinationURL = brollURL.appendingPathComponent(sourceURL.lastPathComponent)
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                guard fileManager.contentsEqual(atPath: sourceURL.path, andPath: destinationURL.path) else {
+                    throw NSError(
+                        domain: "BrollNamer.ProjectFolders",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "B-roll 中已存在同名文件，但内容不同：\(sourceURL.lastPathComponent)"]
+                    )
+                }
+                try fileManager.removeItem(at: sourceURL)
+            } else {
+                try fileManager.moveItem(at: sourceURL, to: destinationURL)
+            }
+        }
+    }
+
+    private func loadProjectState(at projectURL: URL) -> Bool {
+        guard let settingsURL = projectSettingsURL,
+              let brollDirectoryURL else { return false }
+        let fileManager = FileManager.default
+        let settings: BrollProjectSettings
+
+        if fileManager.fileExists(atPath: settingsURL.path) {
+            do {
+                settings = try JSONDecoder().decode(
+                    BrollProjectSettings.self,
+                    from: Data(contentsOf: settingsURL)
+                )
+                guard (1...2).contains(settings.formatVersion) else {
+                    throw NSError(
+                        domain: "BrollNamer.ProjectSettings",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "不支持的项目设置格式：\(settings.formatVersion)"]
+                    )
+                }
+            } catch {
+                showError(title: "无法读取项目设置", message: error.localizedDescription)
+                return false
+            }
+        } else {
+            settings = legacyProjectSettings(in: brollDirectoryURL)
+        }
+
+        let script: String
+        do {
+            script = try loadProjectScript(in: projectURL)
+        } catch {
+            showError(title: "无法读取正确文案", message: error.localizedDescription)
+            return false
+        }
+
+        discardUndoActions()
+        projectID = settings.projectID
+        prefix = settings.prefix
+        splitMode = settings.splitMode
+        preservesEmptyAnchors = settings.preservesEmptyAnchors
+        anchorNotes = settings.anchorNotes
+        rollTypeOverrides = settings.rollTypeOverrides
+        capturedBrollRowIDs = Set(settings.capturedBrollRowIDs)
+        assignments = migratingLegacyAssignments(settings.assignments, to: settings.sourceDirectories)
+        scriptText = script
+        rows = []
+        rebuildAssignmentIndexes()
+        parseScript(persist: false)
+
+        clearSourceDirectories()
+        sourceDirectories = settings.sourceDirectories
+        for reference in settings.sourceDirectories {
+            if let sourceURL = resolveProjectSourceDirectory(reference) {
+                activateSourceDirectory(sourceURL, reference: reference, persistProjectSettings: false, refresh: false)
+            }
+        }
+
+        restoreManifestFromDestination()
+        persistPreferences()
+        return true
+    }
+
+    private func updateProjectRestoreStatus(for projectURL: URL) {
+        if sourceDirectories.isEmpty {
+            statusMessage = "项目已连接，但尚未记录素材来源目录。请选择素材目录，之后会随项目自动恢复。"
+        } else {
+            let unavailable = sourceDirectories.filter { sourceDirectoryURLs[$0.id] == nil }
+            if !unavailable.isEmpty {
+                statusMessage = "项目已连接；以下素材目录不可用，请重新添加：\(unavailable.map(\.path).joined(separator: "、"))"
+                return
+            }
+            statusMessage = "已恢复剪辑项目：\(projectURL.lastPathComponent)，已连接 \(sourceDirectories.count) 个素材目录"
+        }
+    }
+
+    private func migratingLegacyAssignments(
+        _ assignments: [String: [BrollAsset]],
+        to directories: [ProjectSourceDirectory]
+    ) -> [String: [BrollAsset]] {
+        guard directories.count == 1 else { return assignments }
+        let directory = directories[0]
+        return assignments.mapValues { assets in
+            assets.map { asset in
+                guard asset.sourceDirectoryID == nil else { return asset }
+                return BrollAsset(
+                    id: asset.id,
+                    anchorKey: asset.anchorKey,
+                    anchorIndex: asset.anchorIndex,
+                    anchorText: asset.anchorText,
+                    sourceName: asset.sourceName,
+                    sourceDirectoryID: directory.id,
+                    sourceRelativePath: asset.sourceName,
+                    outputName: asset.outputName,
+                    mode: asset.mode,
+                    targetTrack: asset.targetTrack,
+                    audio: asset.audio,
+                    copiedAt: asset.copiedAt
+                )
+            }
+        }
+    }
+
+    private func loadProjectScript(in projectURL: URL) throws -> String {
+        let fileManager = FileManager.default
+        let currentURL = projectURL
+            .appendingPathComponent("A-roll", isDirectory: true)
+            .appendingPathComponent("正确文案.txt")
+        if fileManager.fileExists(atPath: currentURL.path) {
+            return try String(contentsOf: currentURL, encoding: .utf8)
+        }
+
+        let legacyURL = projectURL.appendingPathComponent("正确文案.txt")
+        guard fileManager.fileExists(atPath: legacyURL.path) else { return "" }
+        let text = try String(contentsOf: legacyURL, encoding: .utf8)
+        try? fileManager.moveItem(at: legacyURL, to: currentURL)
+        return text
+    }
+
+    private func legacyProjectSettings(in brollURL: URL) -> BrollProjectSettings {
+        BrollProjectSettings(
+            prefix: inferredLegacyPrefix(in: brollURL),
+            splitMode: .line,
+            preservesEmptyAnchors: true
+        )
+    }
+
+    private func inferredLegacyPrefix(in brollURL: URL) -> String {
+        let fileManager = FileManager.default
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: brollURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ), let expression = try? NSRegularExpression(pattern: #"^(.+)_BR[0-9]{3,}_"#) else {
+            return ""
+        }
+
+        let prefixes = Set(urls.compactMap { url -> String? in
+            let name = url.lastPathComponent
+            let range = NSRange(name.startIndex..<name.endIndex, in: name)
+            guard let match = expression.firstMatch(in: name, range: range),
+                  let prefixRange = Range(match.range(at: 1), in: name) else { return nil }
+            return String(name[prefixRange])
+        })
+        return prefixes.count == 1 ? prefixes.first ?? "" : ""
+    }
+
+    private func makeProjectSourceDirectory(for url: URL, id: String? = nil) -> ProjectSourceDirectory {
+        let bookmarkData = (try? url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ))
+        return ProjectSourceDirectory(
+            id: id ?? UUID().uuidString.lowercased(),
+            name: url.lastPathComponent,
+            path: url.standardizedFileURL.path,
+            bookmarkData: bookmarkData
+        )
+    }
+
+    private func resolveProjectSourceDirectory(_ reference: ProjectSourceDirectory) -> URL? {
+        if let bookmarkData = reference.bookmarkData {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                if isStale {
+                    storeBookmark(for: url, key: sourceBookmarkKey)
+                    if let index = sourceDirectories.firstIndex(where: { $0.id == reference.id }) {
+                        sourceDirectories[index] = makeProjectSourceDirectory(for: url, id: reference.id)
+                    }
+                }
+                return url
+            }
+        }
+
+        let pathURL = URL(fileURLWithPath: reference.path, isDirectory: true)
+        return FileManager.default.fileExists(atPath: pathURL.path) ? pathURL : nil
+    }
+
+    private func clearSourceDirectories() {
+        sourceScanTask?.cancel()
+        sourceScanTask = nil
+        sourceScanGeneration = UUID()
+        sourceDirectoryWatchers.values.forEach { $0.stop() }
+        sourceDirectoryWatchers.removeAll()
+        sourceRefreshWorkItem?.cancel()
+        sourceRefreshWorkItem = nil
+        for (id, wasStarted) in sourceAccessActive where wasStarted {
+            sourceDirectoryURLs[id]?.stopAccessingSecurityScopedResource()
+        }
+        sourceAccessActive.removeAll()
+        sourceDirectoryURLs.removeAll()
+        sourceDirectories.removeAll()
+        sourceDirectoryURL = nil
+        selectedSourceFileURL = nil
+        installSourceFiles([])
+    }
+
+    private func saveProjectSettings() {
+        guard let projectSettingsURL else { return }
+
+        let settings = BrollProjectSettings(
+            projectID: projectID,
+            prefix: prefix,
+            sourceDirectories: sourceDirectories,
+            splitMode: splitMode,
+            preservesEmptyAnchors: preservesEmptyAnchors,
+            anchorNotes: anchorNotes,
+            rollTypeOverrides: rollTypeOverrides,
+            capturedBrollRowIDs: capturedBrollRowIDs.sorted(),
+            assignments: assignments
+        )
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(settings).write(to: projectSettingsURL, options: .atomic)
+        } catch {
+            statusMessage = "无法保存 B-roll/project-settings.json：\(error.localizedDescription)"
+        }
     }
 
     private func storeBookmark(for url: URL, key: String) {

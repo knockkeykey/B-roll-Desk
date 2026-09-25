@@ -1166,8 +1166,8 @@
             <span class="source-directory-name" id="sourceDirectoryName">未选择</span>
           </div>
           <div class="directory-target">
-            <span class="directory-label">归档位置</span>
-            <button class="primary" id="chooseDirBtn">选择归档目录</button>
+            <span class="directory-label">剪辑项目文件夹</span>
+            <button class="primary" id="chooseDirBtn">选择剪辑项目文件夹</button>
             <span class="destination-name" id="destinationName">未选择</span>
          </div>
          <div class="directory-fields">
@@ -1197,8 +1197,8 @@
             <div class="compact-stat"><strong id="pendingStat">0</strong><span>待绑定</span></div>
           </div>
           <div class="directory-actions">
-            <button id="saveManifestBtn">保存清单</button>
-            <button id="downloadManifestBtn">下载清单</button>
+            <button id="saveManifestBtn">保存对照表</button>
+            <button id="downloadManifestBtn">下载对照表</button>
             <button class="ghost danger" id="clearAssignmentsBtn">清空配对记录</button>
           </div>
           <div class="save-state"><span id="lastSaved">尚未保存</span></div>
@@ -1836,10 +1836,10 @@
           await writeTextFile("broll-manifest.json", JSON.stringify(manifest, null, 2));
           await writeTextFile("broll-manifest.md", manifestMarkdown(manifest));
           $("#lastSaved").textContent = `已保存 ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-          if (showMessage) showToast("清单已保存到目标目录");
+          if (showMessage) showToast("对照表已保存到目标目录");
           return true;
         } catch (error) {
-          showToast(`保存清单失败：${error.message}`, "error");
+          showToast(`保存对照表失败：${error.message}`, "error");
           return false;
         }
       }
@@ -1852,7 +1852,7 @@
         link.download = "broll-manifest.json";
         link.click();
         URL.revokeObjectURL(url);
-        showToast("清单已下载");
+        showToast("对照表已下载");
       }
 
       function persistPreferences() {
@@ -1915,7 +1915,7 @@
 
       $("#clearAssignmentsBtn").addEventListener("click", () => {
         if (!Object.values(state.assignments).flat().length) return;
-        if (!window.confirm("只清空本次配对记录，不删除目标目录里的视频和清单。继续吗？")) return;
+        if (!window.confirm("只清空本次配对记录，不删除目标目录里的视频和对照表。继续吗？")) return;
         state.assignments = {};
         persistAssignments();
        renderRows();
