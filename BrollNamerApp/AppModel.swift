@@ -14,6 +14,7 @@ final class AppModel {
         let preservesEmptyAnchors: Bool
         let assignments: [String: [BrollAsset]]
         let rollTypeOverrides: [String: AnchorRollType]
+        let capturedBrollRowIDs: Set<String>
 
         var archivedNames: Set<String> {
             Set(assignments.values.flatMap { $0.map(\.outputName) })
@@ -57,6 +58,7 @@ final class AppModel {
     private(set) var rows: [AnchorRow] = []
     private(set) var assignments: [String: [BrollAsset]] = [:]
     private(set) var rollTypeOverrides: [String: AnchorRollType] = [:]
+    private(set) var capturedBrollRowIDs: Set<String> = []
     private(set) var sourceFiles: [SourceFile] = []
     private(set) var visibleSourceFiles: [SourceFile] = []
     private(set) var sourceDirectoryURL: URL?
@@ -80,6 +82,7 @@ final class AppModel {
     private let splitModeKey = "broll-namer-split-mode"
     private let preservesEmptyAnchorsKey = "broll-namer-preserves-empty-anchors"
     private let rollTypeOverridesKey = "broll-namer-roll-type-overrides"
+    private let capturedBrollRowsKey = "broll-namer-captured-broll-rows"
     private let prefixKey = "broll-namer-prefix"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
@@ -94,6 +97,7 @@ final class AppModel {
             guard let rawValue = value as? String else { return nil }
             return AnchorRollType(rawValue: rawValue)
         }
+        capturedBrollRowIDs = Set(defaults.stringArray(forKey: capturedBrollRowsKey) ?? [])
 
         restoreSavedDirectories()
         parseScript(persist: false)
@@ -184,6 +188,27 @@ final class AppModel {
         registerUndo(named: "切换 A/B-roll", restoring: before)
     }
 
+    func isBrollCaptured(for rowID: String) -> Bool {
+        capturedBrollRowIDs.contains(rowID) || !assets(for: rowID).isEmpty
+    }
+
+    func toggleBrollCapture(for rowID: String) {
+        guard let row = rows.first(where: { $0.id == rowID }),
+              rollType(for: rowID) == .bRoll,
+              assets(for: rowID).isEmpty else { return }
+        let before = makeUndoSnapshot()
+        let isCaptured = capturedBrollRowIDs.contains(rowID)
+        if isCaptured {
+            capturedBrollRowIDs.remove(rowID)
+        } else {
+            capturedBrollRowIDs.insert(rowID)
+        }
+        persistPreferences()
+        lastSaved = "本机已保存 \(Self.timeString())"
+        statusMessage = "BR\(String(format: "%03d", row.index)) 已标记为\(isCaptured ? "待拍摄" : "已拍摄")"
+        registerUndo(named: "更改 B-roll 拍摄状态", restoring: before)
+    }
+
     func isAssigned(_ file: SourceFile) -> Bool {
         assignedNamesIndex.contains(file.name)
     }
@@ -208,6 +233,7 @@ final class AppModel {
         defaults.set(preservesEmptyAnchors, forKey: preservesEmptyAnchorsKey)
         defaults.set(prefix, forKey: prefixKey)
         defaults.set(rollTypeOverrides.mapValues(\.rawValue), forKey: rollTypeOverridesKey)
+        defaults.set(capturedBrollRowIDs.sorted(), forKey: capturedBrollRowsKey)
         saveAssignments()
     }
 
@@ -243,6 +269,7 @@ final class AppModel {
         }
         let currentRowIDs = Set(rows.map(\.id))
         rollTypeOverrides = rollTypeOverrides.filter { currentRowIDs.contains($0.key) }
+        capturedBrollRowIDs = capturedBrollRowIDs.filter { currentRowIDs.contains($0) }
         rebuildAssignmentIndexes()
 
         if persist {
@@ -298,6 +325,7 @@ final class AppModel {
         let previousRows = rows
         let previousAssignments = assignments
         let previousRollTypeOverrides = rollTypeOverrides
+        let previousCapturedBrollRowIDs = capturedBrollRowIDs
         splitMode = .line
         preservesEmptyAnchors = true
         scriptText = texts.joined(separator: "\n")
@@ -317,6 +345,14 @@ final class AppModel {
                 }
                 .first
             return inheritedType.map { (row.id, $0) }
+        })
+        capturedBrollRowIDs = Set(rows.enumerated().compactMap { offset, row in
+            guard sourceIndices.indices.contains(offset) else { return nil }
+            let wasCaptured = sourceIndices[offset].contains { sourceIndex in
+                previousRows.indices.contains(sourceIndex) &&
+                    previousCapturedBrollRowIDs.contains(previousRows[sourceIndex].id)
+            }
+            return wasCaptured ? row.id : nil
         })
         rebuildAssignmentIndexes()
         persistPreferences()
@@ -854,9 +890,13 @@ final class AppModel {
     private func rebuildAssignmentIndexes() {
         var names: Set<String> = []
         var assetsByName: [String: [BrollAsset]] = [:]
+        var rowsWithAssets: Set<String> = []
 
         for row in rows {
             let assets = assignments[row.id] ?? []
+            if !assets.isEmpty {
+                rowsWithAssets.insert(row.id)
+            }
             for asset in assets {
                 names.insert(asset.sourceName)
                 names.insert(asset.outputName)
@@ -866,6 +906,12 @@ final class AppModel {
 
         assignedNamesIndex = names
         assetsBySourceName = assetsByName
+
+        let previousCapturedRows = capturedBrollRowIDs
+        capturedBrollRowIDs.formUnion(rowsWithAssets)
+        if capturedBrollRowIDs != previousCapturedRows {
+            defaults.set(capturedBrollRowIDs.sorted(), forKey: capturedBrollRowsKey)
+        }
     }
 
     private func makeUndoSnapshot() -> UndoSnapshot {
@@ -874,7 +920,8 @@ final class AppModel {
             splitMode: splitMode,
             preservesEmptyAnchors: preservesEmptyAnchors,
             assignments: assignments,
-            rollTypeOverrides: rollTypeOverrides
+            rollTypeOverrides: rollTypeOverrides,
+            capturedBrollRowIDs: capturedBrollRowIDs
         )
     }
 
@@ -897,6 +944,7 @@ final class AppModel {
         parseScript(persist: false)
         assignments = snapshot.assignments
         rollTypeOverrides = snapshot.rollTypeOverrides
+        capturedBrollRowIDs = snapshot.capturedBrollRowIDs
         rebuildAssignmentIndexes()
         persistPreferences()
         if destinationDirectoryURL != nil {

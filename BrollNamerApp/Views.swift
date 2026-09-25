@@ -1407,6 +1407,13 @@ private struct AnchorRowView: View {
                             .font(.caption2.monospaced())
                             .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary.opacity(0.72))
                         Spacer(minLength: 8)
+                        if model.rollType(for: row.id) == .bRoll {
+                            BrollCaptureTag(
+                                isCaptured: model.isBrollCaptured(for: row.id),
+                                isBound: !assets.isEmpty,
+                                onTap: { model.toggleBrollCapture(for: row.id) }
+                            )
+                        }
                         RollTypeTag(
                             isBroll: model.rollType(for: row.id) == .bRoll,
                             assetCount: assets.count,
@@ -1472,6 +1479,46 @@ private struct AnchorRowView: View {
         )
         .animation(.snappy(duration: 0.2), value: assets.count)
         .animation(.snappy(duration: 0.2), value: isPendingBinding)
+    }
+}
+
+private struct BrollCaptureTag: View {
+    let isCaptured: Bool
+    let isBound: Bool
+    let onTap: () -> Void
+
+    private var tint: Color { isCaptured ? .green : .secondary }
+
+    @ViewBuilder
+    var body: some View {
+        if isBound {
+            tag
+                .accessibilityLabel("B-roll 已拍摄")
+        } else {
+            Button(action: onTap) {
+                tag
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isCaptured ? "B-roll 已拍摄，点击标记为待拍摄" : "B-roll 待拍摄，点击标记为已拍摄")
+            .pointerCursor()
+        }
+    }
+
+    private var tag: some View {
+        HStack(spacing: 4) {
+            Image(systemName: isCaptured ? "checkmark.circle.fill" : "circle")
+            Text(isCaptured ? "已拍摄" : "待拍摄")
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(tint)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(tint.opacity(isCaptured ? 0.1 : 0.07), in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(tint.opacity(isCaptured ? 0.2 : 0.14), lineWidth: 0.6)
+        }
+        .contentShape(Capsule())
     }
 }
 
@@ -1621,7 +1668,6 @@ private struct RollTypeTag: View {
     let assetCount: Int
     let onTap: () -> Void
 
-    private var isPendingBinding: Bool { isBroll && assetCount == 0 }
     private var tint: Color { isBroll ? .green : .accentColor }
 
     var body: some View {
@@ -1650,12 +1696,6 @@ private struct RollTypeTag: View {
             Capsule()
                 .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
         }
-        .hoverHelp(isPendingBinding
-            ? "B-roll 待绑定；可从素材列表拖拽素材到这条文案。点击切换为 A-roll。"
-            : (isBroll
-                ? "已绑定 \(assetCount) 个视频或图片，点击切换为 A-roll。"
-                : "点击切换为 B-roll，之后可绑定视频或图片。")
-        )
         .accessibilityLabel("\(isBroll ? "B-roll" : "A-roll")，点击切换为\(isBroll ? "A-roll" : "B-roll")")
     }
 }
