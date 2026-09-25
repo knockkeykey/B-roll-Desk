@@ -54,6 +54,8 @@ final class AppModel {
     var statusMessage = "请设置素材来源和归档位置"
     var lastSaved = "尚未保存"
     var alert: AppAlert?
+    private(set) var canUndo = false
+    private(set) var canRedo = false
 
     private(set) var rows: [AnchorRow] = []
     private(set) var assignments: [String: [BrollAsset]] = [:]
@@ -66,7 +68,7 @@ final class AppModel {
     private(set) var savedDirectories: [SavedDirectory] = []
 
     private let defaults = UserDefaults.standard
-    private weak var undoManager: UndoManager?
+    let undoManager = UndoManager()
     private var sourceAccessActive = false
     private var destinationAccessActive = false
     private var sourceFilesByName: [String: SourceFile] = [:]
@@ -89,6 +91,7 @@ final class AppModel {
     private let savedDirectoriesKey = "broll-namer-saved-directories"
 
     init() {
+        undoManager.levelsOfUndo = 50
         scriptText = defaults.string(forKey: scriptKey) ?? ""
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
         preservesEmptyAnchors = defaults.bool(forKey: preservesEmptyAnchorsKey)
@@ -151,7 +154,7 @@ final class AppModel {
     var filteredRows: [AnchorRow] {
         let query = anchorSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return rows }
-        return rows.filter { $0.text.localizedCaseInsensitiveContains(query) || "BR\(String(format: "%03d", $0.index))".localizedCaseInsensitiveContains(query) }
+        return rows.filter { $0.text.localizedCaseInsensitiveContains(query) }
     }
 
     private func rebuildVisibleSourceFiles() {
@@ -194,18 +197,23 @@ final class AppModel {
 
     func toggleBrollCapture(for rowID: String) {
         guard let row = rows.first(where: { $0.id == rowID }),
-              rollType(for: rowID) == .bRoll,
-              assets(for: rowID).isEmpty else { return }
-        let before = makeUndoSnapshot()
+              rollType(for: rowID) == .bRoll else { return }
+        guard assets(for: rowID).isEmpty else { return }
+
+        let rowNumber = String(format: "%03d", row.index)
         let isCaptured = capturedBrollRowIDs.contains(rowID)
-        if isCaptured {
-            capturedBrollRowIDs.remove(rowID)
-        } else {
-            capturedBrollRowIDs.insert(rowID)
+        guard isCaptured else {
+            let message = "BR\(rowNumber) 还没有绑定 B-roll 素材，无法标记为已拍摄。请先从素材列表拖拽素材到这条文案。"
+            statusMessage = message
+            alert = AppAlert(title: "请先补充 B-roll 素材", message: message)
+            return
         }
+
+        let before = makeUndoSnapshot()
+        capturedBrollRowIDs.remove(rowID)
         persistPreferences()
         lastSaved = "本机已保存 \(Self.timeString())"
-        statusMessage = "BR\(String(format: "%03d", row.index)) 已标记为\(isCaptured ? "待拍摄" : "已拍摄")"
+        statusMessage = "BR\(rowNumber) 已标记为待拍摄"
         registerUndo(named: "更改 B-roll 拍摄状态", restoring: before)
     }
 
@@ -237,11 +245,26 @@ final class AppModel {
         saveAssignments()
     }
 
-    func connectUndoManager(_ undoManager: UndoManager?) {
-        self.undoManager = undoManager
-        if let undoManager, undoManager.levelsOfUndo < 50 {
-            undoManager.levelsOfUndo = 50
-        }
+    func undo() {
+        guard undoManager.canUndo else { return }
+        undoManager.undo()
+        refreshUndoAvailability()
+    }
+
+    func redo() {
+        guard undoManager.canRedo else { return }
+        undoManager.redo()
+        refreshUndoAvailability()
+    }
+
+    private func discardUndoActions() {
+        undoManager.removeAllActions()
+        refreshUndoAvailability()
+    }
+
+    private func refreshUndoAvailability() {
+        canUndo = undoManager.canUndo
+        canRedo = undoManager.canRedo
     }
 
     func setSplitMode(_ mode: SplitMode) {
@@ -524,7 +547,7 @@ final class AppModel {
 
         // Clearing can also remove unrecorded archive files, so earlier undo entries
         // must not appear to undo a different action after this irreversible cleanup.
-        undoManager?.removeAllActions()
+        discardUndoActions()
 
         let recordedNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
         let mediaExtensions = Self.videoExtensions.union(Self.imageExtensions)
@@ -926,15 +949,18 @@ final class AppModel {
     }
 
     private func registerUndo(named actionName: String, restoring snapshot: UndoSnapshot) {
-        guard let undoManager, makeUndoSnapshot() != snapshot else { return }
+        guard makeUndoSnapshot() != snapshot else { return }
         undoManager.registerUndo(withTarget: self) { model in
-            let current = model.makeUndoSnapshot()
-            model.registerUndo(named: actionName, restoring: current)
-            model.applyUndoSnapshot(snapshot)
-            model.reconcileArchiveCopies(from: current, to: snapshot)
-            model.undoManager?.setActionName(actionName)
+            MainActor.assumeIsolated {
+                let current = model.makeUndoSnapshot()
+                model.registerUndo(named: actionName, restoring: current)
+                model.applyUndoSnapshot(snapshot)
+                model.reconcileArchiveCopies(from: current, to: snapshot)
+                model.undoManager.setActionName(actionName)
+            }
         }
         undoManager.setActionName(actionName)
+        refreshUndoAvailability()
     }
 
     private func applyUndoSnapshot(_ snapshot: UndoSnapshot) {
@@ -950,7 +976,8 @@ final class AppModel {
         if destinationDirectoryURL != nil {
             _ = saveManifest(showMessage: false)
         }
-        lastSaved = "已撤回到 \(Self.timeString())"
+        let action = undoManager.isUndoing ? "已撤回到" : "已恢复到"
+        lastSaved = "\(action) \(Self.timeString())"
     }
 
     private func reconcileArchiveCopies(from current: UndoSnapshot, to target: UndoSnapshot) {
@@ -1323,7 +1350,7 @@ final class AppModel {
 
     private func activateSourceDirectory(_ url: URL) {
         if sourceDirectoryURL?.standardizedFileURL != url.standardizedFileURL {
-            undoManager?.removeAllActions()
+            discardUndoActions()
         }
         sourceDirectoryWatcher?.stop()
         sourceDirectoryWatcher = nil
@@ -1362,7 +1389,7 @@ final class AppModel {
 
     private func activateDestinationDirectory(_ url: URL) {
         if destinationDirectoryURL?.standardizedFileURL != url.standardizedFileURL {
-            undoManager?.removeAllActions()
+            discardUndoActions()
         }
         if destinationAccessActive {
             destinationDirectoryURL?.stopAccessingSecurityScopedResource()

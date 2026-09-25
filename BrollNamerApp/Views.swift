@@ -11,9 +11,13 @@ private enum ListPaneMetrics {
     static let toolsHeight: CGFloat = 54
 }
 
+private enum AnchorCaptureFilter: Hashable {
+    case all
+    case pendingCapture
+}
+
 struct ContentView: View {
     @Bindable var model: AppModel
-    @Environment(\.undoManager) private var undoManager
     @StateObject private var folderDragFeedback = FolderDragFeedbackModel()
     @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
     @State private var isSidebarVisible = true
@@ -136,12 +140,6 @@ struct ContentView: View {
                         .pointerCursor()
         } message: {
             Text("将删除当前归档位置中已绑定及符合命名规则的旧素材副本，并更新 JSON 和 Markdown 清单。素材目录中的原始文件会保留。")
-        }
-        .onAppear {
-            model.connectUndoManager(undoManager)
-        }
-        .onChange(of: undoManager) { _, manager in
-            model.connectUndoManager(manager)
         }
         .preferredColorScheme(preferredColorScheme)
         .font(.system(size: 16))
@@ -469,6 +467,7 @@ private struct SidebarView: View {
         VStack(spacing: 0) {
             PaneHeader(
                 title: "B-roll 配对台",
+                titleCredit: "@深键",
                 systemImage: "photo.stack",
                 showsTitleIcon: false,
                 showsWaveUnderline: true,
@@ -1001,6 +1000,7 @@ private struct AnchorHeaderMetric: View {
 private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
+    @State private var captureFilter = AnchorCaptureFilter.all
     @State private var editingIndex: Int?
     @State private var editingText = ""
     @State private var editingCursor = 0
@@ -1008,7 +1008,10 @@ private struct AnchorListView: View {
     @State private var pendingScrollRowID: String?
 
     var body: some View {
-        let filteredRows = model.filteredRows
+        let filteredRows = model.filteredRows.filter { row in
+            guard captureFilter == .pendingCapture else { return true }
+            return model.rollType(for: row.id) == .bRoll && !model.isBrollCaptured(for: row.id)
+        }
 
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -1047,27 +1050,39 @@ private struct AnchorListView: View {
             .overlay(alignment: .bottom) { Divider() }
 
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("搜索文案或 BR 编号", text: $model.anchorSearchText)
-                    .textFieldStyle(.plain)
-                    .accessibilityLabel("搜索文案锚点")
-                if !model.anchorSearchText.isEmpty {
-                    Button {
-                        model.anchorSearchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("搜索文案", text: $model.anchorSearchText)
+                        .textFieldStyle(.plain)
+                        .accessibilityLabel("搜索文案锚点")
+                    if !model.anchorSearchText.isEmpty {
+                        Button {
+                            model.anchorSearchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(IconActionButtonStyle())
+                        .hoverHelp("清除搜索")
+                        .accessibilityLabel("清除搜索")
+                        .pointerCursor()
                     }
-                    .buttonStyle(IconActionButtonStyle())
-                    .hoverHelp("清除搜索")
-                    .accessibilityLabel("清除搜索")
-                    .pointerCursor()
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                Picker("", selection: $captureFilter) {
+                    Text("全部").tag(AnchorCaptureFilter.all)
+                    Text("待拍摄").tag(AnchorCaptureFilter.pendingCapture)
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.large)
+                .frame(width: 155)
+                .accessibilityLabel("筛选文案状态")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(height: ListPaneMetrics.toolsHeight)
@@ -1090,12 +1105,25 @@ private struct AnchorListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredRows.isEmpty {
                 ContentUnavailableView {
-                    Label("没有匹配的文案", systemImage: "magnifyingglass")
+                    Label(
+                        captureFilter == .pendingCapture ? "没有待拍摄的 B-roll" : "没有匹配的文案",
+                        systemImage: captureFilter == .pendingCapture ? "checkmark.circle" : "magnifyingglass"
+                    )
                 } description: {
-                    Text("试试文案关键词或 BR 编号。")
+                    if captureFilter == .pendingCapture {
+                        Text(model.anchorSearchText.isEmpty
+                            ? "当前没有待拍摄的 B-roll。"
+                            : "当前搜索结果中没有待拍摄的 B-roll。")
+                    } else {
+                        Text("试试其他文案关键词。")
+                    }
                 } actions: {
-                    Button("清除搜索") {
-                        model.anchorSearchText = ""
+                    Button(captureFilter == .pendingCapture ? "显示全部文案" : "清除搜索") {
+                        if captureFilter == .pendingCapture {
+                            captureFilter = .all
+                        } else {
+                            model.anchorSearchText = ""
+                        }
                     }
                     .buttonStyle(.bordered)
                     .pointerCursor()
@@ -1209,6 +1237,7 @@ private struct AnchorListDropOutline: View {
 
 private struct PaneHeader: View {
     let title: String
+    let titleCredit: String?
     let systemImage: String
     let showsTitleIcon: Bool
     let showsWaveUnderline: Bool
@@ -1219,6 +1248,7 @@ private struct PaneHeader: View {
 
     init(
         title: String,
+        titleCredit: String? = nil,
         systemImage: String,
         showsTitleIcon: Bool = true,
         showsWaveUnderline: Bool = false,
@@ -1228,6 +1258,7 @@ private struct PaneHeader: View {
         actions: [PaneHeaderAction] = []
     ) {
         self.title = title
+        self.titleCredit = titleCredit
         self.systemImage = systemImage
         self.showsTitleIcon = showsTitleIcon
         self.showsWaveUnderline = showsWaveUnderline
@@ -1241,9 +1272,17 @@ private struct PaneHeader: View {
         HStack(alignment: .center, spacing: 8) {
             if showsWaveUnderline {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(titleFont ?? .system(size: 17, weight: .semibold))
-                        .fixedSize(horizontal: true, vertical: false)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(title)
+                            .font(titleFont ?? .system(size: 17, weight: .semibold))
+                            .fixedSize(horizontal: true, vertical: false)
+                        if let titleCredit {
+                            Text(titleCredit)
+                                .font(.system(size: 10, weight: .regular))
+                                .foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
                     HeaderWaveUnderline()
                         .stroke(
                             Color.accentColor.opacity(0.82),
@@ -1254,13 +1293,11 @@ private struct PaneHeader: View {
                             Circle()
                                 .stroke(Color.accentColor.opacity(0.9), lineWidth: 1.5)
                                 .frame(width: 8, height: 8)
-                                .offset(x: -1)
                         }
                         .overlay(alignment: .trailing) {
                             Circle()
                                 .stroke(Color.accentColor.opacity(0.9), lineWidth: 1.5)
                                 .frame(width: 8, height: 8)
-                                .offset(x: 1)
                         }
                 }
                 .frame(minWidth: 150, alignment: .leading)
@@ -1325,8 +1362,8 @@ private struct PaneHeader: View {
 private struct HeaderWaveUnderline: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        let startX: CGFloat = 4
-        let endX = rect.width - 4
+        let startX: CGFloat = 8
+        let endX = rect.width - 8
         let centerY = rect.midY
         path.move(to: CGPoint(x: startX, y: centerY))
         for step in 1...32 {
@@ -1499,7 +1536,7 @@ private struct BrollCaptureTag: View {
                 tag
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isCaptured ? "B-roll 已拍摄，点击标记为待拍摄" : "B-roll 待拍摄，点击标记为已拍摄")
+            .accessibilityLabel(isCaptured ? "B-roll 已拍摄，点击标记为待拍摄" : "B-roll 待拍摄，点击查看如何补充素材")
             .pointerCursor()
         }
     }
@@ -1849,9 +1886,6 @@ private struct MaterialListHeader: View {
                         .strokeBorder(.separator.opacity(0.55), lineWidth: 0.5)
                 }
                 .modifier(DirectoryDropTargetModifier { model.acceptSourceDirectoryDrop($0) })
-
-                Divider()
-                    .frame(height: 24)
 
                 MediaFilterPicker(selection: $model.mediaFilter)
             }
