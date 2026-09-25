@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CoreServices
 import Foundation
 import Observation
 import UniformTypeIdentifiers
@@ -72,6 +73,8 @@ final class AppModel {
     private var assetsBySourceName: [String: [BrollAsset]] = [:]
     private var sourceScanTask: Task<[SourceFile], Error>?
     private var sourceScanGeneration = UUID()
+    private var sourceDirectoryWatcher: SourceDirectoryWatcher?
+    private var sourceRefreshWorkItem: DispatchWorkItem?
 
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
@@ -1241,6 +1244,7 @@ final class AppModel {
         if let url = resolvedBookmark(forKey: sourceBookmarkKey) {
             sourceDirectoryURL = url
             sourceAccessActive = url.startAccessingSecurityScopedResource()
+            watchSourceDirectory(url)
         }
         if let url = resolvedBookmark(forKey: destinationBookmarkKey) {
             destinationDirectoryURL = url
@@ -1255,13 +1259,39 @@ final class AppModel {
         if sourceDirectoryURL?.standardizedFileURL != url.standardizedFileURL {
             undoManager?.removeAllActions()
         }
+        sourceDirectoryWatcher?.stop()
+        sourceDirectoryWatcher = nil
+        sourceRefreshWorkItem?.cancel()
+        sourceRefreshWorkItem = nil
         if sourceAccessActive {
             sourceDirectoryURL?.stopAccessingSecurityScopedResource()
         }
         sourceAccessActive = url.startAccessingSecurityScopedResource()
         sourceDirectoryURL = url
         storeBookmark(for: url, key: sourceBookmarkKey)
+        watchSourceDirectory(url)
         refreshSourceFiles()
+    }
+
+    private func watchSourceDirectory(_ url: URL) {
+        let watcher = SourceDirectoryWatcher(directoryURL: url) { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                self?.scheduleSourceRefresh()
+            }
+        }
+        sourceDirectoryWatcher = watcher
+        watcher.start()
+    }
+
+    private func scheduleSourceRefresh() {
+        sourceRefreshWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.sourceRefreshWorkItem = nil
+            self.refreshSourceFiles()
+        }
+        sourceRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
     }
 
     private func activateDestinationDirectory(_ url: URL) {
@@ -1315,6 +1345,73 @@ final class AppModel {
 
     private static func timeString() -> String {
         DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .short)
+    }
+}
+
+private final class SourceDirectoryWatcher {
+    private let directoryURL: URL
+    private let onChange: () -> Void
+    private var stream: FSEventStreamRef?
+    private var isRunning = false
+
+    init(directoryURL: URL, onChange: @escaping () -> Void) {
+        self.directoryURL = directoryURL
+        self.onChange = onChange
+    }
+
+    func start() {
+        guard stream == nil else { return }
+
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+        let callback: FSEventStreamCallback = { _, clientInfo, _, _, _, _ in
+            guard let clientInfo else { return }
+            let watcher = Unmanaged<SourceDirectoryWatcher>.fromOpaque(clientInfo).takeUnretainedValue()
+            watcher.onChange()
+        }
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
+        )
+
+        guard let stream = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            callback,
+            &context,
+            [directoryURL.path] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.35,
+            flags
+        ) else {
+            return
+        }
+
+        self.stream = stream
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        guard FSEventStreamStart(stream) else {
+            stop()
+            return
+        }
+        isRunning = true
+    }
+
+    func stop() {
+        guard let stream else { return }
+        if isRunning {
+            FSEventStreamStop(stream)
+        }
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        self.stream = nil
+        isRunning = false
+    }
+
+    deinit {
+        stop()
     }
 }
 

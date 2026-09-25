@@ -474,7 +474,7 @@ private struct SidebarView: View {
                 showsWaveUnderline: true,
                 titleFont: .custom("SmileySans-Oblique", size: 22).weight(.bold),
                 actions: [
-                    PaneHeaderAction(systemImage: "sidebar.left", help: "收起侧边栏") {
+                    PaneHeaderAction(systemImage: "sidebar.left", help: "收起侧边栏", usesAnimation: false) {
                         withAnimation(.easeInOut(duration: 0.24)) {
                             isSidebarVisible = false
                         }
@@ -938,13 +938,19 @@ private struct SidebarActionButtonChrome: ViewModifier {
 }
 
 private struct IconActionButtonStyle: ButtonStyle {
+    var usesAnimation = true
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.modifier(IconActionButtonChrome(isPressed: configuration.isPressed))
+        configuration.label.modifier(IconActionButtonChrome(
+            isPressed: configuration.isPressed,
+            usesAnimation: usesAnimation
+        ))
     }
 }
 
 private struct IconActionButtonChrome: ViewModifier {
     let isPressed: Bool
+    let usesAnimation: Bool
     @State private var isHovered = false
 
     func body(content: Content) -> some View {
@@ -961,8 +967,8 @@ private struct IconActionButtonChrome: ViewModifier {
             }
             .onHover { isHovered = $0 }
             .scaleEffect(isPressed ? 0.96 : 1)
-            .animation(.easeOut(duration: 0.12), value: isPressed)
-            .animation(.easeOut(duration: 0.12), value: isHovered)
+            .animation(usesAnimation ? .easeOut(duration: 0.12) : nil, value: isPressed)
+            .animation(usesAnimation ? .easeOut(duration: 0.12) : nil, value: isHovered)
     }
 }
 
@@ -1014,7 +1020,7 @@ private struct AnchorListView: View {
                     } label: {
                         Image(systemName: "sidebar.left")
                     }
-                    .buttonStyle(IconActionButtonStyle())
+                    .buttonStyle(IconActionButtonStyle(usesAnimation: false))
                     .hoverHelp("展开侧边栏")
                     .accessibilityLabel("展开侧边栏")
                     .pointerCursor()
@@ -1289,8 +1295,19 @@ private struct PaneHeader: View {
                 let headerAction = actions[index]
                 Button(action: headerAction.action) {
                     Image(systemName: headerAction.systemImage)
+                        .transaction { transaction in
+                            if !headerAction.usesAnimation {
+                                transaction.animation = nil
+                            }
+                        }
                 }
-                .buttonStyle(IconActionButtonStyle())
+                .buttonStyle(IconActionButtonStyle(usesAnimation: headerAction.usesAnimation))
+                .transaction { transaction in
+                    if !headerAction.usesAnimation {
+                        transaction.animation = nil
+                        transaction.disablesAnimations = true
+                    }
+                }
                 .foregroundStyle(.secondary)
                 .hoverHelp(headerAction.help)
                 .accessibilityLabel(headerAction.accessibilityLabel)
@@ -1326,17 +1343,20 @@ private struct PaneHeaderAction {
     let systemImage: String
     let help: String
     let accessibilityLabel: String
+    let usesAnimation: Bool
     let action: () -> Void
 
     init(
         systemImage: String,
         help: String,
         accessibilityLabel: String? = nil,
+        usesAnimation: Bool = true,
         action: @escaping () -> Void
     ) {
         self.systemImage = systemImage
         self.help = help
         self.accessibilityLabel = accessibilityLabel ?? help
+        self.usesAnimation = usesAnimation
         self.action = action
     }
 }
@@ -1807,14 +1827,14 @@ private struct MaterialListHeader: View {
 
     private var paneHeaderActions: [PaneHeaderAction] {
         var actions = [
-            PaneHeaderAction(systemImage: "arrow.clockwise", help: "刷新素材列表") {
+            PaneHeaderAction(systemImage: "arrow.clockwise", help: "刷新素材列表", usesAnimation: false) {
                 model.refreshSourceFiles()
             }
         ]
 
         if !isMediaPreviewVisible {
             actions.append(
-                PaneHeaderAction(systemImage: "chevron.left", help: "展开当前媒体栏") {
+                PaneHeaderAction(systemImage: "chevron.left", help: "展开当前媒体栏", usesAnimation: false) {
                     withAnimation(.easeInOut(duration: 0.18)) {
                         isMediaPreviewVisible = true
                     }
@@ -2015,7 +2035,7 @@ private struct SavedDirectoryRow: View {
                 Button("移除常用目录", systemImage: "trash", role: .destructive, action: remove)
             } label: {
                 Image(systemName: "ellipsis")
-                    .modifier(IconActionButtonChrome(isPressed: false))
+                    .modifier(IconActionButtonChrome(isPressed: false, usesAnimation: true))
                     .foregroundStyle(.secondary)
             }
             .menuStyle(.borderlessButton)
@@ -2234,7 +2254,7 @@ private struct MediaPreviewView: View {
                 count: file == nil ? "未选择" : nil,
                 disablesTitleIconAnimation: true,
                 actions: [
-                    PaneHeaderAction(systemImage: "chevron.right", help: "收起当前媒体栏") {
+                    PaneHeaderAction(systemImage: "chevron.right", help: "收起当前媒体栏", usesAnimation: false) {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             isMediaPreviewVisible = false
                         }
@@ -2261,7 +2281,7 @@ private struct MediaPreviewView: View {
                     } label: {
                         Image(systemName: "eye")
                     }
-                    .buttonStyle(IconActionButtonStyle())
+                    .buttonStyle(IconActionButtonStyle(usesAnimation: false))
                     .hoverHelp("使用 Quick Look 打开素材")
                     .accessibilityLabel("使用 Quick Look 打开素材")
                     .pointerCursor()
@@ -2271,7 +2291,7 @@ private struct MediaPreviewView: View {
                     } label: {
                         Image(systemName: "arrow.up.forward.app")
                     }
-                    .buttonStyle(IconActionButtonStyle())
+                    .buttonStyle(IconActionButtonStyle(usesAnimation: false))
                     .hoverHelp("在 Finder 新标签页中显示素材")
                     .accessibilityLabel("在 Finder 新标签页中显示素材")
                     .pointerCursor()
@@ -2323,6 +2343,10 @@ private struct MediaPreviewView: View {
             }
         }
         .background(.windowBackground)
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
     }
 }
 
