@@ -543,7 +543,7 @@ private struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(
-                title: "B-roll 配对台",
+                title: "B-roll配对台",
                 titleCredit: "@深键",
                 systemImage: "photo.stack",
                 showsTitleIcon: false,

@@ -3,7 +3,7 @@ import AppKit
 import CoreText
 
 @main
-struct BrollNamerApp: App {
+struct BRollDeskApp: App {
     @State private var model = AppModel()
 
     init() {
@@ -13,7 +13,7 @@ struct BrollNamerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("B-roll 配对台") {
+        WindowGroup("B-roll配对台") {
             ContentView(model: model)
                 .background {
                     WindowTitlebarDoubleClickZoomInstaller()

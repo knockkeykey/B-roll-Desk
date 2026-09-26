@@ -1,6 +1,6 @@
-# B-roll 配对台
+# B-roll Desk
 
-一个本地 macOS 小工具：把拍摄素材目录里的视频或图片拖到对应的文案句子上，自动复制到归档目录、生成稳定文件名，并生成供 Codex 使用的 `broll-for-codex.json`。
+B-roll Desk（App 名称：B-roll配对台）是一个本地 macOS 小工具：把拍摄素材目录里的视频或图片拖到对应的文案句子上，自动复制到归档目录、生成稳定文件名，并生成供 Codex 使用的 `broll-for-codex.json`。
 
 ## 使用方法
 
@@ -60,7 +60,7 @@ Chrome / Edge 才支持选择本地目录并写入文件。若后续需要“拖
 
 项目现在同时包含一个 SwiftUI 原生 macOS App：
 
-- 打开 `BrollNamer.xcodeproj`，用 Xcode 16.4 或更新版本运行 `BrollNamer` target。
+- 打开 `B-roll Desk.xcodeproj`，用 Xcode 16.4 或更新版本运行 `B-roll Desk` target。
 - 最低支持 macOS 14；界面使用 `HSplitView`、系统 `List`、`TextEditor`、SF Symbols 和标准目录选择面板。
 - 选择剪辑项目文件夹后，App 会创建 `A-roll/` 和 `B-roll/`；绑定的 B-roll 副本及 `broll-manifest.json`、`broll-for-codex.json`、`broll-manifest.md` 都保存在 `B-roll/`。
 - 项目设置保存在 `B-roll/project-settings.json`，包括命名前缀、多个素材来源目录的书签、文案拆分方式和绑定状态；重新打开项目时按该文件恢复。每个绑定同时记录来源目录 ID 和相对路径，同名素材不会互相覆盖。
@@ -73,4 +73,4 @@ Chrome / Edge 才支持选择本地目录并写入文件。若后续需要“拖
 - 绑定素材前必须选择“素材来源”和“剪辑项目文件夹”，并填写“命名前缀”。取消单条绑定时会删除 `B-roll/` 里的复制文件，并同步更新 JSON 与 Markdown 对照表；原始素材保留。
 - “清空配对记录”只清除绑定数据，保留 `B-roll/` 中的复制文件，适合重置对照表但继续保留素材。
 - 素材目录操作集中在素材列表上方，可添加多个来源，并通过“…”管理本项目已连接目录、重新连接不可用目录以及常用目录；“全部 / 视频 / 图片”筛选显示在素材列表上方。
-- `BrollNamerApp/` 中是 SwiftUI 源码，`BrollNamer.entitlements` 开启了“用户选择的文件读写”沙盒权限。
+- `BRollDeskApp/` 中是 SwiftUI 源码，`BRollDesk.entitlements` 开启了“用户选择的文件读写”沙盒权限。

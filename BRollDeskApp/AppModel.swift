@@ -826,12 +826,12 @@ final class AppModel {
         guard NSWorkspace.shared.open(settingsURL) else {
             showError(
                 title: "无法打开辅助功能设置",
-                message: "请手动前往“系统设置 > 隐私与安全性 > 辅助功能”，启用 B-roll 配对台。"
+                message: "请手动前往“系统设置 > 隐私与安全性 > 辅助功能”，启用 B-roll配对台。"
             )
             return
         }
 
-        statusMessage = "请在辅助功能中启用 B-roll 配对台，然后返回重试"
+        statusMessage = "请在辅助功能中启用 B-roll配对台，然后返回重试"
     }
 
     func previewManifest() {
@@ -2169,9 +2169,9 @@ private enum FinderTabError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessibilityPermissionRequired:
-            return "请在辅助功能设置中启用 B-roll 配对台，然后返回这里再试一次。"
+            return "请在辅助功能设置中启用 B-roll配对台，然后返回这里再试一次。"
         case .automationFailed(let details):
-            return "请允许 B-roll 配对台控制 Finder 和 System Events，然后重试。\n\n\(details)"
+            return "请允许 B-roll配对台控制 Finder 和 System Events，然后重试。\n\n\(details)"
         }
     }
 
