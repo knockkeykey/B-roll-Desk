@@ -16,6 +16,8 @@ final class AppModel {
         let anchorNotes: [String: String]
         let rollTypeOverrides: [String: AnchorRollType]
         let capturedBrollRowIDs: Set<String>
+        let brollProductionMethods: [String: BrollProductionMethod]
+        let brollPreparationStatuses: [String: BrollPreparationStatus]
 
         var archivedNames: Set<String> {
             Set(assignments.values.flatMap { $0.map(\.outputName) })
@@ -51,6 +53,7 @@ final class AppModel {
     var isManifestPreviewPresented = false
     private(set) var manifestPreviewText = ""
     var isClearConfirmationPresented = false
+    var isARollReplacementConfirmationPresented = false
     var isBusy = false
     var statusMessage = "请设置素材来源和剪辑项目文件夹"
     var lastSaved = "尚未保存"
@@ -63,21 +66,26 @@ final class AppModel {
     private(set) var anchorNotes: [String: String] = [:]
     private(set) var rollTypeOverrides: [String: AnchorRollType] = [:]
     private(set) var capturedBrollRowIDs: Set<String> = []
+    private(set) var brollProductionMethods: [String: BrollProductionMethod] = [:]
+    private(set) var brollPreparationStatuses: [String: BrollPreparationStatus] = [:]
     private(set) var sourceFiles: [SourceFile] = []
     private(set) var visibleSourceFiles: [SourceFile] = []
     private(set) var sourceDirectories: [ProjectSourceDirectory] = []
     private(set) var sourceDirectoryURL: URL?
     private(set) var destinationDirectoryURL: URL?
     private(set) var savedDirectories: [SavedDirectory] = []
+    private var pendingARollVideoURL: URL?
 
     private var brollDirectoryURL: URL? {
         destinationDirectoryURL?.appendingPathComponent("B-roll", isDirectory: true)
     }
 
+    private var aRollDirectoryURL: URL? {
+        destinationDirectoryURL?.appendingPathComponent("A-roll", isDirectory: true)
+    }
+
     private var aRollScriptURL: URL? {
-        destinationDirectoryURL?
-            .appendingPathComponent("A-roll", isDirectory: true)
-            .appendingPathComponent("正确文案.txt")
+        aRollDirectoryURL?.appendingPathComponent("正确文案.txt")
     }
 
     private var projectSettingsURL: URL? {
@@ -107,6 +115,8 @@ final class AppModel {
     private let anchorNotesKey = "broll-namer-anchor-notes"
     private let rollTypeOverridesKey = "broll-namer-roll-type-overrides"
     private let capturedBrollRowsKey = "broll-namer-captured-broll-rows"
+    private let brollProductionMethodsKey = "broll-namer-production-methods"
+    private let brollPreparationStatusesKey = "broll-namer-preparation-statuses"
     private let prefixKey = "broll-namer-prefix"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
@@ -124,6 +134,19 @@ final class AppModel {
             return AnchorRollType(rawValue: rawValue)
         }
         capturedBrollRowIDs = Set(defaults.stringArray(forKey: capturedBrollRowsKey) ?? [])
+        brollProductionMethods = (defaults.dictionary(forKey: brollProductionMethodsKey) ?? [:]).compactMapValues { value in
+            guard let rawValue = value as? String else { return nil }
+            return BrollProductionMethod(rawValue: rawValue)
+        }
+        brollPreparationStatuses = (defaults.dictionary(forKey: brollPreparationStatusesKey) ?? [:]).compactMapValues { value in
+            guard let rawValue = value as? String,
+                  let status = BrollPreparationStatus(rawValue: rawValue),
+                  status != .bound else { return nil }
+            return status
+        }
+        for rowID in capturedBrollRowIDs where brollPreparationStatuses[rowID] == nil {
+            brollPreparationStatuses[rowID] = .ready
+        }
 
         restoreSavedDirectories()
         parseScript(persist: false)
@@ -159,6 +182,17 @@ final class AppModel {
 
     var destinationDirectoryName: String {
         destinationDirectoryURL?.lastPathComponent ?? "未选择"
+    }
+
+    var aRollVideoDisplayName: String? {
+        guard let aRollDirectoryURL,
+              let videos = try? existingARollVideos(in: aRollDirectoryURL) else { return nil }
+        return videos.first?.lastPathComponent
+    }
+
+    var aRollReplacementConfirmationMessage: String {
+        let existingName = aRollVideoDisplayName ?? "现有视频"
+        return "项目中已有 \(existingName)。确认后，现有 A-roll 视频会移到废纸篓；新视频会复制到 A-roll 文件夹并命名为 A-roll。"
     }
 
     var isPrefixValid: Bool {
@@ -263,30 +297,49 @@ final class AppModel {
         registerUndo(named: "切换 A/B-roll", restoring: before)
     }
 
-    func isBrollCaptured(for rowID: String) -> Bool {
-        capturedBrollRowIDs.contains(rowID) || !assets(for: rowID).isEmpty
+    func brollProductionMethod(for rowID: String) -> BrollProductionMethod {
+        brollProductionMethods[rowID] ?? .liveAction
     }
 
-    func toggleBrollCapture(for rowID: String) {
-        guard let row = rows.first(where: { $0.id == rowID }),
-              rollType(for: rowID) == .bRoll else { return }
-        guard assets(for: rowID).isEmpty else { return }
-
-        let rowNumber = String(format: "%03d", row.index)
-        let isCaptured = capturedBrollRowIDs.contains(rowID)
-        guard isCaptured else {
-            let message = "BR\(rowNumber) 还没有绑定 B-roll 素材，无法标记为已拍摄。请先从素材列表拖拽素材到这条文案。"
-            statusMessage = message
-            alert = AppAlert(title: "请先补充 B-roll 素材", message: message)
-            return
-        }
+    func setBrollProductionMethod(_ method: BrollProductionMethod, for rowID: String) {
+        guard let row = rows.first(where: { $0.id == rowID }), rollType(for: rowID) == .bRoll,
+              brollProductionMethod(for: rowID) != method else { return }
 
         let before = makeUndoSnapshot()
-        capturedBrollRowIDs.remove(rowID)
+        brollProductionMethods[rowID] = method
         persistPreferences()
         lastSaved = "本机已保存 \(Self.timeString())"
-        statusMessage = "BR\(rowNumber) 已标记为待拍摄"
-        registerUndo(named: "更改 B-roll 拍摄状态", restoring: before)
+        statusMessage = "BR\(String(format: "%03d", row.index)) 制作方式：\(method.title)"
+        registerUndo(named: "更改 B-roll 制作方式", restoring: before)
+    }
+
+    func brollPreparationStatus(for rowID: String) -> BrollPreparationStatus {
+        if !assets(for: rowID).isEmpty { return .bound }
+        return brollPreparationStatuses[rowID] ?? (capturedBrollRowIDs.contains(rowID) ? .ready : .pending)
+    }
+
+    func setBrollPreparationStatus(_ status: BrollPreparationStatus, for rowID: String) {
+        guard status != .bound,
+              let row = rows.first(where: { $0.id == rowID }),
+              rollType(for: rowID) == .bRoll,
+              assets(for: rowID).isEmpty,
+              brollPreparationStatus(for: rowID) != status else { return }
+
+        let before = makeUndoSnapshot()
+        if status == .pending {
+            brollPreparationStatuses.removeValue(forKey: rowID)
+        } else {
+            brollPreparationStatuses[rowID] = status
+        }
+        if status == .ready {
+            capturedBrollRowIDs.insert(rowID)
+        } else {
+            capturedBrollRowIDs.remove(rowID)
+        }
+        persistPreferences()
+        lastSaved = "本机已保存 \(Self.timeString())"
+        statusMessage = "BR\(String(format: "%03d", row.index)) 准备进度：\(status.title)"
+        registerUndo(named: "更改 B-roll 准备进度", restoring: before)
     }
 
     func isAssigned(_ file: SourceFile) -> Bool {
@@ -321,6 +374,8 @@ final class AppModel {
         defaults.set(prefix, forKey: prefixKey)
         defaults.set(rollTypeOverrides.mapValues(\.rawValue), forKey: rollTypeOverridesKey)
         defaults.set(capturedBrollRowIDs.sorted(), forKey: capturedBrollRowsKey)
+        defaults.set(brollProductionMethods.mapValues(\.rawValue), forKey: brollProductionMethodsKey)
+        defaults.set(brollPreparationStatuses.mapValues(\.rawValue), forKey: brollPreparationStatusesKey)
         saveAssignments()
         saveProjectSettings()
     }
@@ -380,6 +435,8 @@ final class AppModel {
         }
         rollTypeOverrides = rollTypeOverrides.filter { currentRowIDs.contains($0.key) }
         capturedBrollRowIDs = capturedBrollRowIDs.filter { currentRowIDs.contains($0) }
+        brollProductionMethods = brollProductionMethods.filter { currentRowIDs.contains($0.key) }
+        brollPreparationStatuses = brollPreparationStatuses.filter { currentRowIDs.contains($0.key) }
         rebuildAssignmentIndexes()
 
         if persist {
@@ -437,6 +494,8 @@ final class AppModel {
         let previousNotes = anchorNotes
         let previousRollTypeOverrides = rollTypeOverrides
         let previousCapturedBrollRowIDs = capturedBrollRowIDs
+        let previousBrollProductionMethods = brollProductionMethods
+        let previousBrollPreparationStatuses = brollPreparationStatuses
         splitMode = .line
         preservesEmptyAnchors = true
         scriptText = texts.joined(separator: "\n")
@@ -470,6 +529,26 @@ final class AppModel {
                     previousCapturedBrollRowIDs.contains(previousRows[sourceIndex].id)
             }
             return wasCaptured ? row.id : nil
+        })
+        brollProductionMethods = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
+            guard sourceIndices.indices.contains(offset) else { return nil }
+            let inheritedMethod = sourceIndices[offset]
+                .compactMap { sourceIndex -> BrollProductionMethod? in
+                    guard previousRows.indices.contains(sourceIndex) else { return nil }
+                    return previousBrollProductionMethods[previousRows[sourceIndex].id]
+                }
+                .first
+            return inheritedMethod.map { (row.id, $0) }
+        })
+        brollPreparationStatuses = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
+            guard sourceIndices.indices.contains(offset) else { return nil }
+            let inheritedStatus = sourceIndices[offset]
+                .compactMap { sourceIndex -> BrollPreparationStatus? in
+                    guard previousRows.indices.contains(sourceIndex) else { return nil }
+                    return previousBrollPreparationStatuses[previousRows[sourceIndex].id]
+                }
+                .first
+            return inheritedStatus.map { (row.id, $0) }
         })
         rebuildAssignmentIndexes()
         persistPreferences()
@@ -592,6 +671,140 @@ final class AppModel {
         guard loadProjectState(at: url) else { return }
         refreshSourceFiles()
         updateProjectRestoreStatus(for: url)
+    }
+
+    func chooseARollVideo() {
+        guard !isBusy, pendingARollVideoURL == nil else { return }
+        guard destinationDirectoryURL != nil else {
+            showError(title: "请先选择剪辑项目文件夹", message: "选择剪辑项目文件夹后，才能把视频放入项目的 A-roll 文件夹。")
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.title = "上传 A-roll 视频"
+        panel.message = "选择一个视频；原文件会保留，项目副本会命名为 A-roll"
+        panel.prompt = "上传"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType.movie] + Self.videoExtensions.compactMap {
+            UTType(filenameExtension: $0)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { @MainActor [weak self] in
+            await self?.importARollVideo(from: [url])
+        }
+    }
+
+    func importARollVideo(from urls: [URL]) async {
+        guard !isBusy, pendingARollVideoURL == nil else { return }
+        guard let aRollDirectoryURL else {
+            showError(title: "请先选择剪辑项目文件夹", message: "选择剪辑项目文件夹后，才能把视频放入项目的 A-roll 文件夹。")
+            return
+        }
+        guard urls.count == 1, let sourceURL = urls.first else {
+            showError(title: "一次上传一个视频", message: "请一次选择或拖入一个 A-roll 视频文件。")
+            return
+        }
+        guard Self.videoExtensions.contains(sourceURL.pathExtension.lowercased()),
+              (try? sourceURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            showError(title: "无法上传这个文件", message: "请拖入支持的视频文件。")
+            return
+        }
+
+        let existingVideos: [URL]
+        do {
+            existingVideos = try existingARollVideos(in: aRollDirectoryURL)
+        } catch {
+            showError(title: "无法读取 A-roll 文件夹", message: error.localizedDescription)
+            return
+        }
+
+        if existingVideos.contains(where: { $0.standardizedFileURL == sourceURL.standardizedFileURL }) {
+            statusMessage = "这个视频已经是当前项目的 A-roll"
+            return
+        }
+
+        guard existingVideos.isEmpty else {
+            pendingARollVideoURL = sourceURL
+            isARollReplacementConfirmationPresented = true
+            return
+        }
+
+        await copyARollVideo(from: sourceURL, replacing: [])
+    }
+
+    func confirmARollVideoReplacement() {
+        guard let sourceURL = pendingARollVideoURL,
+              let aRollDirectoryURL else {
+            cancelARollVideoReplacement()
+            return
+        }
+
+        let existingVideos: [URL]
+        do {
+            existingVideos = try existingARollVideos(in: aRollDirectoryURL)
+        } catch {
+            cancelARollVideoReplacement()
+            showError(title: "无法读取 A-roll 文件夹", message: error.localizedDescription)
+            return
+        }
+        pendingARollVideoURL = nil
+        isARollReplacementConfirmationPresented = false
+        Task { @MainActor [weak self] in
+            await self?.copyARollVideo(from: sourceURL, replacing: existingVideos)
+        }
+    }
+
+    func cancelARollVideoReplacement() {
+        pendingARollVideoURL = nil
+        isARollReplacementConfirmationPresented = false
+    }
+
+    private func copyARollVideo(from sourceURL: URL, replacing existingVideos: [URL]) async {
+        guard !isBusy, let aRollDirectoryURL else { return }
+        isBusy = true
+        defer { isBusy = false }
+
+        let fileManager = FileManager.default
+        let fileExtension = sourceURL.pathExtension
+        let targetURL = aRollDirectoryURL.appendingPathComponent("A-roll.\(fileExtension)")
+        let stagingURL = aRollDirectoryURL.appendingPathComponent(
+            ".A-roll-upload-\(UUID().uuidString).\(fileExtension)"
+        )
+        let didStartAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+
+        statusMessage = "正在复制 A-roll 视频：\(sourceURL.lastPathComponent)"
+        do {
+            try await copyFile(from: sourceURL, to: stagingURL)
+            for existingURL in existingVideos {
+                try fileManager.trashItem(at: existingURL, resultingItemURL: nil)
+            }
+            try fileManager.moveItem(at: stagingURL, to: targetURL)
+            lastSaved = "已保存 A-roll \(Self.timeString())"
+            statusMessage = "已保存到 A-roll/\(targetURL.lastPathComponent)；原视频文件保留"
+        } catch {
+            try? fileManager.removeItem(at: stagingURL)
+            showError(title: "上传 A-roll 视频失败", message: error.localizedDescription)
+        }
+    }
+
+    private func existingARollVideos(in directoryURL: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        .filter { url in
+            url.deletingPathExtension().lastPathComponent.caseInsensitiveCompare("A-roll") == .orderedSame &&
+                Self.videoExtensions.contains(url.pathExtension.lowercased()) &&
+                (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
     func acceptDestinationDirectoryDrop(_ url: URL) {
@@ -986,10 +1199,6 @@ final class AppModel {
     func attach(urls: [URL], to rowID: String) async {
         guard !isBusy else { return }
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
-        guard isPrefixValid else {
-            showError(title: "请填写命名前缀", message: "绑定素材前，请先在左侧项目设置中填写命名前缀。")
-            return
-        }
         guard !sourceDirectoryURLs.isEmpty else {
             showError(title: "请先选择素材来源", message: "绑定素材前，请先在“素材目录”栏头选择素材来源文件夹。")
             return
@@ -1012,7 +1221,9 @@ final class AppModel {
         defer { isBusy = false }
 
         let prefixValue = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefixPart = "\(ScriptParser.sanitizePart(prefixValue, maxLength: 30))_"
+        let prefixPart = prefixValue.isEmpty
+            ? ""
+            : "\(ScriptParser.sanitizePart(prefixValue, maxLength: 30))_"
         let label = ScriptParser.sanitizePart(row.text, maxLength: 24)
         let baseCode = "BR\(String(format: "%03d", row.index))"
         var copiedCount = 0
@@ -1215,7 +1426,9 @@ final class AppModel {
             assignments: assignments,
             anchorNotes: anchorNotes,
             rollTypeOverrides: rollTypeOverrides,
-            capturedBrollRowIDs: capturedBrollRowIDs
+            capturedBrollRowIDs: capturedBrollRowIDs,
+            brollProductionMethods: brollProductionMethods,
+            brollPreparationStatuses: brollPreparationStatuses
         )
     }
 
@@ -1243,6 +1456,8 @@ final class AppModel {
         anchorNotes = snapshot.anchorNotes
         rollTypeOverrides = snapshot.rollTypeOverrides
         capturedBrollRowIDs = snapshot.capturedBrollRowIDs
+        brollProductionMethods = snapshot.brollProductionMethods
+        brollPreparationStatuses = snapshot.brollPreparationStatuses
         rebuildAssignmentIndexes()
         persistPreferences()
         if destinationDirectoryURL != nil {
@@ -1779,7 +1994,7 @@ final class AppModel {
                     BrollProjectSettings.self,
                     from: Data(contentsOf: settingsURL)
                 )
-                guard (1...2).contains(settings.formatVersion) else {
+                guard (1...3).contains(settings.formatVersion) else {
                     throw NSError(
                         domain: "BrollNamer.ProjectSettings",
                         code: 2,
@@ -1810,6 +2025,11 @@ final class AppModel {
         anchorNotes = settings.anchorNotes
         rollTypeOverrides = settings.rollTypeOverrides
         capturedBrollRowIDs = Set(settings.capturedBrollRowIDs)
+        brollProductionMethods = settings.brollProductionMethods
+        brollPreparationStatuses = settings.brollPreparationStatuses.filter { $0.value != .bound }
+        for rowID in capturedBrollRowIDs where brollPreparationStatuses[rowID] == nil {
+            brollPreparationStatuses[rowID] = .ready
+        }
         assignments = migratingLegacyAssignments(settings.assignments, to: settings.sourceDirectories)
         scriptText = script
         rows = []
@@ -1981,6 +2201,8 @@ final class AppModel {
             anchorNotes: anchorNotes,
             rollTypeOverrides: rollTypeOverrides,
             capturedBrollRowIDs: capturedBrollRowIDs.sorted(),
+            brollProductionMethods: brollProductionMethods,
+            brollPreparationStatuses: brollPreparationStatuses,
             assignments: assignments
         )
 

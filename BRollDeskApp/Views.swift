@@ -13,11 +13,36 @@ enum WindowHeaderMetrics {
 private enum ListPaneMetrics {
     static let headerHeight: CGFloat = WindowHeaderMetrics.height
     static let toolsHeight: CGFloat = 54
+    static let anchorToolsHeight: CGFloat = 62
 }
 
-private enum AnchorCaptureFilter: Hashable {
+private enum AnchorRollTypeFilter: String, CaseIterable, Hashable, Identifiable {
     case all
-    case pendingCapture
+    case aRoll
+    case bRoll
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "全部"
+        case .aRoll: return "A-roll"
+        case .bRoll: return "B-roll"
+        }
+    }
+
+    func includes(_ type: AnchorRollType) -> Bool {
+        switch self {
+        case .all: return true
+        case .aRoll: return type == .aRoll
+        case .bRoll: return type == .bRoll
+        }
+    }
+}
+
+private enum AnchorPreparationFilter: Hashable {
+    case all
+    case pendingPreparation
 }
 
 private struct WorkflowHelpStep: Identifiable {
@@ -32,13 +57,13 @@ private struct WorkflowHelpPopover: View {
     private let steps = [
         WorkflowHelpStep(number: 1, title: "写文案", instruction: "完成这期口播文案，后续 A-roll 剪辑以它为准。"),
         WorkflowHelpStep(number: 2, title: "录制口播（A-roll）", instruction: "录制本期视频的口播。"),
-        WorkflowHelpStep(number: 3, title: "准备配对项目", instruction: "选择剪辑项目文件夹，设置统一命名前缀，再导入文案并按换行拆分。"),
-        WorkflowHelpStep(number: 4, title: "标记需要 B-roll 的文案", instruction: "逐条切换为 B-roll；需要时添加场景、拍摄或素材搜索备注。"),
-        WorkflowHelpStep(number: 5, title: "准备 B-roll 素材", instruction: "对照待拍摄列表拍摄、制作或寻找素材，并把素材放进一个目录。"),
+        WorkflowHelpStep(number: 3, title: "准备配对项目", instruction: "选择剪辑项目文件夹，导入文案并按换行拆分；B-roll命名前缀可选填。"),
+        WorkflowHelpStep(number: 4, title: "标记需要 B-roll 的文案", instruction: "逐条切换为 B-roll，选择制作方式，并在备注里记下制作提示、搜索词或生成要求。"),
+        WorkflowHelpStep(number: 5, title: "准备 B-roll 素材", instruction: "对照待准备列表实拍、制作动画、生成视频或整理图片与现成素材。"),
         WorkflowHelpStep(number: 6, title: "打开素材目录", instruction: "在素材列表中打开刚才整理好的 B-roll 素材目录。"),
-        WorkflowHelpStep(number: 7, title: "绑定对应素材", instruction: "把每条待拍摄文案与素材列表中的对应项目拖拽绑定；绑定后会自动复制到剪辑项目文件夹。"),
+        WorkflowHelpStep(number: 7, title: "绑定对应素材", instruction: "把每条 B-roll 文案与素材列表中的对应项目拖拽绑定；绑定后会自动复制到剪辑项目文件夹。"),
         WorkflowHelpStep(number: 8, title: "检查剪辑项目文件夹", instruction: "确认里面有按规则命名的 B-roll 素材，以及文案与素材映射关系对照表。"),
-        WorkflowHelpStep(number: 9, title: "放入 A-roll 和文案", instruction: "把口播视频和第一步写好的文案放进同一个剪辑项目文件夹。"),
+        WorkflowHelpStep(number: 9, title: "把 A-roll 放进项目", instruction: "在左侧项目设置里点击“上传 A-roll”选择视频，或把视频拖到该按钮上。项目副本会放入 A-roll 文件夹并命名为 A-roll；原视频保留。"),
         WorkflowHelpStep(number: 10, title: "交给 AI 剪辑", instruction: "把整个剪辑项目文件夹交给 AI，按文案剪辑 A-roll，并按对照表插入 B-roll。")
     ]
 
@@ -577,15 +602,26 @@ private struct SidebarView: View {
                                 onDirectoryDrop: { model.acceptDestinationDirectoryDrop($0) }
                             )
 
+                            ARollUploadControl(model: model)
+
                             Divider()
 
                             HStack(spacing: 6) {
-                                Label("命名前缀", systemImage: "pencil.and.list.clipboard")
+                                Label("B-roll命名前缀", systemImage: "pencil.and.list.clipboard")
                                     .font(.system(size: 17, weight: .semibold))
                                     .foregroundStyle(.primary)
-                                ConfigurationStatusIcon(isConfigured: model.isPrefixValid,
-                                                        readyHelp: "命名前缀已填写",
-                                                        waitingHelp: "填写命名前缀后可绑定素材")
+                                Text("选填")
+                                    .font(.system(size: 13, weight: .regular))
+                                    .foregroundStyle(.tertiary)
+                                Image(systemName: model.isPrefixValid ? "checkmark.circle.fill" : "info.circle")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(model.isPrefixValid ? Color.blue : Color.secondary)
+                                    .hoverHelp(model.isPrefixValid
+                                        ? "归档文件名会包含这个前缀"
+                                        : "留空也可添加文案、素材目录并绑定素材；文件名将以 BR 编号开头")
+                                    .accessibilityLabel(model.isPrefixValid
+                                        ? "命名前缀已填写，归档文件名会包含此前缀"
+                                        : "命名前缀选填，留空时归档文件名以 BR 编号开头")
                                 Spacer(minLength: 0)
                             }
 
@@ -605,7 +641,7 @@ private struct SidebarView: View {
                                                       lineWidth: isPrefixFocused ? 1.5 : 0.5)
                                 }
 
-                            Text("示例：\(model.isPrefixValid ? ScriptParser.sanitizePart(model.prefix, maxLength: 30) : "期数")_BR001_文案短句.ext")
+                            Text("示例：\(model.isPrefixValid ? "\(ScriptParser.sanitizePart(model.prefix, maxLength: 30))_" : "")BR001_文案短句.ext")
                                 .font(.system(size: 14, weight: .regular, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -649,6 +685,8 @@ private struct SidebarView: View {
                         }
                     }
 
+                    PromptCopyButton()
+
                     SidebarStatusView(model: model)
 
                 }
@@ -686,6 +724,109 @@ private struct SidebarView: View {
         .onChange(of: model.prefix) { _, _ in
             model.persistPreferences()
         }
+    }
+}
+
+private struct ARollUploadControl: View {
+    @Bindable var model: AppModel
+    @State private var isDropTargeted = false
+
+    private var isEnabled: Bool {
+        model.destinationDirectoryURL != nil &&
+            !model.isBusy &&
+            !model.isARollReplacementConfirmationPresented
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Text("A")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.blue)
+                    .frame(width: 16, alignment: .leading)
+                Text("上传 A-roll")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                ConfigurationStatusIcon(
+                    isConfigured: model.aRollVideoDisplayName != nil,
+                    readyHelp: "A-roll 视频已添加",
+                    waitingHelp: "选择或拖入 A-roll 视频"
+                )
+                Spacer(minLength: 0)
+            }
+
+            Button(action: model.chooseARollVideo) {
+                HStack(spacing: 7) {
+                    Image(systemName: "film")
+                        .foregroundStyle(isEnabled ? Color.accentColor : Color.secondary)
+                    Text(model.aRollVideoDisplayName ?? "点击选择或拖入视频")
+                        .font(.system(size: 16))
+                        .foregroundStyle(model.aRollVideoDisplayName == nil ? Color.secondary : Color.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.94)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
+                }
+                .frame(height: 44)
+                .padding(.horizontal, 8)
+                .background(
+                    isDropTargeted ? Color.accentColor.opacity(0.1) : Color(nsColor: .textBackgroundColor).opacity(0.7),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(
+                            isDropTargeted ? Color.accentColor.opacity(0.8) : Color(nsColor: .separatorColor).opacity(0.55),
+                            style: isDropTargeted ? StrokeStyle(lineWidth: 1.4, dash: [5, 3]) : StrokeStyle(lineWidth: 0.5)
+                        )
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEnabled)
+            .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted, perform: acceptVideoDrop)
+            .help(model.destinationDirectoryURL == nil
+                ? "先选择剪辑项目文件夹，再上传 A-roll 视频"
+                : "点击或拖入视频；副本命名为 A-roll，原件保留")
+            .accessibilityLabel("上传 A-roll 视频")
+            .accessibilityHint("点击选择或拖入一个视频文件，复制到当前项目的 A-roll 文件夹并命名为 A-roll")
+            .pointerCursor(isEnabled ? .pointingHand : .arrow)
+        }
+        .confirmationDialog(
+            "替换 A-roll 视频？",
+            isPresented: Binding(
+                get: { model.isARollReplacementConfirmationPresented },
+                set: { isPresented in
+                    if !isPresented { model.cancelARollVideoReplacement() }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("替换现有 A-roll 视频", role: .destructive) {
+                model.confirmARollVideoReplacement()
+            }
+            Button("取消", role: .cancel) {
+                model.cancelARollVideoReplacement()
+            }
+        } message: {
+            Text(model.aRollReplacementConfirmationMessage)
+        }
+    }
+
+    private func acceptVideoDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !fileProviders.isEmpty, isEnabled else { return false }
+
+        Task { @MainActor in
+            let urls = await FileURLDropLoader.urls(from: fileProviders)
+            await model.importARollVideo(from: urls)
+        }
+        return true
     }
 }
 
@@ -766,6 +907,55 @@ private struct SidebarStatusView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("操作状态。最近操作：\(model.statusMessage)。\(model.lastSaved)")
+    }
+}
+
+private struct PromptCopyButton: View {
+    @State private var didCopy = false
+    @State private var isErrorPresented = false
+    @State private var errorMessage = ""
+
+    var body: some View {
+        Button(action: copyPrompt) {
+            Label("复制提示词", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .help(didCopy ? "已复制到剪贴板" : "复制提示词.txt 的完整内容到剪贴板")
+        .accessibilityLabel("复制提示词")
+        .accessibilityHint("将随应用打包的提示词全文复制到剪贴板")
+        .pointerCursor()
+        .alert("复制提示词失败", isPresented: $isErrorPresented) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(errorMessage)
+        }
+    }
+
+    private func copyPrompt() {
+        guard let promptURL = Bundle.main.url(forResource: "提示词", withExtension: "txt") else {
+            showError("应用资源中未找到提示词.txt。")
+            return
+        }
+
+        do {
+            let prompt = try String(contentsOf: promptURL, encoding: .utf8)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            guard pasteboard.setString(prompt, forType: .string) else {
+                showError("系统剪贴板未能接收提示词内容。")
+                return
+            }
+            didCopy = true
+        } catch {
+            showError("读取提示词.txt 失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func showError(_ message: String) {
+        errorMessage = message
+        isErrorPresented = true
     }
 }
 
@@ -1097,7 +1287,8 @@ private struct AnchorHeaderMetric: View {
 private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
-    @State private var captureFilter = AnchorCaptureFilter.all
+    @State private var rollTypeFilter = AnchorRollTypeFilter.all
+    @State private var preparationFilter = AnchorPreparationFilter.all
     @State private var editingIndex: Int?
     @State private var editingText = ""
     @State private var editingCursor = 0
@@ -1106,9 +1297,14 @@ private struct AnchorListView: View {
 
     var body: some View {
         let filteredRows = model.filteredRows.filter { row in
-            guard captureFilter == .pendingCapture else { return true }
-            return model.rollType(for: row.id) == .bRoll && !model.isBrollCaptured(for: row.id)
+            let rollType = model.rollType(for: row.id)
+            guard rollTypeFilter.includes(rollType) else { return false }
+            guard preparationFilter == .pendingPreparation else { return true }
+            let status = model.brollPreparationStatus(for: row.id)
+            return rollType == .bRoll && status == .pending
         }
+        let hasActiveFilters = rollTypeFilter != .all || preparationFilter != .all
+        let isShowingPendingBroll = preparationFilter == .pendingPreparation && rollTypeFilter != .aRoll
 
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -1146,12 +1342,17 @@ private struct AnchorListView: View {
             .frame(height: ListPaneMetrics.headerHeight)
             .overlay(alignment: .bottom) { Divider() }
 
-            HStack(spacing: 8) {
-                HStack(spacing: 8) {
+            GeometryReader { geometry in
+                let spacing: CGFloat = 6
+                let typeFilterWidth = min(225, max(140, geometry.size.width * 0.36))
+                let preparationFilterWidth = min(155, max(100, geometry.size.width * 0.25))
+
+                let searchField = HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
                     TextField("搜索文案", text: $model.anchorSearchText)
                         .textFieldStyle(.plain)
+                        .lineLimit(1)
                         .accessibilityLabel("搜索文案锚点")
                     if !model.anchorSearchText.isEmpty {
                         Button {
@@ -1167,57 +1368,67 @@ private struct AnchorListView: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .frame(minWidth: 72, maxWidth: .infinity)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                Picker("", selection: $captureFilter) {
-                    Text("全部").tag(AnchorCaptureFilter.all)
-                    Text("待拍摄").tag(AnchorCaptureFilter.pendingCapture)
+                HStack(spacing: spacing) {
+                    searchField
+                    Picker("", selection: $rollTypeFilter) {
+                        ForEach(AnchorRollTypeFilter.allCases) { filter in
+                            Text(filter.title).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.large)
+                    .frame(width: typeFilterWidth)
+                    .accessibilityLabel("筛选文案类型")
+
+                    Picker("", selection: $preparationFilter) {
+                        Text("全部").tag(AnchorPreparationFilter.all)
+                        Text("待准备").tag(AnchorPreparationFilter.pendingPreparation)
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.large)
+                    .frame(width: preparationFilterWidth)
+                    .accessibilityLabel("筛选文案准备状态")
                 }
-                .pickerStyle(.segmented)
-                .controlSize(.large)
-                .frame(width: 155)
-                .accessibilityLabel("筛选文案状态")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(height: ListPaneMetrics.toolsHeight)
+            .frame(height: ListPaneMetrics.anchorToolsHeight)
             .overlay(alignment: .bottom) {
                 Divider()
             }
 
             if !model.hasScriptContent {
-                ContentUnavailableView {
-                    Label("先导入文案", systemImage: "doc.text.magnifyingglass")
-                } description: {
-                    Text("每一行或每一句会变成一个 B-roll 投放位。")
-                } actions: {
-                    Button("编辑 / 导入文案") {
-                        model.isScriptEditorPresented = true
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .pointerCursor()
-                }
+                ContentUnavailableView("导入文案", systemImage: "doc.text.magnifyingglass")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredRows.isEmpty {
                 ContentUnavailableView {
                     Label(
-                        captureFilter == .pendingCapture ? "没有待拍摄的 B-roll" : "没有匹配的文案",
-                        systemImage: captureFilter == .pendingCapture ? "checkmark.circle" : "magnifyingglass"
+                        isShowingPendingBroll ? "没有待准备的 B-roll" : "没有匹配的文案",
+                        systemImage: isShowingPendingBroll ? "checkmark.circle" : "magnifyingglass"
                     )
                 } description: {
-                    if captureFilter == .pendingCapture {
+                    if preparationFilter == .pendingPreparation {
+                        Text(isShowingPendingBroll
+                            ? (model.anchorSearchText.isEmpty
+                                ? "当前没有待准备的 B-roll。"
+                                : "当前搜索结果中没有待准备的 B-roll。")
+                            : "当前搜索与筛选条件下没有符合条件的文案。")
+                    } else if hasActiveFilters {
                         Text(model.anchorSearchText.isEmpty
-                            ? "当前没有待拍摄的 B-roll。"
-                            : "当前搜索结果中没有待拍摄的 B-roll。")
+                            ? "当前筛选条件下没有符合条件的文案。"
+                            : "当前搜索与筛选条件下没有符合条件的文案。")
                     } else {
                         Text("试试其他文案关键词。")
                     }
                 } actions: {
-                    Button(captureFilter == .pendingCapture ? "显示全部文案" : "清除搜索") {
-                        if captureFilter == .pendingCapture {
-                            captureFilter = .all
+                    Button(hasActiveFilters ? "重置筛选" : "清除搜索") {
+                        if hasActiveFilters {
+                            rollTypeFilter = .all
+                            preparationFilter = .all
                         } else {
                             model.anchorSearchText = ""
                         }
@@ -1571,10 +1782,14 @@ private struct AnchorRowView: View {
                             )
                         }
                         if model.rollType(for: row.id) == .bRoll {
-                            BrollCaptureTag(
-                                isCaptured: model.isBrollCaptured(for: row.id),
+                            BrollProductionMethodMenu(
+                                selection: model.brollProductionMethod(for: row.id),
+                                onSelect: { model.setBrollProductionMethod($0, for: row.id) }
+                            )
+                            BrollPreparationStatusButton(
+                                selection: model.brollPreparationStatus(for: row.id),
                                 isBound: !assets.isEmpty,
-                                onTap: { model.toggleBrollCapture(for: row.id) }
+                                onToggle: { model.setBrollPreparationStatus($0, for: row.id) }
                             )
                         }
                         RollTypeTag(
@@ -1667,7 +1882,7 @@ private struct AnchorNoteEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("BR\(String(format: "%03d", rowNumber)) 拍摄备注")
+            Text("BR\(String(format: "%03d", rowNumber)) 制作备注")
                 .font(.system(size: 15, weight: .semibold))
 
             ZStack(alignment: .topLeading) {
@@ -1677,7 +1892,7 @@ private struct AnchorNoteEditorView: View {
                     .padding(5)
 
                 if text.isEmpty {
-                    Text("记下要拍的内容、动作或场景…")
+                    Text("记下要做的画面、动作、场景、搜索词或生成提示…")
                         .font(.system(size: 14))
                         .foregroundStyle(.tertiary)
                         .padding(.top, 13)
@@ -1706,41 +1921,104 @@ private struct AnchorNoteEditorView: View {
     }
 }
 
-private struct BrollCaptureTag: View {
-    let isCaptured: Bool
+private struct BrollProductionMethodMenu: View {
+    let selection: BrollProductionMethod
+    let onSelect: (BrollProductionMethod) -> Void
+
+    private var title: String { selection.title }
+
+    var body: some View {
+        Menu {
+            ForEach(BrollProductionMethod.allCases) { method in
+                Button {
+                    onSelect(method)
+                } label: {
+                    if method == selection {
+                        Label(method.title, systemImage: "checkmark")
+                    } else {
+                        Text(method.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: selection.systemImage)
+                Text(title)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(selection == .undecided ? Color.secondary : Color.accentColor)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.045), in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.6)
+            }
+            .contentShape(Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("选择这个 B-roll 的制作方式")
+        .accessibilityLabel("制作方式：\(selection.title)")
+        .pointerCursor()
+    }
+}
+
+private struct BrollPreparationStatusButton: View {
+    let selection: BrollPreparationStatus
     let isBound: Bool
-    let onTap: () -> Void
+    let onToggle: (BrollPreparationStatus) -> Void
 
-    private var tint: Color { isCaptured ? .green : .secondary }
+    private var nextStatus: BrollPreparationStatus {
+        selection == .pending ? .ready : .pending
+    }
 
-    @ViewBuilder
+    private var displayedStatus: BrollPreparationStatus {
+        isBound ? .bound : selection
+    }
+
+    private var tint: Color {
+        switch displayedStatus {
+        case .pending: return .secondary
+        case .ready, .bound: return .green
+        }
+    }
+
     var body: some View {
         if isBound {
             tag
-                .accessibilityLabel("B-roll 已拍摄")
+                .accessibilityLabel("B-roll 已绑定")
         } else {
-            Button(action: onTap) {
+            Button {
+                onToggle(nextStatus)
+            } label: {
                 tag
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isCaptured ? "B-roll 已拍摄，点击标记为待拍摄" : "B-roll 待拍摄，点击查看如何补充素材")
+            .fixedSize()
+            .accessibilityLabel("B-roll 准备进度：\(selection.title)")
+            .accessibilityHint("点击切换为\(nextStatus.title)")
+            .help("点击切换为\(nextStatus.title)")
             .pointerCursor()
         }
     }
 
     private var tag: some View {
         HStack(spacing: 4) {
-            Image(systemName: isCaptured ? "checkmark.circle.fill" : "circle")
-            Text(isCaptured ? "已拍摄" : "待拍摄")
+            Image(systemName: displayedStatus.systemImage)
+            Text(displayedStatus.title)
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(tint)
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
-        .background(tint.opacity(isCaptured ? 0.1 : 0.07), in: Capsule())
+        .background(tint.opacity(isBound || selection == .ready ? 0.1 : 0.07), in: Capsule())
         .overlay {
             Capsule()
-                .strokeBorder(tint.opacity(isCaptured ? 0.2 : 0.14), lineWidth: 0.6)
+                .strokeBorder(tint.opacity(isBound || selection == .ready ? 0.2 : 0.14), lineWidth: 0.6)
         }
         .contentShape(Capsule())
     }
@@ -2390,9 +2668,14 @@ private struct DetailView: View {
 
                 if visibleFiles.isEmpty {
                     ContentUnavailableView {
-                        Label("还没有素材", systemImage: "photo.stack")
+                        Label(
+                            model.sourceDirectories.isEmpty ? "再导入素材目录" : "没有符合条件的素材",
+                            systemImage: "photo.stack"
+                        )
                     } description: {
-                        Text(model.sourceDirectories.isEmpty ? "添加素材目录" : "没有符合条件的素材")
+                        Text(model.sourceDirectories.isEmpty
+                            ? "选择目录后即可浏览其中的视频和图片"
+                            : "调整筛选条件，或添加其他素材目录")
                     } actions: {
                         Button("添加素材目录") {
                             model.chooseSourceDirectory()

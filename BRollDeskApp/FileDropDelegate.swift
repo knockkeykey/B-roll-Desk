@@ -2,6 +2,34 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum FileURLDropLoader {
+    static func urls(from providers: [NSItemProvider]) async -> [URL] {
+        var urls: [URL] = []
+        for provider in providers {
+            if let url = await url(from: provider) {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
+    private static func url(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                if let url = item as? URL {
+                    continuation.resume(returning: url)
+                } else if let url = item as? NSURL {
+                    continuation.resume(returning: url as URL)
+                } else if let data = item as? Data {
+                    continuation.resume(returning: URL(dataRepresentation: data, relativeTo: nil))
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+}
+
 final class DropFeedbackModel: ObservableObject {
     @Published var isFileDragActive = false
 }

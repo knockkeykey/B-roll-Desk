@@ -59,6 +59,92 @@ enum AnchorRollType: String, Codable, Equatable {
     }
 }
 
+enum BrollProductionMethod: String, CaseIterable, Codable, Equatable, Identifiable {
+    case undecided
+    case liveAction
+    case animation
+    case aiVideo
+    case imageMotion
+    case stockFootage
+    case screenRecording
+    case other
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .undecided: return "未确定"
+        case .liveAction: return "实拍"
+        case .animation: return "动画"
+        case .aiVideo: return "AI 生成视频"
+        case .imageMotion: return "图片＋动效"
+        case .stockFootage: return "搜索现成素材"
+        case .screenRecording: return "屏幕录制"
+        case .other: return "其他"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .undecided: return "questionmark.circle"
+        case .liveAction: return "camera"
+        case .animation: return "sparkles.rectangle.stack"
+        case .aiVideo: return "wand.and.stars"
+        case .imageMotion: return "photo.on.rectangle.angled"
+        case .stockFootage: return "magnifyingglass"
+        case .screenRecording: return "rectangle.dashed.badge.record"
+        case .other: return "ellipsis.circle"
+        }
+    }
+}
+
+enum BrollPreparationStatus: String, CaseIterable, Codable, Equatable, Identifiable {
+    case pending
+    case ready
+    case bound
+
+    static let selectableCases: [BrollPreparationStatus] = [.pending, .ready]
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pending: return "待准备"
+        case .ready: return "素材就绪"
+        case .bound: return "已绑定"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .pending: return "circle"
+        case .ready: return "checkmark.circle.fill"
+        case .bound: return "link.circle.fill"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        if rawValue == "inProgress" {
+            self = .pending
+            return
+        }
+        guard let status = Self(rawValue: rawValue) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown B-roll preparation status: \(rawValue)"
+            )
+        }
+        self = status
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
 enum BrollMode: String, Codable {
     case fs = "FS"
     // Kept only so older manifests can still be decoded and migrated.
@@ -337,6 +423,8 @@ struct BrollProjectSettings: Codable {
     var anchorNotes: [String: String]
     var rollTypeOverrides: [String: AnchorRollType]
     var capturedBrollRowIDs: [String]
+    var brollProductionMethods: [String: BrollProductionMethod]
+    var brollPreparationStatuses: [String: BrollPreparationStatus]
     var assignments: [String: [BrollAsset]]
 
     init(
@@ -349,9 +437,11 @@ struct BrollProjectSettings: Codable {
         anchorNotes: [String: String] = [:],
         rollTypeOverrides: [String: AnchorRollType] = [:],
         capturedBrollRowIDs: [String] = [],
+        brollProductionMethods: [String: BrollProductionMethod] = [:],
+        brollPreparationStatuses: [String: BrollPreparationStatus] = [:],
         assignments: [String: [BrollAsset]] = [:]
     ) {
-        self.formatVersion = 2
+        self.formatVersion = 3
         self.projectID = projectID
         self.prefix = prefix
         self.scriptRelativePath = scriptRelativePath
@@ -361,6 +451,8 @@ struct BrollProjectSettings: Codable {
         self.anchorNotes = anchorNotes
         self.rollTypeOverrides = rollTypeOverrides
         self.capturedBrollRowIDs = capturedBrollRowIDs
+        self.brollProductionMethods = brollProductionMethods
+        self.brollPreparationStatuses = brollPreparationStatuses
         self.assignments = assignments
     }
 
@@ -376,6 +468,8 @@ struct BrollProjectSettings: Codable {
         case anchorNotes
         case rollTypeOverrides
         case capturedBrollRowIDs
+        case brollProductionMethods
+        case brollPreparationStatuses
         case assignments
     }
 
@@ -398,6 +492,14 @@ struct BrollProjectSettings: Codable {
         anchorNotes = try container.decodeIfPresent([String: String].self, forKey: .anchorNotes) ?? [:]
         rollTypeOverrides = try container.decodeIfPresent([String: AnchorRollType].self, forKey: .rollTypeOverrides) ?? [:]
         capturedBrollRowIDs = try container.decodeIfPresent([String].self, forKey: .capturedBrollRowIDs) ?? []
+        brollProductionMethods = try container.decodeIfPresent(
+            [String: BrollProductionMethod].self,
+            forKey: .brollProductionMethods
+        ) ?? [:]
+        brollPreparationStatuses = try container.decodeIfPresent(
+            [String: BrollPreparationStatus].self,
+            forKey: .brollPreparationStatuses
+        ) ?? [:]
         assignments = try container.decodeIfPresent([String: [BrollAsset]].self, forKey: .assignments) ?? [:]
     }
 
@@ -413,6 +515,8 @@ struct BrollProjectSettings: Codable {
         try container.encode(anchorNotes, forKey: .anchorNotes)
         try container.encode(rollTypeOverrides, forKey: .rollTypeOverrides)
         try container.encode(capturedBrollRowIDs, forKey: .capturedBrollRowIDs)
+        try container.encode(brollProductionMethods, forKey: .brollProductionMethods)
+        try container.encode(brollPreparationStatuses, forKey: .brollPreparationStatuses)
         try container.encode(assignments, forKey: .assignments)
     }
 }

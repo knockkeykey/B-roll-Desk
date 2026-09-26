@@ -15,6 +15,7 @@
 		0A0000000000000000000026 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000017 /* Assets.xcassets */; };
 		0A0000000000000000000027 /* SmileySans-Oblique.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000019 /* SmileySans-Oblique.ttf */; };
 		0A0000000000000000000028 /* OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0A000000000000000000001A /* OFL.txt */; };
+		0A0000000000000000000029 /* 提示词.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0A000000000000000000001B /* 提示词.txt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 		0A0000000000000000000017 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		0A0000000000000000000019 /* SmileySans-Oblique.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SmileySans-Oblique.ttf"; sourceTree = "<group>"; };
 		0A000000000000000000001A /* OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OFL.txt; sourceTree = "<group>"; };
+		0A000000000000000000001B /* 提示词.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "提示词.txt"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +61,7 @@
 				0A0000000000000000000015 /* FileDropDelegate.swift */,
 				0A0000000000000000000016 /* BRollDesk.entitlements */,
 				0A0000000000000000000018 /* Fonts */,
+				0A000000000000000000001C /* Resources */,
 				0A0000000000000000000017 /* Assets.xcassets */,
 			);
 			path = BRollDeskApp;
@@ -79,6 +82,14 @@
 				0A000000000000000000001A /* OFL.txt */,
 			);
 			path = Fonts;
+			sourceTree = "<group>";
+		};
+		0A000000000000000000001C /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				0A000000000000000000001B /* 提示词.txt */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -142,6 +153,7 @@
 				0A0000000000000000000026 /* Assets.xcassets in Resources */,
 				0A0000000000000000000027 /* SmileySans-Oblique.ttf in Resources */,
 				0A0000000000000000000028 /* OFL.txt in Resources */,
+				0A0000000000000000000029 /* 提示词.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

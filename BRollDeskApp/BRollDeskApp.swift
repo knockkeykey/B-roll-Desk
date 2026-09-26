@@ -162,13 +162,7 @@ private final class WindowTitlebarDoubleClickZoomView: NSView {
 
         guard let contentView = window.contentView else { return false }
         let contentPoint = contentView.convert(point, from: nil)
-        var hitView = contentView.hitTest(contentPoint)
-        while let view = hitView {
-            if view is NSControl || view is NSTextView {
-                return true
-            }
-            hitView = view.superview
-        }
-        return false
+        guard let hitView = contentView.hitTest(contentPoint) else { return false }
+        return hitView is NSControl || hitView is NSTextView
     }
 }
