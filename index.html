@@ -1792,31 +1792,6 @@
         };
       }
 
-      function manifestMarkdown(manifest) {
-        const lines = [
-          "# B-roll placement map",
-          "",
-          `- Generated: ${manifest.generatedAt}`,
-          `- Destination: ${manifest.destinationDirectory || "not selected"}`,
-          "- Default track: V2",
-          "- Default audio: mute",
-          "",
-          "| ID | Anchor text | Output file | Mode | Track | Audio |",
-          "|---|---|---|---|---|---|",
-        ];
-        for (const anchor of manifest.anchors) {
-          if (!anchor.assets.length) {
-            lines.push(`| BR${String(anchor.index).padStart(3, "0")} | ${anchor.text.replaceAll("|", "\\|")} |  |  |  |  |`);
-            continue;
-          }
-          for (const asset of anchor.assets) {
-            lines.push(`| BR${String(anchor.index).padStart(3, "0")} | ${anchor.text.replaceAll("|", "\\|")} | ${asset.outputName} | ${asset.mode} | ${asset.targetTrack} | ${asset.audio} |`);
-          }
-        }
-        lines.push("", "## Codex handoff", "", "读取同目录的 `broll-manifest.json`，按 anchor text 在当前最终 A-roll 中定位，再把 output file 放到 V2。不要重新改动 A-roll。", "");
-        return lines.join("\n");
-      }
-
       async function writeTextFile(name, contents) {
         const handle = await state.directoryHandle.getFileHandle(name, { create: true });
         const writable = await handle.createWritable();
@@ -1834,7 +1809,6 @@
         const manifest = currentManifest();
         try {
           await writeTextFile("broll-manifest.json", JSON.stringify(manifest, null, 2));
-          await writeTextFile("broll-manifest.md", manifestMarkdown(manifest));
           $("#lastSaved").textContent = `已保存 ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
           if (showMessage) showToast("对照表已保存到目标目录");
           return true;

@@ -975,7 +975,7 @@ final class AppModel {
         } else if manifestSaved {
             lastSaved = "已清空 \(Self.timeString())"
             let missingNote = cleanup.missingCount > 0 ? "，另有 \(cleanup.missingCount) 个文件原本不存在" : ""
-            statusMessage = "已删除 \(cleanup.deletedCount) 个 B-roll 副本\(missingNote)，并更新 JSON / Markdown 对照表"
+            statusMessage = "已删除 \(cleanup.deletedCount) 个 B-roll 副本\(missingNote)，并更新 JSON 对照表"
         }
     }
 
@@ -1581,38 +1581,6 @@ final class AppModel {
             to: directoryURL.appendingPathComponent("broll-for-codex.json"),
             options: .atomic
         )
-        try manifestMarkdown(manifest).write(
-            to: directoryURL.appendingPathComponent("broll-manifest.md"),
-            atomically: true,
-            encoding: .utf8
-        )
-    }
-
-    private func manifestMarkdown(_ manifest: BrollManifest) -> String {
-        var lines = [
-            "# B-roll placement map",
-            "",
-            "- Default video audio: \(manifest.defaultAudio)",
-            "- Track: choose an available track above the matching A-roll in the current ChatCut timeline",
-            "",
-            "| ID | Anchor text | B-roll file |",
-            "|---|---|---|"
-        ]
-
-        for placement in manifest.placements {
-            for file in placement.files {
-                lines.append("| \(placement.id) | \(placement.text.replacingOccurrences(of: "|", with: "\\|")) | \(file) |")
-            }
-        }
-
-        lines.append(contentsOf: [
-            "",
-            "## Codex handoff",
-            "",
-            "读取同目录的 `broll-for-codex.json`，根据 placements 中的 text 在当前最终 A-roll 中定位，并把 files 中列出的素材放到对应位置上方的可用轨道。不修改 A-roll。",
-            ""
-        ])
-        return lines.joined(separator: "\n")
     }
 
     private func restoreManifestFromDestination() {
@@ -1960,7 +1928,7 @@ final class AppModel {
             mediaExtensions: Self.videoExtensions.union(Self.imageExtensions)
         ))
 
-        let configNames = ["broll-for-codex.json", "broll-manifest.json", "broll-manifest.md"]
+        let configNames = ["broll-for-codex.json", "broll-manifest.json"]
         let assetURLs = legacyAssetNames
             .filter { !$0.isEmpty && $0 == ($0 as NSString).lastPathComponent && $0 != "." && $0 != ".." }
             .map { projectURL.appendingPathComponent($0) }
