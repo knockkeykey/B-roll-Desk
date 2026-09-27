@@ -163,6 +163,17 @@ private final class WindowTitlebarDoubleClickZoomView: NSView {
         guard let contentView = window.contentView else { return false }
         let contentPoint = contentView.convert(point, from: nil)
         guard let hitView = contentView.hitTest(contentPoint) else { return false }
-        return hitView is NSControl || hitView is NSTextView
+
+        if let textView = hitView as? NSTextView {
+            return textView.isEditable
+        }
+
+        if let textField = hitView as? NSTextField {
+            return textField.isEditable
+        }
+
+        // SwiftUI can expose static header text as an NSControl with an action.
+        // Only buttons are interactive targets in these title bars.
+        return hitView is NSButton
     }
 }

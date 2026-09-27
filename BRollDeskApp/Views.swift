@@ -13,7 +13,7 @@ enum WindowHeaderMetrics {
 private enum ListPaneMetrics {
     static let headerHeight: CGFloat = WindowHeaderMetrics.height
     static let toolsHeight: CGFloat = 54
-    static let anchorToolsHeight: CGFloat = 62
+    static let anchorToolsHeight: CGFloat = toolsHeight
 }
 
 private enum AnchorRollTypeFilter: String, CaseIterable, Hashable, Identifiable {
@@ -914,18 +914,33 @@ private struct PromptCopyButton: View {
     @State private var didCopy = false
     @State private var isErrorPresented = false
     @State private var errorMessage = ""
+    @State private var copyFeedbackTask: Task<Void, Never>?
 
     var body: some View {
-        Button(action: copyPrompt) {
-            Label("复制提示词", systemImage: didCopy ? "checkmark" : "doc.on.doc")
-                .frame(maxWidth: .infinity)
+        VStack(spacing: 6) {
+            Button(action: copyPrompt) {
+                Label("复制提示词", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help(didCopy ? "已复制到剪贴板" : "复制提示词.txt 的完整内容到剪贴板")
+            .accessibilityLabel("复制提示词")
+            .accessibilityHint("将随应用打包的提示词全文复制到剪贴板")
+            .pointerCursor()
+
+            if didCopy {
+                Text("已复制到剪贴板")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.green)
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
-        .help(didCopy ? "已复制到剪贴板" : "复制提示词.txt 的完整内容到剪贴板")
-        .accessibilityLabel("复制提示词")
-        .accessibilityHint("将随应用打包的提示词全文复制到剪贴板")
-        .pointerCursor()
+        .onDisappear {
+            copyFeedbackTask?.cancel()
+        }
         .alert("复制提示词失败", isPresented: $isErrorPresented) {
             Button("好", role: .cancel) {}
         } message: {
@@ -947,13 +962,34 @@ private struct PromptCopyButton: View {
                 showError("系统剪贴板未能接收提示词内容。")
                 return
             }
-            didCopy = true
+            showCopySuccess()
         } catch {
             showError("读取提示词.txt 失败：\(error.localizedDescription)")
         }
     }
 
+    private func showCopySuccess() {
+        copyFeedbackTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.15)) {
+            didCopy = true
+        }
+        copyFeedbackTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+            withAnimation(.easeOut(duration: 0.2)) {
+                didCopy = false
+            }
+        }
+    }
+
     private func showError(_ message: String) {
+        copyFeedbackTask?.cancel()
+        withAnimation(.easeOut(duration: 0.15)) {
+            didCopy = false
+        }
         errorMessage = message
         isErrorPresented = true
     }
