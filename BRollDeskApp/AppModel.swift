@@ -453,6 +453,17 @@ final class AppModel {
         registerUndo(named: "修改文案", restoring: before)
     }
 
+    func deleteInlineRow(at index: Int) {
+        guard rows.indices.contains(index) else { return }
+        let before = makeUndoSnapshot()
+        var texts = rows.map(\.text)
+        var sourceIndices = rows.indices.map { [$0] }
+        texts.remove(at: index)
+        sourceIndices.remove(at: index)
+        applyInlineRows(texts, sourceIndices: sourceIndices)
+        registerUndo(named: "删除文案", restoring: before)
+    }
+
     func splitInlineRow(at index: Int, text: String, selection: NSRange) {
         guard rows.indices.contains(index) else { return }
         let before = makeUndoSnapshot()
@@ -497,7 +508,7 @@ final class AppModel {
         let previousBrollProductionMethods = brollProductionMethods
         let previousBrollPreparationStatuses = brollPreparationStatuses
         splitMode = .line
-        preservesEmptyAnchors = true
+        preservesEmptyAnchors = !texts.isEmpty
         scriptText = texts.joined(separator: "\n")
         parseScript(persist: false)
         assignments = AnchorAssignmentMigration.migrate(
@@ -1433,7 +1444,7 @@ final class AppModel {
     }
 
     private func registerUndo(named actionName: String, restoring snapshot: UndoSnapshot) {
-        guard makeUndoSnapshot() != snapshot else { return }
+        guard undoManager.isUndoing || undoManager.isRedoing || makeUndoSnapshot() != snapshot else { return }
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
                 let current = model.makeUndoSnapshot()

@@ -561,6 +561,27 @@ private struct SidebarView: View {
     @FocusState private var isPrefixFocused: Bool
     @State private var isWorkflowHelpPresented = false
 
+    private enum AppVersion {
+        private static var shortVersion: String {
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
+        }
+
+        private static var buildVersion: String? {
+            Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        }
+
+        static var label: String {
+            shortVersion == "未知" ? "版本未知" : "v\(shortVersion)"
+        }
+
+        static var details: String {
+            guard let buildVersion, !buildVersion.isEmpty else {
+                return "版本 \(shortVersion)"
+            }
+            return "版本 \(shortVersion)\n\n构建 \(buildVersion)"
+        }
+    }
+
     private var theme: AppTheme {
         AppTheme(rawValue: themeRawValue) ?? .system
     }
@@ -694,6 +715,11 @@ private struct SidebarView: View {
             }
 
             HStack {
+                Text(AppVersion.label)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .help(AppVersion.details)
+                    .accessibilityLabel(AppVersion.details.replacingOccurrences(of: "\n\n", with: "，"))
                 Spacer()
                 Button {
                     isWorkflowHelpPresented = true
@@ -1330,6 +1356,7 @@ private struct AnchorListView: View {
     @State private var editingCursor = 0
     @State private var editingSession = UUID()
     @State private var pendingScrollRowID: String?
+    @State private var revealedDeleteRowID: String?
 
     var body: some View {
         let filteredRows = model.filteredRows.filter { row in
@@ -1477,20 +1504,27 @@ private struct AnchorListView: View {
                 ScrollViewReader { proxy in
                     List {
                         ForEach(filteredRows) { row in
-                            AnchorRowView(
-                                row: row,
-                                model: model,
-                                isEditing: editingIndex == row.index - 1,
-                                editingText: $editingText,
-                                editingCursor: editingCursor,
-                                editingSession: editingSession,
-                                beginEditing: { beginEditing(row) },
-                                finishEditing: { session in finishEditing(session: session) },
-                                splitAtSelection: { text, selection in
-                                    splitRow(row, text: text, selection: selection)
-                                },
-                                mergeWithPrevious: { text in mergeRow(row, text: text) }
-                            )
+                            SwipeToDeleteAnchorRow(
+                                rowID: row.id,
+                                revealedRowID: $revealedDeleteRowID,
+                                isEnabled: editingIndex == nil,
+                                onDelete: { deleteRow(row) }
+                            ) {
+                                AnchorRowView(
+                                    row: row,
+                                    model: model,
+                                    isEditing: editingIndex == row.index - 1,
+                                    editingText: $editingText,
+                                    editingCursor: editingCursor,
+                                    editingSession: editingSession,
+                                    beginEditing: { beginEditing(row) },
+                                    finishEditing: { session in finishEditing(session: session) },
+                                    splitAtSelection: { text, selection in
+                                        splitRow(row, text: text, selection: selection)
+                                    },
+                                    mergeWithPrevious: { text in mergeRow(row, text: text) }
+                                )
+                            }
                             .id(row.id)
                             .listRowSeparator(.hidden)
                         }
@@ -1519,9 +1553,19 @@ private struct AnchorListView: View {
             }
         }
         .background(.windowBackground)
+        .onChange(of: filteredRows.map(\.id)) { _, _ in
+            revealedDeleteRowID = nil
+        }
+    }
+
+    private func deleteRow(_ row: AnchorRow) {
+        revealedDeleteRowID = nil
+        finishEditing(session: editingSession)
+        model.deleteInlineRow(at: row.index - 1)
     }
 
     private func beginEditing(_ row: AnchorRow) {
+        revealedDeleteRowID = nil
         if editingIndex != row.index - 1 {
             finishEditing(session: editingSession)
         }
@@ -1561,6 +1605,86 @@ private struct AnchorListView: View {
         editingText = model.rows[index - 1].text
         editingCursor = cursor
         pendingScrollRowID = model.rows[index - 1].id
+    }
+}
+
+private struct SwipeToDeleteAnchorRow<Content: View>: View {
+    let rowID: String
+    @Binding var revealedRowID: String?
+    let isEnabled: Bool
+    let onDelete: () -> Void
+    @ViewBuilder let content: () -> Content
+    @State private var dragOffset: CGFloat = 0
+    @State private var isHorizontalDrag: Bool?
+    @State private var dragStartOffset: CGFloat = 0
+
+    private let actionWidth: CGFloat = 76
+    private var offset: CGFloat {
+        min(0, max(-actionWidth, (revealedRowID == rowID ? -actionWidth : 0) + dragOffset))
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            content()
+                .background(.windowBackground, in: RoundedRectangle(cornerRadius: 10))
+                .offset(x: offset)
+                .contentShape(Rectangle())
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                        .onChanged { value in
+                            guard isEnabled else { return }
+                            if isHorizontalDrag == nil {
+                                isHorizontalDrag = abs(value.translation.width) > abs(value.translation.height) * 1.3
+                                dragStartOffset = revealedRowID == rowID ? -actionWidth : 0
+                            }
+                            guard isHorizontalDrag == true else { return }
+                            if revealedRowID != nil && revealedRowID != rowID {
+                                revealedRowID = nil
+                            }
+                            dragOffset = value.translation.width
+                        }
+                        .onEnded { _ in
+                            guard isHorizontalDrag == true else {
+                                isHorizontalDrag = nil
+                                dragOffset = 0
+                                return
+                            }
+                            let shouldReveal = dragStartOffset + dragOffset < -actionWidth / 2
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                revealedRowID = shouldReveal ? rowID : nil
+                                dragOffset = 0
+                            }
+                            isHorizontalDrag = nil
+                        },
+                    including: isEnabled ? .all : .subviews
+                )
+            if offset < 0 {
+                Button(role: .destructive, action: onDelete) {
+                    VStack(spacing: 5) {
+                        Image(systemName: "trash")
+                        Text("删除").font(.caption)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: actionWidth - 6)
+                    .frame(maxHeight: .infinity)
+                    .background(Color.red, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .frame(width: -offset, alignment: .trailing)
+                .clipped()
+                .help("删除这条文案（可撤销）")
+                .accessibilityLabel("删除这条文案")
+                .pointerCursor()
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .onChange(of: isEnabled) { _, enabled in
+            if !enabled {
+                revealedRowID = nil
+                dragOffset = 0
+                isHorizontalDrag = nil
+            }
+        }
     }
 }
 
