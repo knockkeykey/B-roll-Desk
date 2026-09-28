@@ -245,12 +245,6 @@ final class AppModel {
         }
     }
 
-    var readyBrollCount: Int {
-        meaningfulRows.reduce(0) {
-            $0 + (rollType(for: $1.id) == .bRoll && brollPreparationStatus(for: $1.id) == .ready ? 1 : 0)
-        }
-    }
-
     var filteredRows: [AnchorRow] {
         let query = anchorSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return rows }

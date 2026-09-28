@@ -1393,8 +1393,7 @@ private struct AnchorListView: View {
                     AnchorHeaderMetric(value: model.aRollAnchorCount, label: "A-roll 锚点", shortLabel: "A", detail: "主讲口播，不需要绑定 B-roll", tint: .blue)
                     AnchorHeaderMetric(value: model.bRollAnchorCount, label: "B-roll 锚点", shortLabel: "B", detail: "待绑定 \(model.pendingBrollCount) 条；共绑定 \(model.assignedCount) 个素材", tint: .green)
                     AnchorHeaderMetric(value: model.pendingBrollCount, label: "未绑定 B-roll", shortLabel: "未绑", detail: "没有绑定 B-roll 素材的条目，包含待准备和素材就绪", tint: .secondary)
-                    AnchorHeaderMetric(value: model.pendingPreparationBrollCount, label: "待准备 B-roll", shortLabel: "待", detail: "尚未完成素材准备的 B-roll 标签", tint: .orange)
-                    AnchorHeaderMetric(value: model.readyBrollCount, label: "素材就绪 B-roll", shortLabel: "就绪", detail: "素材已准备好、尚未绑定的 B-roll 标签", tint: .green)
+                    AnchorHeaderMetric(value: model.pendingPreparationBrollCount, label: "待准备 B-roll", shortLabel: "待准备", detail: "尚未完成素材准备的 B-roll 标签", tint: .orange)
                 }
                 Button { model.isScriptEditorPresented = true } label: {
                     Image(systemName: "square.and.pencil")
