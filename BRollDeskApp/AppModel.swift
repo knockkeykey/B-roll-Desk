@@ -240,8 +240,26 @@ final class AppModel {
     }
 
     var pendingPreparationBrollCount: Int {
+        brollPreparationStatusCount(.pending)
+    }
+
+    var readyPreparationBrollCount: Int {
+        brollPreparationStatusCount(.ready)
+    }
+
+    var boundPreparationBrollCount: Int {
+        brollPreparationStatusCount(.bound)
+    }
+
+    func brollProductionMethodCount(_ method: BrollProductionMethod) -> Int {
         meaningfulRows.reduce(0) {
-            $0 + (rollType(for: $1.id) == .bRoll && brollPreparationStatus(for: $1.id) == .pending ? 1 : 0)
+            $0 + (rollType(for: $1.id) == .bRoll && brollProductionMethod(for: $1.id) == method ? 1 : 0)
+        }
+    }
+
+    func brollPreparationStatusCount(_ status: BrollPreparationStatus) -> Int {
+        meaningfulRows.reduce(0) {
+            $0 + (rollType(for: $1.id) == .bRoll && brollPreparationStatus(for: $1.id) == status ? 1 : 0)
         }
     }
 

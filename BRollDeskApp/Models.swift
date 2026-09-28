@@ -59,7 +59,7 @@ enum AnchorRollType: String, Codable, Equatable {
     }
 }
 
-enum BrollProductionMethod: String, CaseIterable, Codable, Equatable, Identifiable {
+enum BrollProductionMethod: String, CaseIterable, Codable, Equatable, Hashable, Identifiable {
     case undecided
     case liveAction
     case animation
