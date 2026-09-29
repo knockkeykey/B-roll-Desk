@@ -2445,26 +2445,34 @@ private struct BrollProductionMethodMenu: View {
     }
 }
 
-/// Leading status circle, Reminders-style: gray hollow = 待准备, blue check = 素材就绪, green link = 已绑定.
+/// Leading status circle, Reminders-style: gray hollow = 待准备, green check = 素材就绪, green link = 已绑定.
 private struct BrollStatusIndicator: View {
     let isBroll: Bool
     let selection: BrollPreparationStatus
     let isBound: Bool
     let onToggle: (BrollPreparationStatus) -> Void
 
+    /// Bumped on each 待准备 → 素材就绪 tap to drive the keyframe feedback.
+    @State private var feedbackTrigger = 0
+    /// Shows the ready state locally while the feedback plays, before the model commits
+    /// (so rows filtered out of 待准备 don't vanish mid-animation).
+    @State private var isCommittingReady = false
+
+    private static let feedbackDuration: TimeInterval = 0.75
+
     private var displayedStatus: BrollPreparationStatus {
-        isBound ? .bound : selection
+        if isBound { return .bound }
+        return isCommittingReady ? .ready : selection
     }
 
     private var nextStatus: BrollPreparationStatus {
-        selection == .pending ? .ready : .pending
+        displayedStatus == .pending ? .ready : .pending
     }
 
     private var tint: Color {
         switch displayedStatus {
         case .pending: return Color.secondary.opacity(0.6)
-        case .ready: return .accentColor
-        case .bound: return .green
+        case .ready, .bound: return .green
         }
     }
 
@@ -2481,14 +2489,14 @@ private struct BrollStatusIndicator: View {
                     .help("已绑定素材")
                     .accessibilityLabel("B-roll 已绑定")
             } else {
-                Button {
-                    onToggle(nextStatus)
-                } label: {
+                Button(action: toggle) {
                     icon
+                        .background(readyRipple)
                 }
                 .buttonStyle(.plain)
-                .help("\(selection.title) · 点击标记为\(nextStatus.title)")
-                .accessibilityLabel("B-roll 准备进度：\(selection.title)")
+                .disabled(isCommittingReady)
+                .help("\(displayedStatus.title) · 点击标记为\(nextStatus.title)")
+                .accessibilityLabel("B-roll 准备进度：\(displayedStatus.title)")
                 .accessibilityHint("点击切换为\(nextStatus.title)")
                 .pointerCursor()
             }
@@ -2503,8 +2511,56 @@ private struct BrollStatusIndicator: View {
             .foregroundStyle(tint)
             .contentTransition(.symbolEffect(.replace))
             .contentShape(Circle())
-            .animation(.snappy(duration: 0.18), value: displayedStatus)
+            .animation(.snappy(duration: 0.28), value: displayedStatus)
+            .keyframeAnimator(initialValue: 1.0, trigger: feedbackTrigger) { content, scale in
+                content.scaleEffect(scale)
+            } keyframes: { _ in
+                KeyframeTrack {
+                    CubicKeyframe(0.78, duration: 0.14)
+                    SpringKeyframe(1.22, duration: 0.24, spring: .smooth)
+                    SpringKeyframe(1.0, duration: 0.36, spring: .bouncy)
+                }
+            }
     }
+
+    /// Green ring that expands and fades out when a row is marked 素材就绪.
+    private var readyRipple: some View {
+        Circle()
+            .stroke(Color.green, lineWidth: 1.5)
+            .keyframeAnimator(initialValue: RippleValues(), trigger: feedbackTrigger) { ring, values in
+                ring
+                    .scaleEffect(values.scale)
+                    .opacity(values.opacity)
+            } keyframes: { _ in
+                KeyframeTrack(\.scale) {
+                    LinearKeyframe(0.8, duration: 0.01)
+                    CubicKeyframe(2.0, duration: 0.7)
+                }
+                KeyframeTrack(\.opacity) {
+                    LinearKeyframe(0.8, duration: 0.01)
+                    CubicKeyframe(0, duration: 0.7)
+                }
+            }
+            .allowsHitTesting(false)
+    }
+
+    private func toggle() {
+        guard nextStatus == .ready else {
+            onToggle(.pending)
+            return
+        }
+        isCommittingReady = true
+        feedbackTrigger += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.feedbackDuration) {
+            onToggle(.ready)
+            isCommittingReady = false
+        }
+    }
+}
+
+private struct RippleValues {
+    var scale: CGFloat = 1
+    var opacity: Double = 0
 }
 
 /// Low-emphasis text control used in the row header: no fill until hovered.
@@ -2679,6 +2735,7 @@ private struct RollTypeTag: View {
     private var tag: some View {
         HStack(spacing: 3) {
             Text(isBroll ? "B-roll" : "A-roll")
+                .foregroundStyle(isBroll ? Color.green : Color.secondary)
             if isBroll, assetCount > 1 {
                 Text("×\(assetCount)")
                     .monospacedDigit()
