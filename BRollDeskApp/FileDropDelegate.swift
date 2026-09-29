@@ -3,6 +3,23 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum FileURLDropLoader {
+    static func loadURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+        let group = DispatchGroup()
+        let resultBuffer = FileURLResultBuffer(count: providers.count)
+
+        for (index, provider) in providers.enumerated() {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                resultBuffer.store(Self.fileURL(from: item), at: index)
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            completion(resultBuffer.urls)
+        }
+    }
+
     static func urls(from providers: [NSItemProvider]) async -> [URL] {
         var urls: [URL] = []
         for provider in providers {
@@ -16,17 +33,43 @@ enum FileURLDropLoader {
     private static func url(from provider: NSItemProvider) async -> URL? {
         await withCheckedContinuation { continuation in
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                if let url = item as? URL {
-                    continuation.resume(returning: url)
-                } else if let url = item as? NSURL {
-                    continuation.resume(returning: url as URL)
-                } else if let data = item as? Data {
-                    continuation.resume(returning: URL(dataRepresentation: data, relativeTo: nil))
-                } else {
-                    continuation.resume(returning: nil)
-                }
+                continuation.resume(returning: Self.fileURL(from: item))
             }
         }
+    }
+
+    private static func fileURL(from item: Any?) -> URL? {
+        if let url = item as? URL {
+            return url
+        }
+        if let url = item as? NSURL {
+            return url as URL
+        }
+        if let data = item as? Data {
+            return URL(dataRepresentation: data, relativeTo: nil)
+        }
+        return nil
+    }
+}
+
+private final class FileURLResultBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [URL?]
+
+    init(count: Int) {
+        values = Array(repeating: nil, count: count)
+    }
+
+    func store(_ url: URL?, at index: Int) {
+        lock.lock()
+        values[index] = url
+        lock.unlock()
+    }
+
+    var urls: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values.compactMap { $0 }
     }
 }
 
@@ -236,9 +279,8 @@ struct DirectoryDropTargetModifier: ViewModifier {
         }
         guard !fileProviders.isEmpty else { return false }
 
-        Task { @MainActor in
-            for provider in fileProviders {
-                guard let url = await Self.fileURL(from: provider) else { continue }
+        FileURLDropLoader.loadURLs(from: fileProviders) { urls in
+            for url in urls {
                 let didStartAccess = url.startAccessingSecurityScopedResource()
                 let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
                 if didStartAccess {
@@ -250,21 +292,5 @@ struct DirectoryDropTargetModifier: ViewModifier {
             }
         }
         return true
-    }
-
-    private static func fileURL(from provider: NSItemProvider) async -> URL? {
-        await withCheckedContinuation { continuation in
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                if let url = item as? URL {
-                    continuation.resume(returning: url)
-                } else if let url = item as? NSURL {
-                    continuation.resume(returning: url as URL)
-                } else if let data = item as? Data {
-                    continuation.resume(returning: URL(dataRepresentation: data, relativeTo: nil))
-                } else {
-                    continuation.resume(returning: nil)
-                }
-            }
-        }
     }
 }

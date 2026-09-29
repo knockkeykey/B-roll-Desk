@@ -1207,6 +1207,28 @@ final class AppModel {
         panel.allowedContentTypes = [.plainText, UTType(filenameExtension: "md") ?? .plainText]
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        importScript(from: url)
+    }
+
+    func importScript(from url: URL) {
+        guard destinationDirectoryURL != nil else {
+            showError(title: "请先选择剪辑项目文件夹", message: "选择项目文件夹后，才能向这个项目导入文案。")
+            return
+        }
+
+        let fileExtension = url.pathExtension.lowercased()
+        guard fileExtension == "txt" || fileExtension == "md" else {
+            showError(title: "不支持的文案格式", message: "请选择或拖入 .txt 或 .md 文稿。")
+            return
+        }
+
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
         do {
             scriptText = try String(contentsOf: url, encoding: .utf8)
             preservesEmptyAnchors = false

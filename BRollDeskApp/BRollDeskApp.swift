@@ -116,22 +116,16 @@ private final class WindowTitlebarDoubleClickZoomView: NSView {
               event.window === window,
               let headerRegion = headerRegion(in: window),
               headerRegion.contains(event.locationInWindow),
+              event.clickCount == 2,
               !isInteractiveClick(event.locationInWindow, in: window) else {
             return event
         }
 
-        switch event.clickCount {
-        case 2:
-            // NSWindow.zoom(_:) toggles between the standard frame and the user's prior frame.
-            window.zoom(nil)
-            return nil
-        case 1:
-            // Restrict dragging to the custom title bar instead of the whole window background.
-            window.performDrag(with: event)
-            return nil
-        default:
-            return event
-        }
+        // Let title-bar controls receive single mouse-down events. Dedicated blank header
+        // regions handle window dragging; consuming a single mouse-down here makes buttons
+        // in the hidden title bar intermittently appear unresponsive.
+        window.zoom(nil)
+        return nil
     }
 
     private func headerRegion(in window: NSWindow) -> NSRect? {
@@ -170,18 +164,42 @@ private final class WindowTitlebarDoubleClickZoomView: NSView {
 
         guard let contentView = window.contentView else { return false }
         let contentPoint = contentView.convert(point, from: nil)
-        guard let hitView = contentView.hitTest(contentPoint) else { return false }
-
-        if let textView = hitView as? NSTextView {
-            return textView.isEditable
+        let screenPoint = window.convertPoint(toScreen: point)
+        if let accessibilityElement = contentView.accessibilityHitTest(screenPoint) as? NSAccessibilityElement,
+           Self.isInteractiveAccessibilityRole(accessibilityElement.accessibilityRole()) {
+            return true
         }
 
-        if let textField = hitView as? NSTextField {
-            return textField.isEditable
+        var hitView = contentView.hitTest(contentPoint)
+        while let view = hitView {
+            if let textView = view as? NSTextView, textView.isEditable {
+                return true
+            }
+
+            if let textField = view as? NSTextField, textField.isEditable {
+                return true
+            }
+
+            if view is NSButton {
+                return true
+            }
+
+            hitView = view.superview
         }
 
-        // SwiftUI can expose static header text as an NSControl with an action.
-        // Only buttons are interactive targets in these title bars.
-        return hitView is NSButton
+        return false
+    }
+
+    private static func isInteractiveAccessibilityRole(_ role: NSAccessibility.Role?) -> Bool {
+        guard let role else { return false }
+        return [
+            NSAccessibility.Role.button,
+            .menuButton,
+            .popUpButton,
+            .checkBox,
+            .radioButton,
+            .textField,
+            .textArea
+        ].contains(role)
     }
 }

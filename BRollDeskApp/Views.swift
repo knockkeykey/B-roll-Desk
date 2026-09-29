@@ -11,6 +11,20 @@ enum WindowHeaderMetrics {
     static let height: CGFloat = 70
 }
 
+private struct WindowDragRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> WindowDragRegionView {
+        WindowDragRegionView()
+    }
+
+    func updateNSView(_ nsView: WindowDragRegionView, context: Context) {}
+}
+
+private final class WindowDragRegionView: NSView {
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+}
+
 private enum ListPaneMetrics {
     static let headerHeight: CGFloat = WindowHeaderMetrics.height
     static let toolsHeight: CGFloat = 54
@@ -1603,7 +1617,8 @@ private struct AnchorListView: View {
                 Label("文案列表", systemImage: "text.badge.checkmark")
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
-                Spacer(minLength: 4)
+                WindowDragRegion()
+                    .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
                 Button { model.isScriptEditorPresented = true } label: {
                     Image(systemName: "square.and.pencil")
                 }
@@ -1673,7 +1688,7 @@ private struct AnchorListView: View {
                 ContentUnavailableView {
                     Label("先导入文案", systemImage: "doc.text.magnifyingglass")
                 } description: {
-                    Text("选择文案文件后即可按句整理，并开始匹配素材")
+                    Text("选择或拖入 .txt / .md 文稿后即可按句整理，并开始匹配素材")
                 } actions: {
                     Button("导入文案") {
                         model.importScript()
@@ -1682,6 +1697,7 @@ private struct AnchorListView: View {
                     .pointerCursor()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(ScriptFileDropTargetModifier { model.importScript(from: $0) })
             } else if filteredRows.isEmpty {
                 ContentUnavailableView {
                     Label(
@@ -2012,7 +2028,8 @@ private struct PaneHeader: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
             }
-            Spacer(minLength: 8)
+            WindowDragRegion()
+                .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
             if let count {
                 Text(count)
                     .font(.system(size: 14))
@@ -3079,6 +3096,51 @@ private struct OptionalDirectoryDropTargetModifier: ViewModifier {
     }
 }
 
+private struct ScriptFileDropTargetModifier: ViewModifier {
+    let onDrop: (URL) -> Void
+    @State private var isDropTarget = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if isDropTarget {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.055))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(
+                                    Color.accentColor.opacity(0.65),
+                                    style: StrokeStyle(lineWidth: 1.5, dash: [7, 5])
+                                )
+                        }
+                        .padding(8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onDrop(of: [UTType.fileURL], isTargeted: $isDropTarget, perform: acceptDrop)
+            .accessibilityHint(isDropTarget
+                ? "松开以导入 .txt 或 .md 文稿"
+                : "也可以从 Finder 拖入 .txt 或 .md 文稿")
+    }
+
+    private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !fileProviders.isEmpty else { return false }
+
+        FileURLDropLoader.loadURLs(from: fileProviders) { urls in
+            guard !urls.isEmpty else { return }
+            let scriptURL = urls.first {
+                let fileExtension = $0.pathExtension.lowercased()
+                return fileExtension == "txt" || fileExtension == "md"
+            } ?? urls[0]
+            onDrop(scriptURL)
+        }
+        return true
+    }
+}
+
 private struct SavedDirectoryRow: View {
     let directory: SavedDirectory
     let isSelected: Bool
@@ -3157,7 +3219,7 @@ private struct DetailView: View {
                         )
                     } description: {
                         Text(model.sourceDirectories.isEmpty
-                            ? "选择目录后即可浏览其中的视频和图片"
+                            ? "选择或拖入目录后即可浏览其中的视频和图片"
                             : "调整筛选条件，或添加其他素材目录")
                     } actions: {
                         Button("添加素材目录") {
@@ -3165,9 +3227,13 @@ private struct DetailView: View {
                         }
                         .buttonStyle(.bordered)
                         .pointerCursor()
-                        .modifier(DirectoryDropTargetModifier { model.acceptSourceDirectoryDrop($0) })
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .modifier(OptionalDirectoryDropTargetModifier(
+                        onDrop: model.sourceDirectories.isEmpty
+                            ? { model.acceptSourceDirectoryDrop($0) }
+                            : nil
+                    ))
                 } else {
                     GeometryReader { geometry in
                         ScrollViewReader { proxy in
