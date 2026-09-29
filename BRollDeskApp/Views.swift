@@ -1576,6 +1576,8 @@ private struct AnchorListView: View {
     @State private var editingSession = UUID()
     @State private var pendingScrollRowID: String?
     @State private var revealedDeleteRowID: String?
+    @State private var rowPulse: AnchorRowPulse?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let filteredRows = model.filteredRows.filter { row in
@@ -1761,7 +1763,8 @@ private struct AnchorListView: View {
                                     splitAtSelection: { text, selection in
                                         splitRow(row, text: text, selection: selection)
                                     },
-                                    mergeWithPrevious: { text in mergeRow(row, text: text) }
+                                    mergeWithPrevious: { text in mergeRow(row, text: text) },
+                                    pulse: rowPulse?.pulse(for: row.id)
                                 )
                             }
                             .id(row.id)
@@ -1827,11 +1830,17 @@ private struct AnchorListView: View {
         guard editingIndex == row.index - 1 else { return }
         let index = row.index - 1
         editingSession = UUID()
-        model.splitInlineRow(at: index, text: text, selection: selection)
-        editingIndex = index + 1
-        editingText = model.rows[index + 1].text
-        editingCursor = 0
+        withAnimation(rowEditAnimation) {
+            model.splitInlineRow(at: index, text: text, selection: selection)
+            editingIndex = index + 1
+            editingText = model.rows[index + 1].text
+            editingCursor = 0
+        }
         pendingScrollRowID = model.rows[index + 1].id
+        triggerPulse([
+            model.rows[index].id: .splitSource,
+            model.rows[index + 1].id: .splitInserted
+        ])
     }
 
     private func mergeRow(_ row: AnchorRow, text: String) {
@@ -1839,11 +1848,54 @@ private struct AnchorListView: View {
         let index = row.index - 1
         guard index > 0 else { return }
         editingSession = UUID()
-        guard let cursor = model.mergeInlineRowWithPrevious(at: index, text: text) else { return }
-        editingIndex = index - 1
-        editingText = model.rows[index - 1].text
-        editingCursor = cursor
+        var mergedCursor: Int?
+        withAnimation(rowEditAnimation) {
+            mergedCursor = model.mergeInlineRowWithPrevious(at: index, text: text)
+            if let mergedCursor {
+                editingIndex = index - 1
+                editingText = model.rows[index - 1].text
+                editingCursor = mergedCursor
+            }
+        }
+        guard mergedCursor != nil else { return }
         pendingScrollRowID = model.rows[index - 1].id
+        triggerPulse([model.rows[index - 1].id: .merged])
+    }
+
+    private var rowEditAnimation: Animation? {
+        reduceMotion ? nil : .snappy(duration: 0.28, extraBounce: 0.04)
+    }
+
+    private func triggerPulse(_ kinds: [String: AnchorRowPulse.Kind]) {
+        let pulse = AnchorRowPulse(kinds: kinds)
+        rowPulse = pulse
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        // Clear so rows scrolled back into view later don't replay the effect.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            if rowPulse?.token == pulse.token {
+                rowPulse = nil
+            }
+        }
+    }
+}
+
+struct AnchorRowPulse: Equatable {
+    enum Kind: Equatable {
+        case splitSource
+        case splitInserted
+        case merged
+    }
+
+    struct Target: Equatable {
+        let token: UUID
+        let kind: Kind
+    }
+
+    let token = UUID()
+    let kinds: [String: Kind]
+
+    func pulse(for rowID: String) -> Target? {
+        kinds[rowID].map { Target(token: token, kind: $0) }
     }
 }
 
@@ -2117,7 +2169,12 @@ private struct AnchorRowView: View {
     let finishEditing: (UUID) -> Void
     let splitAtSelection: (String, NSRange) -> Void
     let mergeWithPrevious: (String) -> Void
+    var pulse: AnchorRowPulse.Target? = nil
     @StateObject private var dropState = AnchorDropState()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulseGlow: Double = 0
+    @State private var pulseScale: CGFloat = 1
+    @State private var pulseOffset: CGFloat = 0
     @State private var isNoteEditorPresented = false
     @State private var noteDraft = ""
 
@@ -2140,6 +2197,35 @@ private struct AnchorRowView: View {
 
     private var rowBorderWidth: CGFloat {
         isDropTarget ? 1.5 : 0.5
+    }
+
+    // Pulse tint follows the row's roll type: blue for A-roll, green for B-roll.
+    private var pulseTint: Color { isBroll ? .green : .blue }
+
+    private func runPulse() {
+        guard let pulse else { return }
+        var reset = Transaction()
+        reset.disablesAnimations = true
+        withTransaction(reset) {
+            pulseGlow = 1
+            guard !reduceMotion else { return }
+            switch pulse.kind {
+            case .splitInserted:
+                pulseOffset = -14
+                pulseScale = 0.98
+            case .splitSource:
+                pulseScale = 0.99
+            case .merged:
+                pulseScale = 0.955
+            }
+        }
+        withAnimation(.spring(response: 0.38, dampingFraction: pulse.kind == .merged ? 0.52 : 0.7)) {
+            pulseOffset = 0
+            pulseScale = 1
+        }
+        withAnimation(.easeOut(duration: 0.85).delay(0.18)) {
+            pulseGlow = 0
+        }
     }
 
     var body: some View {
@@ -2259,12 +2345,25 @@ private struct AnchorRowView: View {
         .background {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(rowFill)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(pulseTint.opacity(0.13 * pulseGlow))
+                }
                 .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(rowBorder, lineWidth: rowBorderWidth)
         }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(pulseTint.opacity(0.75 * pulseGlow), lineWidth: 1.5)
+                .allowsHitTesting(false)
+        }
+        .scaleEffect(pulseScale)
+        .offset(y: pulseOffset)
+        .onAppear(perform: runPulse)
+        .onChange(of: pulse) { _, _ in runPulse() }
         .onDrop(
             of: [UTType.fileURL],
             delegate: FileDropDelegate(rowID: row.id, model: model, feedback: model.dropFeedback, rowState: dropState)
@@ -3039,25 +3138,77 @@ private struct DirectoryManagerPopover: View {
 
                 ScrollView {
                     VStack(spacing: 4) {
+                        if model.sourceDirectories.count > 1 {
+                            Button {
+                                model.selectSourceDirectory(nil)
+                                dismiss()
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "square.stack.3d.up")
+                                        .foregroundStyle(Color.accentColor)
+                                    Text("全部来源")
+                                        .font(.system(size: 14, weight: .medium))
+                                    Spacer(minLength: 2)
+                                    if model.selectedSourceDirectoryID == nil {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                                .padding(.horizontal, 7)
+                                .frame(height: 36)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("显示全部素材来源")
+                            .pointerCursor()
+                            .background(model.selectedSourceDirectoryID == nil
+                                ? Color.accentColor.opacity(0.12)
+                                : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+                        }
                         ForEach(model.sourceDirectories) { directory in
                             HStack(spacing: 8) {
-                                Image(systemName: model.isSourceDirectoryAvailable(id: directory.id)
-                                    ? "folder.fill"
-                                    : "folder.badge.questionmark")
-                                    .foregroundStyle(model.isSourceDirectoryAvailable(id: directory.id)
-                                        ? Color.accentColor
-                                        : Color.orange)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(directory.name)
-                                        .font(.system(size: 14, weight: .medium))
-                                        .lineLimit(1)
-                                    Text(directory.path)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                                Button {
+                                    if model.isSourceDirectoryAvailable(id: directory.id) {
+                                        model.selectSourceDirectory(directory.id)
+                                        dismiss()
+                                    } else {
+                                        model.reconnectProjectSourceDirectory(directory.id)
+                                        if model.isSourceDirectoryAvailable(id: directory.id) {
+                                            model.selectSourceDirectory(directory.id)
+                                            dismiss()
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: model.isSourceDirectoryAvailable(id: directory.id)
+                                            ? "folder.fill"
+                                            : "folder.badge.questionmark")
+                                            .foregroundStyle(model.isSourceDirectoryAvailable(id: directory.id)
+                                                ? Color.accentColor
+                                                : Color.orange)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(directory.name)
+                                                .font(.system(size: 14, weight: .medium))
+                                                .lineLimit(1)
+                                            Text(directory.path)
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(.tertiary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+                                        Spacer(minLength: 2)
+                                        if model.selectedSourceDirectoryID == directory.id {
+                                            Image(systemName: "checkmark")
+                                                .foregroundStyle(Color.accentColor)
+                                        }
+                                    }
+                                    .contentShape(Rectangle())
                                 }
-                                Spacer(minLength: 2)
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(model.isSourceDirectoryAvailable(id: directory.id)
+                                    ? "显示素材目录：\(directory.name)"
+                                    : "重新连接素材目录：\(directory.name)")
+                                .pointerCursor()
                                 if !model.isSourceDirectoryAvailable(id: directory.id) {
                                     Button {
                                         model.reconnectProjectSourceDirectory(directory.id)
@@ -3081,11 +3232,14 @@ private struct DirectoryManagerPopover: View {
                             }
                             .padding(.horizontal, 7)
                             .padding(.vertical, 5)
-                            .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 7))
+                            .background(model.selectedSourceDirectoryID == directory.id
+                                ? Color.accentColor.opacity(0.12)
+                                : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
                         }
                     }
                 }
-                .frame(height: min(CGFloat(model.sourceDirectories.count) * 46, 160))
+                .frame(height: min(CGFloat(model.sourceDirectories.count) * 46
+                    + (model.sourceDirectories.count > 1 ? 40 : 0), 200))
             }
 
             Divider()
@@ -3409,7 +3563,7 @@ private struct DetailView: View {
             }
         }
         .background(.windowBackground)
-        .onChange(of: model.sourceFiles) { _, files in
+        .onChange(of: model.visibleSourceFiles) { _, files in
             let availableURLs = Set(files.map(\.url))
             selectedSourceFileURLs = selectedSourceFileURLs.intersection(availableURLs)
             model.selectedSourceFileURL = selectedSourceFileURLs.first

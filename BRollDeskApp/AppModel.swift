@@ -49,6 +49,9 @@ final class AppModel {
     var mediaFilter: MediaFilter = .all {
         didSet { rebuildVisibleSourceFiles() }
     }
+    private(set) var selectedSourceDirectoryID: String? {
+        didSet { rebuildVisibleSourceFiles() }
+    }
     var isScriptEditorPresented = false
     var isManifestPreviewPresented = false
     private(set) var manifestPreviewText = ""
@@ -106,7 +109,8 @@ final class AppModel {
     private var assetsBySourceIdentity: [String: [BrollAsset]] = [:]
     private var assetsByLegacySourceName: [String: [BrollAsset]] = [:]
     private var sourceDirectoryURLs: [String: URL] = [:]
-    private var sourceScanTask: Task<([SourceFile], [String]), Error>?
+    private var sourceDirectoryReadFailures: Set<String> = []
+    private var sourceScanTask: Task<([SourceFile], [String], [String]), Error>?
     private var sourceScanGeneration = UUID()
     private var sourceDirectoryWatchers: [String: SourceDirectoryWatcher] = [:]
     private var sourceRefreshWorkItem: DispatchWorkItem?
@@ -163,6 +167,10 @@ final class AppModel {
     }
 
     var sourceDirectoryName: String {
+        if let selectedSourceDirectoryID,
+           let directory = sourceDirectories.first(where: { $0.id == selectedSourceDirectoryID }) {
+            return directory.name
+        }
         switch sourceDirectories.count {
         case 0: return "未选择目录"
         case 1: return sourceDirectories[0].name
@@ -171,7 +179,11 @@ final class AppModel {
     }
 
     var sourceDirectoryTooltip: String {
-        sourceDirectories.isEmpty
+        if let selectedSourceDirectoryID,
+           let directory = sourceDirectories.first(where: { $0.id == selectedSourceDirectoryID }) {
+            return "\(directory.name)：\(directory.path)"
+        }
+        return sourceDirectories.isEmpty
             ? "尚未选择素材来源"
             : sourceDirectories.map { "\($0.name)：\($0.path)" }.joined(separator: "\n\n")
     }
@@ -182,7 +194,18 @@ final class AppModel {
     }
 
     func isSourceDirectoryAvailable(id: String) -> Bool {
-        sourceDirectoryURLs[id] != nil
+        sourceDirectoryURLs[id] != nil && !sourceDirectoryReadFailures.contains(id)
+    }
+
+    func selectSourceDirectory(_ id: String?) {
+        guard id == nil || sourceDirectories.contains(where: { $0.id == id }) else { return }
+        selectedSourceDirectoryID = id
+        if let id {
+            if let url = sourceDirectoryURLs[id] {
+                sourceDirectoryURL = url
+                storeBookmark(for: url, key: sourceBookmarkKey)
+            }
+        }
     }
 
     var destinationDirectoryName: String {
@@ -275,13 +298,16 @@ final class AppModel {
     }
 
     private func rebuildVisibleSourceFiles() {
+        let files = selectedSourceDirectoryID.map { id in
+            sourceFiles.filter { $0.sourceDirectoryID == id }
+        } ?? sourceFiles
         switch mediaFilter {
         case .all:
-            visibleSourceFiles = sourceFiles
+            visibleSourceFiles = files
         case .video:
-            visibleSourceFiles = sourceFiles.filter { $0.kind == .video }
+            visibleSourceFiles = files.filter { $0.kind == .video }
         case .image:
-            visibleSourceFiles = sourceFiles.filter { $0.kind == .image }
+            visibleSourceFiles = files.filter { $0.kind == .image }
         }
     }
 
@@ -674,6 +700,10 @@ final class AppModel {
             sourceAccessActive.removeValue(forKey: id)
         }
         sourceDirectories.removeAll { $0.id == id }
+        sourceDirectoryReadFailures.remove(id)
+        if selectedSourceDirectoryID == id {
+            selectedSourceDirectoryID = nil
+        }
         if wasCurrentDirectory {
             sourceDirectoryURL = sourceDirectories.reversed().compactMap { sourceDirectoryURLs[$0.id] }.first
         }
@@ -1014,6 +1044,7 @@ final class AppModel {
         }
         guard !roots.isEmpty else {
             sourceScanGeneration = UUID()
+            sourceDirectoryReadFailures.removeAll()
             installSourceFiles([])
             return
         }
@@ -1025,6 +1056,7 @@ final class AppModel {
         let scanTask = Task.detached(priority: .userInitiated) {
             var files: [SourceFile] = []
             var failures: [String] = []
+            var failedDirectoryIDs: [String] = []
             for (directoryID, directoryURL) in roots {
                 try Task<Never, Never>.checkCancellation()
                 do {
@@ -1038,6 +1070,7 @@ final class AppModel {
                     throw CancellationError()
                 } catch {
                     failures.append("\(directoryURL.lastPathComponent)：\(error.localizedDescription)")
+                    failedDirectoryIDs.append(directoryID)
                 }
             }
             files.sort {
@@ -1046,18 +1079,22 @@ final class AppModel {
                     ? $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
                     : nameOrder == .orderedAscending
             }
-            return (files, failures)
+            return (files, failures, failedDirectoryIDs)
         }
         sourceScanTask = scanTask
 
         Task { @MainActor [weak self] in
             do {
-                let (files, failures) = try await scanTask.value
+                let (files, failures, failedDirectoryIDs) = try await scanTask.value
                 guard let self, self.sourceScanGeneration == generation else { return }
                 self.sourceScanTask = nil
+                let hadReadFailures = !self.sourceDirectoryReadFailures.isEmpty
+                self.sourceDirectoryReadFailures = Set(failedDirectoryIDs)
                 self.installSourceFiles(files)
                 if !failures.isEmpty {
                     self.statusMessage = "部分素材目录无法读取：\(failures.joined(separator: "；"))"
+                } else if hadReadFailures {
+                    self.statusMessage = "素材目录已恢复，素材列表已刷新"
                 }
             } catch is CancellationError {
                 guard let self, self.sourceScanGeneration == generation else { return }
@@ -1395,6 +1432,7 @@ final class AppModel {
 
     func jumpToSourceFile(for asset: BrollAsset) {
         guard let file = sourceFile(for: asset) else { return }
+        selectedSourceDirectoryID = file.sourceDirectoryID
         mediaFilter = .all
         selectedSourceFileURL = file.url
         sourceFileJumpID = UUID()
@@ -2197,6 +2235,7 @@ final class AppModel {
         }
 
         sourceDirectoryURLs[sourceReference.id] = normalizedURL
+        sourceDirectoryReadFailures.remove(sourceReference.id)
         sourceDirectoryURL = normalizedURL
         storeBookmark(for: normalizedURL, key: sourceBookmarkKey)
         sourceDirectoryWatchers.removeValue(forKey: sourceReference.id)?.stop()
@@ -2504,8 +2543,10 @@ final class AppModel {
         }
         sourceAccessActive.removeAll()
         sourceDirectoryURLs.removeAll()
+        sourceDirectoryReadFailures.removeAll()
         sourceDirectories.removeAll()
         sourceDirectoryURL = nil
+        selectedSourceDirectoryID = nil
         selectedSourceFileURL = nil
         installSourceFiles([])
     }
