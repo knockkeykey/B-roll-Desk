@@ -2036,44 +2036,43 @@ private struct AnchorRowView: View {
     private var isPendingBinding: Bool {
         model.rollType(for: row.id) == .bRoll && assets.isEmpty
     }
+    private var isBroll: Bool { model.rollType(for: row.id) == .bRoll }
+
     private var rowFill: Color {
-        if isDropTarget { return Color.accentColor.opacity(0.13) }
-        return Color.primary.opacity(0.02)
+        isDropTarget ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.025)
     }
 
     private var rowBorder: Color {
-        if isDropTarget { return Color.accentColor.opacity(0.78) }
-        return Color.primary.opacity(0.08)
+        isDropTarget ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.07)
     }
 
     private var rowBorderWidth: CGFloat {
-        isDropTarget ? 2 : 0.7
+        isDropTarget ? 1.5 : 0.5
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top, spacing: 12) {
-                Text(String(format: "%02d", row.index))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
-                    .frame(width: 24, alignment: .leading)
+            HStack(alignment: .top, spacing: 10) {
+                BrollStatusIndicator(
+                    isBroll: isBroll,
+                    selection: model.brollPreparationStatus(for: row.id),
+                    isBound: !assets.isEmpty,
+                    onToggle: { model.setBrollPreparationStatus($0, for: row.id) }
+                )
+                .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("BR\(String(format: "%03d", row.index))")
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary.opacity(0.72))
+                    HStack(alignment: .center, spacing: 2) {
+                        Text("\(String(format: "%02d", row.index))  BR\(String(format: "%03d", row.index))")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(isDropTarget ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
                         Spacer(minLength: 8)
                         Button {
                             noteDraft = rowNote
                             isNoteEditorPresented = true
                         } label: {
                             Label("备注", systemImage: rowNote.isEmpty ? "square.and.pencil" : "note.text")
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(rowNote.isEmpty ? Color.secondary : Color.accentColor)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 4)
-                                .background(Color.primary.opacity(0.045), in: Capsule())
+                                .modifier(RowMetaControlChrome(isActive: !rowNote.isEmpty))
                         }
                         .buttonStyle(.plain)
                         .help(rowNote.isEmpty ? "添加备注" : "编辑备注")
@@ -2090,19 +2089,14 @@ private struct AnchorRowView: View {
                                 }
                             )
                         }
-                        if model.rollType(for: row.id) == .bRoll {
+                        if isBroll {
                             BrollProductionMethodMenu(
                                 selection: model.brollProductionMethod(for: row.id),
                                 onSelect: { model.setBrollProductionMethod($0, for: row.id) }
                             )
-                            BrollPreparationStatusButton(
-                                selection: model.brollPreparationStatus(for: row.id),
-                                isBound: !assets.isEmpty,
-                                onToggle: { model.setBrollPreparationStatus($0, for: row.id) }
-                            )
                         }
                         RollTypeTag(
-                            isBroll: model.rollType(for: row.id) == .bRoll,
+                            isBroll: isBroll,
                             assetCount: assets.count,
                             onTap: { model.toggleRollType(for: row.id) }
                         )
@@ -2349,18 +2343,10 @@ private struct BrollProductionMethodMenu: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
             }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(selection == .undecided ? Color.secondary : Color.accentColor)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(Color.primary.opacity(0.045), in: Capsule())
-            .overlay {
-                Capsule()
-                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.6)
-            }
-            .contentShape(Capsule())
+            .modifier(RowMetaControlChrome())
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("选择这个 B-roll 的制作方式")
         .accessibilityLabel("制作方式：\(selection.title)")
@@ -2368,86 +2354,106 @@ private struct BrollProductionMethodMenu: View {
     }
 }
 
-private struct BrollPreparationStatusButton: View {
+/// Leading status circle, Reminders-style: gray hollow = 待准备, blue check = 素材就绪, green link = 已绑定.
+private struct BrollStatusIndicator: View {
+    let isBroll: Bool
     let selection: BrollPreparationStatus
     let isBound: Bool
     let onToggle: (BrollPreparationStatus) -> Void
-
-    private var nextStatus: BrollPreparationStatus {
-        selection == .pending ? .ready : .pending
-    }
 
     private var displayedStatus: BrollPreparationStatus {
         isBound ? .bound : selection
     }
 
+    private var nextStatus: BrollPreparationStatus {
+        selection == .pending ? .ready : .pending
+    }
+
     private var tint: Color {
         switch displayedStatus {
-        case .pending: return .secondary
-        case .ready, .bound: return .green
+        case .pending: return Color.secondary.opacity(0.6)
+        case .ready: return .accentColor
+        case .bound: return .green
         }
     }
 
     var body: some View {
-        if isBound {
-            tag
-                .accessibilityLabel("B-roll 已绑定")
-        } else {
-            Button {
-                onToggle(nextStatus)
-            } label: {
-                tag
+        Group {
+            if !isBroll {
+                Image(systemName: "waveform")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .help("A-roll")
+                    .accessibilityLabel("A-roll")
+            } else if isBound {
+                icon
+                    .help("已绑定素材")
+                    .accessibilityLabel("B-roll 已绑定")
+            } else {
+                Button {
+                    onToggle(nextStatus)
+                } label: {
+                    icon
+                }
+                .buttonStyle(.plain)
+                .help("\(selection.title) · 点击标记为\(nextStatus.title)")
+                .accessibilityLabel("B-roll 准备进度：\(selection.title)")
+                .accessibilityHint("点击切换为\(nextStatus.title)")
+                .pointerCursor()
             }
-            .buttonStyle(.plain)
-            .fixedSize()
-            .accessibilityLabel("B-roll 准备进度：\(selection.title)")
-            .accessibilityHint("点击切换为\(nextStatus.title)")
-            .help("点击切换为\(nextStatus.title)")
-            .pointerCursor()
         }
+        .frame(width: 18, height: 18)
     }
 
-    private var tag: some View {
-        HStack(spacing: 4) {
-            Image(systemName: displayedStatus.systemImage)
-            Text(displayedStatus.title)
-        }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(tint.opacity(isBound || selection == .ready ? 0.1 : 0.07), in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(tint.opacity(isBound || selection == .ready ? 0.2 : 0.14), lineWidth: 0.6)
-        }
-        .contentShape(Capsule())
+    private var icon: some View {
+        Image(systemName: displayedStatus.systemImage)
+            .font(.system(size: 16, weight: displayedStatus == .pending ? .light : .regular))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(tint)
+            .contentTransition(.symbolEffect(.replace))
+            .contentShape(Circle())
+            .animation(.snappy(duration: 0.18), value: displayedStatus)
+    }
+}
+
+/// Low-emphasis text control used in the row header: no fill until hovered.
+private struct RowMetaControlChrome: ViewModifier {
+    var isActive = false
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                Color.primary.opacity(isHovered ? 0.07 : 0),
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .onHover { isHovered = $0 }
+            .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 }
 
 private struct PendingAssetChip: View {
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "photo.stack")
-                .foregroundStyle(Color.green)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("待绑定素材")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color.green)
-                Text("从素材列表拖拽素材到这条文案")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.down.to.line")
+            Text("拖入素材以绑定")
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
+        .font(.system(size: 13))
+        .foregroundStyle(.tertiary)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.green.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(Color.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(Color.primary.opacity(0.14), style: StrokeStyle(lineWidth: 0.8, dash: [4, 3]))
         }
+        .padding(.leading, 28)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("B-roll 待绑定素材；从素材列表拖拽素材到这条文案")
     }
@@ -2571,8 +2577,6 @@ private struct RollTypeTag: View {
     let assetCount: Int
     let onTap: () -> Void
 
-    private var tint: Color { isBroll ? .green : .accentColor }
-
     var body: some View {
         Button(action: onTap) {
             tag
@@ -2582,23 +2586,15 @@ private struct RollTypeTag: View {
     }
 
     private var tag: some View {
-        HStack(spacing: 4) {
-            Image(systemName: isBroll ? "photo.stack" : "waveform")
+        HStack(spacing: 3) {
             Text(isBroll ? "B-roll" : "A-roll")
             if isBroll, assetCount > 1 {
                 Text("×\(assetCount)")
                     .monospacedDigit()
             }
         }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(tint.opacity(0.1), in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
-        }
+        .modifier(RowMetaControlChrome())
+        .help("点击切换为\(isBroll ? "A-roll" : "B-roll")")
         .accessibilityLabel("\(isBroll ? "B-roll" : "A-roll")，点击切换为\(isBroll ? "A-roll" : "B-roll")")
     }
 }
@@ -2625,11 +2621,11 @@ private struct AssetChip: View {
                         .foregroundStyle(isSelected ? Color.orange : Color.secondary)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(asset.outputName)
-                            .font(.system(size: 15, design: .monospaced))
+                            .font(.system(size: 13, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Text("源文件：\(model.sourceOriginLabel(for: asset))")
-                            .font(.system(size: 14))
+                            .font(.system(size: 12))
                             .foregroundStyle(isSelected ? Color.orange : Color.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -2674,17 +2670,17 @@ private struct AssetChip: View {
         .padding(.horizontal, 8)
         .background(
             isSelected
-                ? Color.orange.opacity(0.17)
-                : (isDropTarget ? Color.accentColor.opacity(0.09) : Color.green.opacity(0.055)),
+                ? Color.orange.opacity(0.12)
+                : (isDropTarget ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.045)),
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(
-                    isSelected ? Color.orange.opacity(0.85) : Color.green.opacity(0.18),
-                    lineWidth: isSelected ? 1.5 : 0.6
-                )
+            if isSelected {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.orange.opacity(0.6), lineWidth: 1)
+            }
         }
+        .padding(.leading, 28)
         .contextMenu {
             Button {
                 model.reveal(asset)
@@ -3099,20 +3095,14 @@ private struct DetailView: View {
                                             isAssigned: model.isAssigned(file),
                                             isSelected: selectedSourceFileURLs.contains(file.url)
                                         )
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 4)
+                                        .padding(.horizontal, 10)
                                         .id(file.url.standardizedFileURL.path)
                                         .onTapGesture {
                                             selectSourceFile(file)
                                         }
-
-                                        if index < visibleFiles.count - 1 {
-                                            Divider()
-                                                .padding(.leading, 174)
-                                                .padding(.trailing, 16)
-                                        }
                                     }
                                 }
+                                .padding(.vertical, 6)
                                 .frame(width: geometry.size.width)
                             }
                             .scrollIndicators(.hidden)
@@ -3495,25 +3485,24 @@ private struct SourceFileRow: View {
     let isAssigned: Bool
     let isSelected: Bool
 
-    private var rowFill: Color {
-        if isSelected { return Color.orange.opacity(0.17) }
-        if isAssigned { return Color.green.opacity(0.035) }
-        return .clear
-    }
+    @State private var isHovered = false
 
-    private var rowBorder: Color {
-        if isAssigned { return Color.green.opacity(0.72) }
-        if isSelected { return Color.orange.opacity(0.8) }
-        return .clear
-    }
-
-    private var rowBorderWidth: CGFloat {
-        if isAssigned { return 1.1 }
-        return isSelected ? 1 : 0
+    private var rowFill: AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(Color.orange.opacity(0.16)) }
+        if isHovered { return AnyShapeStyle(.quinary) }
+        return AnyShapeStyle(.clear)
     }
 
     private var assignedAssets: [BrollAsset] {
         model.assignedAssets(for: file)
+    }
+
+    private var subtitle: String {
+        var parts = [file.sourceDirectoryName, MediaFormatting.bytes(file.byteCount)]
+        if let date = file.modificationDate {
+            parts.append(date.formatted(.dateTime.month().day().hour().minute()))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var hoverDetails: String {
@@ -3525,44 +3514,64 @@ private struct SourceFileRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Text(String(format: "%03d", index))
-                .font(.caption.monospacedDigit().weight(.medium))
-                .foregroundStyle(.tertiary)
-                .frame(width: 34, alignment: .trailing)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(isSelected ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
+                .frame(width: 26, alignment: .trailing)
 
             MediaThumbnailView(file: file)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(file.name)
+                    .font(.body.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .foregroundStyle(isSelected ? Color.orange : Color.primary)
-                Text("\(file.sourceDirectoryName) · \(MediaFormatting.bytes(file.byteCount))")
-                    .font(.system(size: 14))
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 5)
+
+            if isAssigned {
+                AssignedBadge(count: max(assignedAssets.count, 1))
+            }
         }
-        .padding(.vertical, 5)
-        .padding(.horizontal, 5)
+        .padding(.vertical, 6)
+        .padding(.leading, 4)
+        .padding(.trailing, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(rowFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(
-                    rowBorder,
-                    lineWidth: rowBorderWidth
-                )
-        }
-        .contentShape(Rectangle())
+        .background(rowFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovered)
         .onDrag {
             return NSItemProvider(object: file.url as NSURL)
         }
         .pointerCursor()
         .hoverHelp(hoverDetails)
-        .accessibilityValue(isSelected ? "已选中" : "未选中")
+        .accessibilityElement(children: .combine)
+        .accessibilityValue([isSelected ? "已选中" : nil, isAssigned ? "已绑定" : nil].compactMap { $0 }.joined(separator: "，"))
+    }
+}
+
+private struct AssignedBadge: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 9, weight: .bold))
+            Text(count > 1 ? "已绑定 ×\(count)" : "已绑定")
+                .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(Color.green)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Color.green.opacity(0.12), in: Capsule())
+        .fixedSize()
     }
 }
 
@@ -3867,7 +3876,7 @@ private struct MediaThumbnailView: View {
     @State private var image: NSImage?
     @State private var isLoading = true
 
-    private let thumbnailSize = CGSize(width: 92, height: 56)
+    private let thumbnailSize = CGSize(width: 80, height: 45)
 
     var body: some View {
         let maxPixelSize = max(1, Int(ceil(max(thumbnailSize.width, thumbnailSize.height) * displayScale)))
@@ -3879,19 +3888,15 @@ private struct MediaThumbnailView: View {
                     .scaledToFill()
 
                 if file.kind == .video {
-                    LinearGradient(
-                        colors: [.black.opacity(0.45), .clear],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-
                     Image(systemName: "play.fill")
-                        .font(.caption2)
+                        .font(.system(size: 7, weight: .bold))
                         .foregroundStyle(.white)
-                        .padding(6)
+                        .frame(width: 16, height: 16)
+                        .background(.black.opacity(0.35), in: Circle())
+                        .padding(4)
                 }
             } else {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(.quaternary)
                 Image(systemName: isLoading ? "hourglass" : file.kind.systemImage)
                     .font(.title3)
@@ -3908,10 +3913,10 @@ private struct MediaThumbnailView: View {
         }
         .frame(width: thumbnailSize.width, height: thumbnailSize.height)
         .background(.quaternary)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(.separator.opacity(0.65), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
         }
         .accessibilityLabel("\(file.kind.title)缩略图")
         .task(id: "\(file.cacheIdentity)|\(maxPixelSize)") {

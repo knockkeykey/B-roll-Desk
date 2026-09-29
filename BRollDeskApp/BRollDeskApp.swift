@@ -90,9 +90,9 @@ private final class WindowTitlebarDoubleClickZoomView: NSView {
         monitoredWindow = window
 
         guard window != nil else { return }
-        // SwiftUI's windowBackgroundDragBehavior modifier requires macOS 15.
-        // Set the equivalent AppKit behavior here to keep custom-header dragging on macOS 14.
-        window?.isMovableByWindowBackground = true
+        // Window background dragging also captures gestures on draggable media rows.
+        // Start window drags explicitly from the custom header instead.
+        window?.isMovableByWindowBackground = false
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self else { return event }
             return self.handle(event)
@@ -112,8 +112,7 @@ private final class WindowTitlebarDoubleClickZoomView: NSView {
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
-        guard event.clickCount == 2,
-              let window = monitoredWindow,
+        guard let window = monitoredWindow,
               event.window === window,
               let headerRegion = headerRegion(in: window),
               headerRegion.contains(event.locationInWindow),
@@ -121,9 +120,18 @@ private final class WindowTitlebarDoubleClickZoomView: NSView {
             return event
         }
 
-        // NSWindow.zoom(_:) toggles between the standard frame and the user's prior frame.
-        window.zoom(nil)
-        return nil
+        switch event.clickCount {
+        case 2:
+            // NSWindow.zoom(_:) toggles between the standard frame and the user's prior frame.
+            window.zoom(nil)
+            return nil
+        case 1:
+            // Restrict dragging to the custom title bar instead of the whole window background.
+            window.performDrag(with: event)
+            return nil
+        default:
+            return event
+        }
     }
 
     private func headerRegion(in window: NSWindow) -> NSRect? {
