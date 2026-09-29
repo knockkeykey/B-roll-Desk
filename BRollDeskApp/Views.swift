@@ -2124,8 +2124,9 @@ private struct AnchorRowView: View {
     private var assets: [BrollAsset] { model.assets(for: row.id) }
     private var rowNote: String { model.note(for: row.id) }
     private var isDropTarget: Bool { dropState.isActive }
+    private var isBinding: Bool { model.bindingRowIDs.contains(row.id) }
     private var isPendingBinding: Bool {
-        model.rollType(for: row.id) == .bRoll && assets.isEmpty
+        !isBinding && model.rollType(for: row.id) == .bRoll && assets.isEmpty
     }
     private var isBroll: Bool { model.rollType(for: row.id) == .bRoll }
 
@@ -2134,7 +2135,7 @@ private struct AnchorRowView: View {
     }
 
     private var rowBorder: Color {
-        isDropTarget ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.07)
+        isDropTarget || isBinding ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.07)
     }
 
     private var rowBorderWidth: CGFloat {
@@ -2232,7 +2233,8 @@ private struct AnchorRowView: View {
             if isPendingBinding {
                 PendingAssetChip()
                     .transition(.opacity.combined(with: .move(edge: .top)))
-            } else if !assets.isEmpty {
+            }
+            if !assets.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(assets) { asset in
                         AssetChip(
@@ -2245,6 +2247,10 @@ private struct AnchorRowView: View {
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            if isBinding {
+                BindingProgressChip()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.vertical, 12)
@@ -2265,6 +2271,7 @@ private struct AnchorRowView: View {
         )
         .animation(.snappy(duration: 0.2), value: assets.count)
         .animation(.snappy(duration: 0.2), value: isPendingBinding)
+        .animation(.snappy(duration: 0.2), value: isBinding)
     }
 }
 
@@ -2581,6 +2588,30 @@ private struct RowMetaControlChrome: ViewModifier {
             .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             .onHover { isHovered = $0 }
             .animation(.easeOut(duration: 0.12), value: isHovered)
+    }
+}
+
+private struct BindingProgressChip: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("正在绑定素材…")
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 13))
+        .foregroundStyle(Color.accentColor)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 0.8)
+        }
+        .padding(.leading, 28)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("正在绑定素材")
     }
 }
 
@@ -2924,7 +2955,7 @@ private struct MaterialListHeader: View {
     private var paneHeaderActions: [PaneHeaderAction] {
         var actions = [
             PaneHeaderAction(systemImage: "arrow.clockwise", help: "刷新素材列表", usesAnimation: false) {
-                model.refreshSourceFiles()
+                model.refreshSourceFiles(recoverSourceDirectories: true)
             }
         ]
 

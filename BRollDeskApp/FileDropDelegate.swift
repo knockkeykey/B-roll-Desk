@@ -156,7 +156,9 @@ struct FileDropDelegate: DropDelegate {
         feedback.isFileDragActive = false
         rowState.isActive = false
 
+        model.bindingRowIDs.insert(rowID)
         Task { @MainActor in
+            defer { model.bindingRowIDs.remove(rowID) }
             let urls = await Self.urls(from: providers)
             await model.attach(urls: urls, to: rowID)
         }

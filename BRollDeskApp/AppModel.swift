@@ -56,6 +56,8 @@ final class AppModel {
     var isARollReplacementConfirmationPresented = false
     var isARollRemovalConfirmationPresented = false
     var isBusy = false
+    /// 正在处理拖拽绑定的文案行，用于在行内显示 loading
+    var bindingRowIDs: Set<String> = []
     var statusMessage = "请设置素材来源和剪辑项目文件夹"
     var lastSaved = "尚未保存"
     var alert: AppAlert?
@@ -108,6 +110,7 @@ final class AppModel {
     private var sourceScanGeneration = UUID()
     private var sourceDirectoryWatchers: [String: SourceDirectoryWatcher] = [:]
     private var sourceRefreshWorkItem: DispatchWorkItem?
+    @ObservationIgnored private var volumeNotificationObservers: [(NotificationCenter, NSObjectProtocol)] = []
     private var projectID = UUID().uuidString.lowercased()
 
     private let scriptKey = "broll-namer-script"
@@ -152,6 +155,7 @@ final class AppModel {
         restoreSavedDirectories()
         parseScript(persist: false)
         restoreAssignments()
+        observeExternalVolumeChanges()
 
         Task { @MainActor [weak self] in
             self?.restoreDirectories()
@@ -737,17 +741,60 @@ final class AppModel {
     func clearDestinationDirectory() {
         guard !isBusy, let directoryURL = destinationDirectoryURL else { return }
 
+        // Save the current project before clearing its in-memory session. Project files
+        // remain the source of truth and can restore this state when selected again.
         persistPreferences()
         saveConfirmedProjectScriptIfPresent()
 
         defaults.removeObject(forKey: destinationBookmarkKey)
+        defaults.removeObject(forKey: sourceBookmarkKey)
         if destinationAccessActive {
             directoryURL.stopAccessingSecurityScopedResource()
         }
         destinationAccessActive = false
         destinationDirectoryURL = nil
-        discardUndoActions()
+
+        clearCurrentProjectState()
+        // Clear the app-level fallback cache too, so a later launch with no project
+        // selected does not repopulate this project's data in the interface.
+        persistPreferences()
         statusMessage = "已取消选择剪辑项目文件夹，项目文件仍保留在原位置。"
+    }
+
+    private func clearCurrentProjectState() {
+        discardUndoActions()
+
+        scriptText = ""
+        splitMode = .line
+        preservesEmptyAnchors = false
+        prefix = ""
+        anchorSearchText = ""
+        projectID = UUID().uuidString.lowercased()
+
+        rows = []
+        assignments = [:]
+        anchorNotes = [:]
+        rollTypeOverrides = [:]
+        capturedBrollRowIDs = []
+        brollProductionMethods = [:]
+        brollPreparationStatuses = [:]
+        rebuildAssignmentIndexes()
+
+        clearSourceDirectories()
+        mediaFilter = .all
+        sourceFileJumpID = nil
+        bindingRowIDs.removeAll()
+        dropFeedback.isFileDragActive = false
+
+        pendingARollVideoURL = nil
+        isScriptEditorPresented = false
+        isManifestPreviewPresented = false
+        manifestPreviewText = ""
+        isClearConfirmationPresented = false
+        isARollReplacementConfirmationPresented = false
+        isARollRemovalConfirmationPresented = false
+        alert = nil
+        lastSaved = "尚未保存"
     }
 
     func chooseARollVideo() {
@@ -949,7 +996,16 @@ final class AppModel {
         updateProjectRestoreStatus(for: url)
     }
 
-    func refreshSourceFiles() {
+    func refreshSourceFiles(recoverSourceDirectories: Bool = false) {
+        if recoverSourceDirectories {
+            let reconnectedCount = reconnectAvailableSourceDirectories(forceRefreshAccess: true)
+            if reconnectedCount > 0 {
+                statusMessage = "已重新连接素材目录，正在刷新素材列表。"
+            } else if sourceDirectories.contains(where: { sourceDirectoryURLs[$0.id] == nil }) {
+                statusMessage = "素材来源磁盘当前不可用；重新插入后会自动恢复素材列表。"
+            }
+        }
+
         sourceScanTask?.cancel()
         sourceScanTask = nil
 
@@ -1962,17 +2018,158 @@ final class AppModel {
                     message: "创建 B-roll、A-roll 文件夹或整理旧的 B-roll 文件时失败：\(error.localizedDescription)"
                 )
             }
-        } else if let url = resolvedBookmark(forKey: sourceBookmarkKey) {
+        } else if let url = resolvedBookmark(forKey: sourceBookmarkKey), isDirectoryReachable(url) {
             activateSourceDirectory(url)
         }
         refreshSourceFiles()
+    }
+
+    private func observeExternalVolumeChanges() {
+        let workspace = NSWorkspace.shared
+        let mountCenter = workspace.notificationCenter
+        let mountObserver = mountCenter.addObserver(
+            forName: NSWorkspace.didMountNotification,
+            object: workspace,
+            queue: .main
+        ) { [weak self] notification in
+            guard let volumeURL = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
+            Task { @MainActor [weak self] in
+                self?.handleMountedVolume(at: volumeURL)
+            }
+        }
+        volumeNotificationObservers.append((mountCenter, mountObserver))
+
+        let unmountObserver = mountCenter.addObserver(
+            forName: NSWorkspace.didUnmountNotification,
+            object: workspace,
+            queue: .main
+        ) { [weak self] notification in
+            guard let mountedPath = notification.userInfo?["NSDevicePath"] as? String else { return }
+            Task { @MainActor [weak self] in
+                self?.handleUnmountedVolume(at: mountedPath)
+            }
+        }
+        volumeNotificationObservers.append((mountCenter, unmountObserver))
+    }
+
+    private func handleUnmountedVolume(at mountedPath: String) {
+        let volumePath = URL(fileURLWithPath: mountedPath, isDirectory: true).standardizedFileURL.path
+        let disconnectedIDs = sourceDirectories.compactMap { reference -> String? in
+            let activePath = sourceDirectoryURLs[reference.id]?.standardizedFileURL.path
+            return path(reference.path, isInside: volumePath) || activePath.map { path($0, isInside: volumePath) } == true
+                ? reference.id
+                : nil
+        }
+        guard !disconnectedIDs.isEmpty else { return }
+
+        disconnectedIDs.forEach(disconnectSourceDirectory)
+        sourceDirectoryURL = sourceDirectories.reversed().compactMap { sourceDirectoryURLs[$0.id] }.first
+        refreshSourceFiles()
+        statusMessage = "素材磁盘已弹出；重新插入后会自动恢复素材列表。"
+    }
+
+    private func handleMountedVolume(at volumeURL: URL) {
+        let reconnectedCount = reconnectAvailableSourceDirectories(
+            mountedVolumeURL: volumeURL,
+            forceRefreshAccess: true
+        )
+        guard reconnectedCount > 0 else { return }
+        refreshSourceFiles()
+        statusMessage = "素材磁盘已重新连接，正在刷新素材列表。"
+    }
+
+    @discardableResult
+    private func reconnectAvailableSourceDirectories(
+        mountedVolumeURL: URL? = nil,
+        forceRefreshAccess: Bool
+    ) -> Int {
+        var reconnectedCount = 0
+        let previousCurrentDirectoryID = sourceDirectoryURL.flatMap { currentURL in
+            sourceDirectories.first {
+                sourceDirectoryURLs[$0.id]?.standardizedFileURL == currentURL.standardizedFileURL
+            }?.id
+        }
+
+        for reference in sourceDirectories {
+            let resolvedURL = resolveProjectSourceDirectory(reference)
+            guard let resolvedURL, isDirectoryReachable(resolvedURL) else {
+                if mountedVolumeURL == nil {
+                    disconnectSourceDirectory(reference.id)
+                }
+                continue
+            }
+
+            if let mountedVolumeURL {
+                let volumePath = mountedVolumeURL.standardizedFileURL.path
+                let activePath = sourceDirectoryURLs[reference.id]?.standardizedFileURL.path
+                guard path(resolvedURL.path, isInside: volumePath) ||
+                        path(reference.path, isInside: volumePath) ||
+                        activePath.map({ path($0, isInside: volumePath) }) == true else {
+                    continue
+                }
+            }
+
+            let currentURL = sourceDirectoryURLs[reference.id]
+            let sameURL = currentURL?.standardizedFileURL == resolvedURL.standardizedFileURL
+            guard forceRefreshAccess || !sameURL || sourceAccessActive[reference.id] != true else { continue }
+
+            activateSourceDirectory(
+                resolvedURL,
+                reference: reference,
+                refresh: false,
+                forceRefreshAccess: forceRefreshAccess || !sameURL
+            )
+            reconnectedCount += 1
+        }
+
+        if sourceDirectories.isEmpty,
+           let url = resolvedBookmark(forKey: sourceBookmarkKey),
+           isDirectoryReachable(url),
+           mountedVolumeURL.map({ path(url.path, isInside: $0.path) }) ?? true {
+            activateSourceDirectory(url, refresh: false, forceRefreshAccess: forceRefreshAccess)
+            reconnectedCount += 1
+        }
+
+        if let previousCurrentDirectoryID,
+           let currentURL = sourceDirectoryURLs[previousCurrentDirectoryID] {
+            sourceDirectoryURL = currentURL
+        }
+
+        return reconnectedCount
+    }
+
+    private func disconnectSourceDirectory(_ id: String) {
+        sourceDirectoryWatchers.removeValue(forKey: id)?.stop()
+        let url = sourceDirectoryURLs.removeValue(forKey: id)
+        if sourceAccessActive.removeValue(forKey: id) == true {
+            url?.stopAccessingSecurityScopedResource()
+        }
+        if let url, sourceDirectoryURL?.standardizedFileURL == url.standardizedFileURL {
+            sourceDirectoryURL = sourceDirectories.reversed().compactMap { sourceDirectoryURLs[$0.id] }.first
+        }
+    }
+
+    private func isDirectoryReachable(_ url: URL) -> Bool {
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess { url.stopAccessingSecurityScopedResource() }
+        }
+        return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    private func path(_ path: String, isInside rootPath: String) -> Bool {
+        let normalizedPath = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+        let normalizedRoot = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL.path
+        let rootPrefix = normalizedRoot == "/" ? "/" : normalizedRoot + "/"
+        return normalizedPath == normalizedRoot || normalizedPath.hasPrefix(rootPrefix)
     }
 
     private func activateSourceDirectory(
         _ url: URL,
         reference: ProjectSourceDirectory? = nil,
         persistProjectSettings: Bool = true,
-        refresh: Bool = true
+        refresh: Bool = true,
+        forceRefreshAccess: Bool = false
     ) {
         let normalizedURL = url.standardizedFileURL
         let existingReference = reference ?? sourceDirectories.first {
@@ -1988,15 +2185,14 @@ final class AppModel {
             sourceDirectories.append(sourceReference)
         }
 
-        if let previousURL = sourceDirectoryURLs[sourceReference.id],
-           previousURL.standardizedFileURL != normalizedURL {
-            sourceDirectoryWatchers.removeValue(forKey: sourceReference.id)?.stop()
+        let previousURL = sourceDirectoryURLs[sourceReference.id]
+        let sameURL = previousURL?.standardizedFileURL == normalizedURL
+        let shouldRestartAccess = forceRefreshAccess || !sameURL || sourceAccessActive[sourceReference.id] != true
+        if shouldRestartAccess {
             if sourceAccessActive.removeValue(forKey: sourceReference.id) == true {
-                previousURL.stopAccessingSecurityScopedResource()
+                previousURL?.stopAccessingSecurityScopedResource()
             }
-        }
-        if sourceDirectoryURLs[sourceReference.id] == nil ||
-            sourceDirectoryURLs[sourceReference.id]?.standardizedFileURL != normalizedURL {
+            sourceDirectoryWatchers.removeValue(forKey: sourceReference.id)?.stop()
             sourceAccessActive[sourceReference.id] = normalizedURL.startAccessingSecurityScopedResource()
         }
 
@@ -2179,7 +2375,7 @@ final class AppModel {
         } else {
             let unavailable = sourceDirectories.filter { sourceDirectoryURLs[$0.id] == nil }
             if !unavailable.isEmpty {
-                statusMessage = "项目已连接；以下素材目录不可用，请重新添加：\(unavailable.map(\.path).joined(separator: "、"))"
+                statusMessage = "项目已连接；以下素材目录当前不可用，插入磁盘后会自动恢复：\(unavailable.map(\.path).joined(separator: "、"))"
                 return
             }
             statusMessage = "已恢复剪辑项目：\(projectURL.lastPathComponent)，已连接 \(sourceDirectories.count) 个素材目录"
@@ -2280,18 +2476,19 @@ final class AppModel {
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
             ) {
-                if isStale {
+                let isReachable = isDirectoryReachable(url)
+                if isStale, isReachable {
                     storeBookmark(for: url, key: sourceBookmarkKey)
                     if let index = sourceDirectories.firstIndex(where: { $0.id == reference.id }) {
                         sourceDirectories[index] = makeProjectSourceDirectory(for: url, id: reference.id)
                     }
                 }
-                return url
+                return isReachable ? url : nil
             }
         }
 
         let pathURL = URL(fileURLWithPath: reference.path, isDirectory: true)
-        return FileManager.default.fileExists(atPath: pathURL.path) ? pathURL : nil
+        return isDirectoryReachable(pathURL) ? pathURL : nil
     }
 
     private func clearSourceDirectories() {
