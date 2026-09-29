@@ -54,6 +54,7 @@ final class AppModel {
     private(set) var manifestPreviewText = ""
     var isClearConfirmationPresented = false
     var isARollReplacementConfirmationPresented = false
+    var isARollRemovalConfirmationPresented = false
     var isBusy = false
     var statusMessage = "请设置素材来源和剪辑项目文件夹"
     var lastSaved = "尚未保存"
@@ -654,21 +655,46 @@ final class AppModel {
     }
 
     func removeProjectSourceDirectory(_ id: String) {
-        guard let sourceURL = sourceDirectoryURLs.removeValue(forKey: id) else {
-            sourceDirectories.removeAll { $0.id == id }
-            saveProjectSettings()
-            return
-        }
+        guard !isBusy,
+              let reference = sourceDirectories.first(where: { $0.id == id }) else { return }
+        let referencePath = URL(fileURLWithPath: reference.path, isDirectory: true).standardizedFileURL.path
+        let wasCurrentDirectory = sourceDirectoryURL?.standardizedFileURL.path == referencePath
+        let bookmarkPointsToRemovedDirectory =
+            resolvedBookmark(forKey: sourceBookmarkKey)?.standardizedFileURL.path == referencePath
+        sourceScanTask?.cancel()
+        let sourceURL = sourceDirectoryURLs.removeValue(forKey: id)
         sourceDirectoryWatchers.removeValue(forKey: id)?.stop()
-        if sourceAccessActive.removeValue(forKey: id) == true {
+        if let sourceURL, sourceAccessActive.removeValue(forKey: id) == true {
             sourceURL.stopAccessingSecurityScopedResource()
+        } else {
+            sourceAccessActive.removeValue(forKey: id)
         }
         sourceDirectories.removeAll { $0.id == id }
-        if sourceDirectoryURL?.standardizedFileURL == sourceURL.standardizedFileURL {
+        if wasCurrentDirectory {
             sourceDirectoryURL = sourceDirectories.reversed().compactMap { sourceDirectoryURLs[$0.id] }.first
+        }
+        if wasCurrentDirectory || bookmarkPointsToRemovedDirectory {
+            if sourceDirectoryURL == nil {
+                sourceDirectoryURL = sourceDirectories.reversed().compactMap { sourceDirectoryURLs[$0.id] }.first
+            }
+            if let sourceDirectoryURL {
+                storeBookmark(for: sourceDirectoryURL, key: sourceBookmarkKey)
+            } else {
+                defaults.removeObject(forKey: sourceBookmarkKey)
+            }
         }
         persistPreferences()
         refreshSourceFiles()
+        statusMessage = "已从本项目素材来源中移除：\(reference.name)"
+    }
+
+    func removeCurrentSourceDirectory() {
+        guard let sourceDirectoryURL else { return }
+        let currentPath = sourceDirectoryURL.standardizedFileURL.path
+        guard let reference = sourceDirectories.first(where: {
+            $0.path == currentPath || sourceDirectoryURLs[$0.id]?.standardizedFileURL.path == currentPath
+        }) else { return }
+        removeProjectSourceDirectory(reference.id)
     }
 
     func reconnectProjectSourceDirectory(_ id: String) {
@@ -708,8 +734,26 @@ final class AppModel {
         updateProjectRestoreStatus(for: url)
     }
 
+    func clearDestinationDirectory() {
+        guard !isBusy, let directoryURL = destinationDirectoryURL else { return }
+
+        persistPreferences()
+        saveConfirmedProjectScriptIfPresent()
+
+        defaults.removeObject(forKey: destinationBookmarkKey)
+        if destinationAccessActive {
+            directoryURL.stopAccessingSecurityScopedResource()
+        }
+        destinationAccessActive = false
+        destinationDirectoryURL = nil
+        discardUndoActions()
+        statusMessage = "已取消选择剪辑项目文件夹，项目文件仍保留在原位置。"
+    }
+
     func chooseARollVideo() {
-        guard !isBusy, pendingARollVideoURL == nil else { return }
+        guard !isBusy,
+              pendingARollVideoURL == nil,
+              !isARollRemovalConfirmationPresented else { return }
         guard destinationDirectoryURL != nil else {
             showError(title: "请先选择剪辑项目文件夹", message: "选择剪辑项目文件夹后，才能把视频放入项目的 A-roll 文件夹。")
             return
@@ -733,7 +777,9 @@ final class AppModel {
     }
 
     func importARollVideo(from urls: [URL]) async {
-        guard !isBusy, pendingARollVideoURL == nil else { return }
+        guard !isBusy,
+              pendingARollVideoURL == nil,
+              !isARollRemovalConfirmationPresented else { return }
         guard let aRollDirectoryURL else {
             showError(title: "请先选择剪辑项目文件夹", message: "选择剪辑项目文件夹后，才能把视频放入项目的 A-roll 文件夹。")
             return
@@ -795,6 +841,59 @@ final class AppModel {
     func cancelARollVideoReplacement() {
         pendingARollVideoURL = nil
         isARollReplacementConfirmationPresented = false
+    }
+
+    func requestARollVideoRemoval() {
+        guard !isBusy,
+              !isARollReplacementConfirmationPresented,
+              !isARollRemovalConfirmationPresented,
+              aRollVideoDisplayName != nil else { return }
+        isARollRemovalConfirmationPresented = true
+    }
+
+    func cancelARollVideoRemoval() {
+        isARollRemovalConfirmationPresented = false
+    }
+
+    func confirmARollVideoRemoval() {
+        guard !isBusy, let aRollDirectoryURL else {
+            isARollRemovalConfirmationPresented = false
+            return
+        }
+        isARollRemovalConfirmationPresented = false
+
+        let existingVideos: [URL]
+        do {
+            existingVideos = try existingARollVideos(in: aRollDirectoryURL)
+        } catch {
+            showError(title: "无法读取 A-roll 文件夹", message: error.localizedDescription)
+            return
+        }
+        guard !existingVideos.isEmpty else { return }
+
+        isBusy = true
+        defer { isBusy = false }
+
+        var movedCount = 0
+        var failures: [String] = []
+        for videoURL in existingVideos {
+            do {
+                try FileManager.default.trashItem(at: videoURL, resultingItemURL: nil)
+                movedCount += 1
+            } catch {
+                failures.append("\(videoURL.lastPathComponent)：\(error.localizedDescription)")
+            }
+        }
+
+        if failures.isEmpty {
+            lastSaved = "已移出 A-roll \(Self.timeString())"
+            statusMessage = "已将项目 A-roll 文件移入废纸篓。"
+        } else {
+            showError(
+                title: "部分 A-roll 视频移出失败",
+                message: "已移入废纸篓 \(movedCount) 个 A-roll 视频。\n\(failures.joined(separator: "\n"))"
+            )
+        }
     }
 
     private func copyARollVideo(from sourceURL: URL, replacing existingVideos: [URL]) async {

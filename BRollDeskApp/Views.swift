@@ -20,6 +20,7 @@ private enum ListPaneMetrics {
 private enum AnchorPreparationFilter: Hashable {
     case all
     case pendingPreparation
+    case pendingBinding
 }
 
 private struct WorkflowHelpStep: Identifiable {
@@ -596,6 +597,7 @@ private struct SidebarView: View {
                                 value: model.destinationDirectoryName,
                                 isConfigured: model.destinationDirectoryURL != nil,
                                 action: model.chooseDestinationDirectory,
+                                clearAction: model.clearDestinationDirectory,
                                 openAction: model.revealDestinationDirectory,
                                 onDirectoryDrop: { model.acceptDestinationDirectoryDrop($0) }
                             )
@@ -746,7 +748,8 @@ private struct ARollUploadControl: View {
     private var isEnabled: Bool {
         model.destinationDirectoryURL != nil &&
             !model.isBusy &&
-            !model.isARollReplacementConfirmationPresented
+            !model.isARollReplacementConfirmationPresented &&
+            !model.isARollRemovalConfirmationPresented
     }
 
     var body: some View {
@@ -767,45 +770,61 @@ private struct ARollUploadControl: View {
                 Spacer(minLength: 0)
             }
 
-            Button(action: model.chooseARollVideo) {
-                HStack(spacing: 7) {
-                    Image(systemName: "film")
-                        .foregroundStyle(isEnabled ? Color.accentColor : Color.secondary)
-                    Text(model.aRollVideoDisplayName ?? "点击选择或拖入视频")
-                        .font(.system(size: 16))
-                        .foregroundStyle(model.aRollVideoDisplayName == nil ? Color.secondary : Color.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.94)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "plus")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
+            HStack(spacing: 7) {
+                Button(action: model.chooseARollVideo) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "film")
+                            .foregroundStyle(model.aRollVideoDisplayName == nil
+                                ? Color.orange
+                                : (isEnabled ? Color.accentColor : Color.secondary))
+                        Text(model.aRollVideoDisplayName ?? "点击选择或拖入视频")
+                            .font(.system(size: 16))
+                            .foregroundStyle(model.aRollVideoDisplayName == nil ? Color.orange : Color.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.94)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "plus")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
+                    }
+                    .frame(height: 44)
+                    .padding(.horizontal, 8)
+                    .background(
+                        isDropTargeted ? Color.accentColor.opacity(0.1) : Color(nsColor: .textBackgroundColor).opacity(0.7),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(
+                                isDropTargeted ? Color.accentColor.opacity(0.8) : Color(nsColor: .separatorColor).opacity(0.55),
+                                style: isDropTargeted ? StrokeStyle(lineWidth: 1.4, dash: [5, 3]) : StrokeStyle(lineWidth: 0.5)
+                            )
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .frame(height: 44)
-                .padding(.horizontal, 8)
-                .background(
-                    isDropTargeted ? Color.accentColor.opacity(0.1) : Color(nsColor: .textBackgroundColor).opacity(0.7),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(
-                            isDropTargeted ? Color.accentColor.opacity(0.8) : Color(nsColor: .separatorColor).opacity(0.55),
-                            style: isDropTargeted ? StrokeStyle(lineWidth: 1.4, dash: [5, 3]) : StrokeStyle(lineWidth: 0.5)
-                        )
+                .buttonStyle(.plain)
+                .disabled(!isEnabled)
+                .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted, perform: acceptVideoDrop)
+                .help(model.destinationDirectoryURL == nil
+                    ? "先选择剪辑项目文件夹，再上传 A-roll 视频"
+                    : "点击或拖入视频；副本命名为 A-roll，原件保留")
+                .accessibilityLabel("上传 A-roll 视频")
+                .accessibilityHint("点击选择或拖入一个视频文件，复制到当前项目的 A-roll 文件夹并命名为 A-roll")
+                .pointerCursor(isEnabled ? .pointingHand : .arrow)
+
+                if model.aRollVideoDisplayName != nil {
+                    Button(action: model.requestARollVideoRemoval) {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(IconActionButtonStyle())
+                    .foregroundStyle(.secondary)
+                    .disabled(!isEnabled)
+                    .hoverHelp("移出项目 A-roll 文件夹中的视频")
+                    .accessibilityLabel("移出项目 A-roll 文件")
+                    .pointerCursor(isEnabled ? .pointingHand : .arrow)
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
-            .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted, perform: acceptVideoDrop)
-            .help(model.destinationDirectoryURL == nil
-                ? "先选择剪辑项目文件夹，再上传 A-roll 视频"
-                : "点击或拖入视频；副本命名为 A-roll，原件保留")
-            .accessibilityLabel("上传 A-roll 视频")
-            .accessibilityHint("点击选择或拖入一个视频文件，复制到当前项目的 A-roll 文件夹并命名为 A-roll")
-            .pointerCursor(isEnabled ? .pointingHand : .arrow)
         }
         .confirmationDialog(
             "替换 A-roll 视频？",
@@ -825,6 +844,25 @@ private struct ARollUploadControl: View {
             }
         } message: {
             Text(model.aRollReplacementConfirmationMessage)
+        }
+        .confirmationDialog(
+            "移出 A-roll 视频？",
+            isPresented: Binding(
+                get: { model.isARollRemovalConfirmationPresented },
+                set: { isPresented in
+                    if !isPresented { model.cancelARollVideoRemoval() }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移出项目副本", role: .destructive) {
+                model.confirmARollVideoRemoval()
+            }
+            Button("取消", role: .cancel) {
+                model.cancelARollVideoRemoval()
+            }
+        } message: {
+            Text("将项目 A-roll 文件夹中的视频移入废纸篓；其他位置的文件不受影响。")
         }
     }
 
@@ -1012,6 +1050,7 @@ private struct DirectoryChoiceRow: View {
     let value: String
     let isConfigured: Bool
     let action: () -> Void
+    let clearAction: () -> Void
     let openAction: () -> Void
     let onDirectoryDrop: (URL) -> Void
 
@@ -1047,6 +1086,15 @@ private struct DirectoryChoiceRow: View {
                 .pointerCursor()
 
                 if isConfigured {
+                    Button(action: clearAction) {
+                        Image(systemName: "folder.badge.minus")
+                    }
+                    .buttonStyle(IconActionButtonStyle())
+                    .foregroundStyle(.secondary)
+                    .hoverHelp("取消选择剪辑项目文件夹")
+                    .accessibilityLabel("取消选择剪辑项目文件夹")
+                    .pointerCursor()
+
                     Button(action: openAction) {
                         Image(systemName: "arrow.up.forward.app")
                     }
@@ -1524,11 +1572,18 @@ private struct AnchorListView: View {
                     return false
                 }
             }
-            guard preparationFilter == .pendingPreparation else { return true }
-            return rollType == .bRoll && model.brollPreparationStatus(for: row.id) == .pending
+            switch preparationFilter {
+            case .all:
+                return true
+            case .pendingPreparation:
+                return rollType == .bRoll && model.brollPreparationStatus(for: row.id) == .pending
+            case .pendingBinding:
+                return rollType == .bRoll && model.brollPreparationStatus(for: row.id) != .bound
+            }
         }
         let hasActiveFilters = !selectedProductionMethods.isEmpty || preparationFilter != .all
         let isShowingPendingBroll = preparationFilter == .pendingPreparation && selectedProductionMethods.isEmpty
+        let isShowingUnboundBroll = preparationFilter == .pendingBinding && selectedProductionMethods.isEmpty
 
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -1564,7 +1619,7 @@ private struct AnchorListView: View {
             GeometryReader { geometry in
                 let spacing: CGFloat = 6
                 let productionMethodFilterWidth = min(210, max(142, geometry.size.width * 0.31))
-                let preparationFilterWidth = min(155, max(100, geometry.size.width * 0.25))
+                let preparationFilterWidth = min(210, max(150, geometry.size.width * 0.34))
 
                 let searchField = HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -1599,11 +1654,12 @@ private struct AnchorListView: View {
                     Picker("", selection: $preparationFilter) {
                         Text("全部").tag(AnchorPreparationFilter.all)
                         Text("待准备").tag(AnchorPreparationFilter.pendingPreparation)
+                        Text("待绑定").tag(AnchorPreparationFilter.pendingBinding)
                     }
                     .pickerStyle(.segmented)
                     .controlSize(.large)
                     .frame(width: preparationFilterWidth)
-                    .accessibilityLabel("筛选文案准备状态")
+                    .accessibilityLabel("筛选文案状态")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -1614,21 +1670,39 @@ private struct AnchorListView: View {
             }
 
             if !model.hasScriptContent {
-                ContentUnavailableView("导入文案", systemImage: "doc.text.magnifyingglass")
+                ContentUnavailableView {
+                    Label("先导入文案", systemImage: "doc.text.magnifyingglass")
+                } description: {
+                    Text("选择文案文件后即可按句整理，并开始匹配素材")
+                } actions: {
+                    Button("导入文案") {
+                        model.importScript()
+                    }
+                    .buttonStyle(.bordered)
+                    .pointerCursor()
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredRows.isEmpty {
                 ContentUnavailableView {
                     Label(
-                        isShowingPendingBroll ? "没有待准备的 B-roll" : "没有匹配的文案",
-                        systemImage: isShowingPendingBroll ? "checkmark.circle" : "magnifyingglass"
+                        isShowingPendingBroll
+                            ? "没有待准备的 B-roll"
+                            : (isShowingUnboundBroll ? "没有待绑定的 B-roll" : "没有匹配的文案"),
+                        systemImage: isShowingPendingBroll || isShowingUnboundBroll ? "checkmark.circle" : "magnifyingglass"
                     )
                 } description: {
-                    if preparationFilter == .pendingPreparation {
-                        Text(isShowingPendingBroll
-                            ? (model.anchorSearchText.isEmpty
+                    if preparationFilter == .pendingPreparation || preparationFilter == .pendingBinding {
+                        if isShowingPendingBroll {
+                            Text(model.anchorSearchText.isEmpty
                                 ? "当前没有待准备的 B-roll。"
                                 : "当前搜索结果中没有待准备的 B-roll。")
-                            : "当前搜索与筛选条件下没有符合条件的文案。")
+                        } else if isShowingUnboundBroll {
+                            Text(model.anchorSearchText.isEmpty
+                                ? "当前没有待绑定的 B-roll。"
+                                : "当前搜索结果中没有待绑定的 B-roll。")
+                        } else {
+                            Text("当前搜索与筛选条件下没有符合条件的文案。")
+                        }
                     } else if hasActiveFilters {
                         Text(model.anchorSearchText.isEmpty
                             ? "当前筛选条件下没有符合条件的文案。"
@@ -2724,6 +2798,18 @@ private struct MaterialListHeader: View {
                     .hoverHelp("添加一个或多个素材来源目录")
                     .accessibilityLabel("添加素材来源目录")
                     .pointerCursor()
+
+                    if let currentSourceDirectoryURL = model.sourceDirectoryURL {
+                        Button {
+                            model.removeCurrentSourceDirectory()
+                        } label: {
+                            Image(systemName: "folder.badge.minus")
+                        }
+                        .buttonStyle(IconActionButtonStyle())
+                        .hoverHelp("从本项目素材来源中移除，不移动里面的素材：\(currentSourceDirectoryURL.lastPathComponent)")
+                        .accessibilityLabel("移除当前素材目录：\(currentSourceDirectoryURL.lastPathComponent)")
+                        .pointerCursor()
+                    }
 
                     Button {
                         isDirectoryPopoverPresented = true
