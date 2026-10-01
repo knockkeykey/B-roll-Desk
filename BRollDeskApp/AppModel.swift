@@ -18,6 +18,7 @@ final class AppModel {
         let capturedBrollRowIDs: Set<String>
         let brollProductionMethods: [String: BrollProductionMethod]
         let brollPreparationStatuses: [String: BrollPreparationStatus]
+        let animationTasks: [AnimationTask]
 
         var archivedNames: Set<String> {
             Set(assignments.values.flatMap { $0.map(\.outputName) })
@@ -52,6 +53,27 @@ final class AppModel {
     private(set) var selectedSourceDirectoryID: String? {
         didSet { rebuildVisibleSourceFiles() }
     }
+    var isAnimationPanelPresented = false
+    var animationPanelTab = 0
+    var deepSeekKeyDraft = ""
+    var animationRules = AnimationWorkflow.defaultRules
+    var animationTemplate = AnimationWorkflow.defaultTemplate
+    var animationCharacterPath = ""
+    /// Analysis results waiting for confirmation; the script is untouched until applied.
+    var animationReviewItems: [AnimationReviewItem] = []
+    @ObservationIgnored private var animationReviewBaseline: (project: String, snapshot: UndoSnapshot)?
+    private(set) var animationTasks: [AnimationTask] = []
+    private(set) var isAnalyzingAnimations = false
+    private(set) var isTestingDeepSeek = false
+    private(set) var animationFeedback = ""
+    private(set) var animationImportIssues: [AnimationImportIssue] = []
+    @ObservationIgnored private var animationRequest: Task<Void, Never>?
+    private var animationRequestID = UUID()
+    private let animationTasksKey = "broll-namer-animation-tasks"
+    private let animationRulesKey = "broll-namer-animation-rules"
+    private let animationTemplateKey = "broll-namer-animation-template"
+    private let animationCharacterKey = "broll-namer-animation-character"
+
     var isScriptEditorPresented = false
     var isManifestPreviewPresented = false
     private(set) var manifestPreviewText = ""
@@ -98,7 +120,7 @@ final class AppModel {
         brollDirectoryURL?.appendingPathComponent("project-settings.json")
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     let undoManager = UndoManager()
     private var sourceAccessActive: [String: Bool] = [:]
     private var destinationAccessActive = false
@@ -130,7 +152,8 @@ final class AppModel {
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
     private let savedDirectoriesKey = "broll-namer-saved-directories"
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         undoManager.levelsOfUndo = 50
         scriptText = defaults.string(forKey: scriptKey) ?? ""
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
@@ -156,9 +179,29 @@ final class AppModel {
             brollPreparationStatuses[rowID] = .ready
         }
 
+        let savedAnimationRules = defaults.string(forKey: animationRulesKey) ?? AnimationWorkflow.defaultRules
+        animationRules = AnimationWorkflow.rulesWithoutVisualIdea(savedAnimationRules)
+        if animationRules != savedAnimationRules {
+            defaults.set(animationRules, forKey: animationRulesKey)
+        }
+        animationTemplate = defaults.string(forKey: animationTemplateKey) ?? AnimationWorkflow.defaultTemplate
+        animationCharacterPath = defaults.string(forKey: animationCharacterKey) ?? ""
+        if animationTemplate == AnimationWorkflow.legacyTemplate {
+            // Old default embedded the character path; split it into the dedicated setting.
+            animationTemplate = AnimationWorkflow.defaultTemplate
+            if defaults.string(forKey: animationCharacterKey) == nil {
+                animationCharacterPath = AnimationWorkflow.legacyCharacterPath
+            }
+            defaults.set(animationTemplate, forKey: animationTemplateKey)
+            defaults.set(animationCharacterPath, forKey: animationCharacterKey)
+        }
+        if let data = defaults.data(forKey: animationTasksKey) {
+            animationTasks = (try? JSONDecoder().decode([AnimationTask].self, from: data)) ?? []
+        }
         restoreSavedDirectories()
         parseScript(persist: false)
         restoreAssignments()
+        if migrateAnimationReasonsToNotes() { persistPreferences() }
         observeExternalVolumeChanges()
 
         Task { @MainActor [weak self] in
@@ -431,6 +474,7 @@ final class AppModel {
         defaults.set(capturedBrollRowIDs.sorted(), forKey: capturedBrollRowsKey)
         defaults.set(brollProductionMethods.mapValues(\.rawValue), forKey: brollProductionMethodsKey)
         defaults.set(brollPreparationStatuses.mapValues(\.rawValue), forKey: brollPreparationStatusesKey)
+        defaults.set(try? JSONEncoder().encode(animationTasks), forKey: animationTasksKey)
         saveAssignments()
         saveProjectSettings()
     }
@@ -481,6 +525,14 @@ final class AppModel {
                 index: offset + 1,
                 text: text
             )
+        }
+        if !previousRows.isEmpty {
+            for index in animationTasks.indices {
+                let text = animationTasks[index].text
+                if previousRows.filter({ $0.text == text }).count != rows.filter({ $0.text == text }).count {
+                    animationTasks[index].rowID = ""
+                }
+            }
         }
         let currentRowIDs = Set(rows.map(\.id))
         if previousRows.isEmpty {
@@ -562,6 +614,7 @@ final class AppModel {
         let previousCapturedBrollRowIDs = capturedBrollRowIDs
         let previousBrollProductionMethods = brollProductionMethods
         let previousBrollPreparationStatuses = brollPreparationStatuses
+        let previousAnimationTasks = animationTasks
         splitMode = .line
         preservesEmptyAnchors = !texts.isEmpty
         scriptText = texts.joined(separator: "\n")
@@ -616,6 +669,16 @@ final class AppModel {
                 .first
             return inheritedStatus.map { (row.id, $0) }
         })
+        animationTasks = previousAnimationTasks.map { task in
+            var migrated = task
+            if let originalIndex = previousRows.firstIndex(where: { $0.id == task.rowID }) {
+                let targets = rows.indices.filter {
+                    sourceIndices.indices.contains($0) && sourceIndices[$0].contains(originalIndex) && rows[$0].text == task.text
+                }
+                migrated.rowID = targets.count == 1 ? rows[targets[0]].id : ""
+            }
+            return migrated
+        }
         rebuildAssignmentIndexes()
         persistPreferences()
         if destinationDirectoryURL != nil {
@@ -792,6 +855,11 @@ final class AppModel {
     }
 
     private func clearCurrentProjectState() {
+        cancelAnimationAnalysis()
+        animationTasks = []
+        animationImportIssues = []
+        animationFeedback = ""
+        isAnimationPanelPresented = false
         discardUndoActions()
 
         scriptText = ""
@@ -1678,7 +1746,8 @@ final class AppModel {
             rollTypeOverrides: rollTypeOverrides,
             capturedBrollRowIDs: capturedBrollRowIDs,
             brollProductionMethods: brollProductionMethods,
-            brollPreparationStatuses: brollPreparationStatuses
+            brollPreparationStatuses: brollPreparationStatuses,
+            animationTasks: animationTasks
         )
     }
 
@@ -1708,6 +1777,7 @@ final class AppModel {
         capturedBrollRowIDs = snapshot.capturedBrollRowIDs
         brollProductionMethods = snapshot.brollProductionMethods
         brollPreparationStatuses = snapshot.brollPreparationStatuses
+        animationTasks = snapshot.animationTasks
         rebuildAssignmentIndexes()
         persistPreferences()
         if destinationDirectoryURL != nil {
@@ -2353,7 +2423,7 @@ final class AppModel {
                     BrollProjectSettings.self,
                     from: Data(contentsOf: settingsURL)
                 )
-                guard (1...3).contains(settings.formatVersion) else {
+                guard (1...4).contains(settings.formatVersion) else {
                     throw NSError(
                         domain: "BrollNamer.ProjectSettings",
                         code: 2,
@@ -2385,6 +2455,10 @@ final class AppModel {
         rollTypeOverrides = settings.rollTypeOverrides
         capturedBrollRowIDs = Set(settings.capturedBrollRowIDs)
         brollProductionMethods = settings.brollProductionMethods
+        cancelAnimationAnalysis()
+        animationImportIssues = []
+        animationFeedback = ""
+        animationTasks = settings.animationTasks
         brollPreparationStatuses = settings.brollPreparationStatuses.filter { $0.value != .bound }
         for rowID in capturedBrollRowIDs where brollPreparationStatuses[rowID] == nil {
             brollPreparationStatuses[rowID] = .ready
@@ -2404,6 +2478,7 @@ final class AppModel {
         }
 
         restoreManifestFromDestination()
+        _ = migrateAnimationReasonsToNotes()
         persistPreferences()
         return true
     }
@@ -2565,7 +2640,8 @@ final class AppModel {
             capturedBrollRowIDs: capturedBrollRowIDs.sorted(),
             brollProductionMethods: brollProductionMethods,
             brollPreparationStatuses: brollPreparationStatuses,
-            assignments: assignments
+            assignments: assignments,
+            animationTasks: animationTasks
         )
 
         do {
@@ -2766,5 +2842,401 @@ private enum FinderTabError: LocalizedError {
         case .automationFailed:
             return nil
         }
+    }
+}
+
+extension AppModel {
+    var animationScriptRowCount: Int {
+        rows.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+    }
+
+    var activeAnimationTasks: [AnimationTask] {
+        let order = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.index) })
+        return animationTasks.filter { task in
+            rows.contains { $0.id == task.rowID && $0.text == task.text } &&
+            rollType(for: task.rowID) == .bRoll && brollProductionMethod(for: task.rowID) == .animation
+        }.sorted { (order[$0.rowID] ?? 0) < (order[$1.rowID] ?? 0) }
+    }
+
+    var pendingAnimationTasks: [AnimationTask] {
+        activeAnimationTasks.filter { assets(for: $0.rowID).isEmpty }
+    }
+
+    func animationTask(for rowID: String) -> AnimationTask? {
+        activeAnimationTasks.first { $0.rowID == rowID }
+    }
+
+    func openAnimationPanel(tab: Int = 0) {
+        animationPanelTab = tab == 1 ? 1 : 0
+        do { deepSeekKeyDraft = try DeepSeekKeychain.read() }
+        catch { animationFeedback = error.localizedDescription }
+        isAnimationPanelPresented = true
+    }
+
+    @discardableResult
+    func saveAnimationConfiguration(saveAPIKey: Bool = true) -> Bool {
+        guard !animationRules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !animationTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            animationFeedback = "判断规则和制作模板不能为空。"
+            return false
+        }
+        do {
+            if saveAPIKey {
+                try DeepSeekKeychain.save(deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            defaults.set(animationRules, forKey: animationRulesKey)
+            defaults.set(animationTemplate, forKey: animationTemplateKey)
+            defaults.set(animationCharacterPath.trimmingCharacters(in: .whitespacesAndNewlines), forKey: animationCharacterKey)
+            animationFeedback = saveAPIKey ? "设置已保存；API Key 存放在本机钥匙串。" : "设置已保存。"
+            return true
+        } catch {
+            animationFeedback = error.localizedDescription
+            return false
+        }
+    }
+
+    func testDeepSeekConnection() async {
+        guard !isTestingDeepSeek, !isAnalyzingAnimations, saveAnimationConfiguration() else { return }
+        isTestingDeepSeek = true
+        defer { isTestingDeepSeek = false }
+        do {
+            try await DeepSeekClient(apiKey: deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)).testConnection()
+            animationFeedback = "连接成功，deepseek-flash 可用。"
+        } catch { animationFeedback = error.localizedDescription }
+    }
+
+    func startAnimationAnalysis() {
+        guard !isAnalyzingAnimations, !isTestingDeepSeek, !isBusy else { return }
+        guard animationScriptRowCount > 0 else { animationFeedback = "请先导入文案。"; return }
+        guard !deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            animationFeedback = "请先填写 DeepSeek API Key。"
+            animationPanelTab = 0
+            return
+        }
+        guard saveAnimationConfiguration() else { return }
+        discardAnimationReview()
+        let before = makeUndoSnapshot()
+        let sourceRows = rows
+        let expectedProject = projectID
+        let requestID = UUID()
+        animationRequestID = requestID
+        let client = DeepSeekClient(apiKey: deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+        let rules = animationRules
+        isAnalyzingAnimations = true
+        animationFeedback = "正在分析全文，所有有文字的条目都参与动画判断。"
+        animationRequest = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.animationRequestID == requestID {
+                    self.isAnalyzingAnimations = false
+                    self.animationRequest = nil
+                }
+            }
+            do {
+                let candidates = try await client.analyze(rows: sourceRows, rules: rules)
+                try Task.checkCancellation()
+                guard self.animationRequestID == requestID else { return }
+                guard self.projectID == expectedProject, self.makeUndoSnapshot() == before, !self.isBusy else {
+                    self.animationFeedback = "分析期间文案、条目设置或项目发生变化，结果未应用，请重新分析。"
+                    return
+                }
+                try self.stageAnimationReview(candidates)
+            } catch {
+                if self.animationRequestID == requestID {
+                    self.animationFeedback = Task.isCancelled ? "已取消分析，文案未修改。" : error.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// Keep independently valid suggestions even if another AI suggestion cannot be safely located.
+    func stageAnimationReview(_ candidates: [AnimationCandidate]) throws {
+        discardAnimationReview()
+        guard !candidates.isEmpty else {
+            animationFeedback = "这段文案没有明显需要示意动画的部分，文案未修改。"
+            return
+        }
+        var valid: [AnimationCandidate] = []
+        var issues: [String] = []
+        for (index, candidate) in candidates.enumerated() {
+            do {
+                let resolved = try AnimationWorkflow.resolveCandidate(candidate, rows: rows)
+                _ = try AnimationWorkflow.split(rows: rows, candidates: valid + [resolved])
+                valid.append(resolved)
+            } catch {
+                let reason = error.localizedDescription.replacingOccurrences(of: "，本次未修改文案。", with: "")
+                issues.append("第 \(index + 1) 段：\(reason)")
+            }
+        }
+        guard !valid.isEmpty else {
+            animationFeedback = "AI 返回的 \(candidates.count) 段建议均未通过原文校验，请重新分析。\(issues.first ?? "")；文案未修改。"
+            return
+        }
+        let numbers = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.index) })
+        animationReviewItems = valid.map {
+            AnimationReviewItem(candidate: $0, rowNumbers: $0.sourceRowIDs.compactMap { numbers[$0] })
+        }
+        animationReviewBaseline = (projectID, makeUndoSnapshot())
+        animationFeedback = "DeepSeek 推荐了 \(valid.count) 段，确认后才会拆分文案。"
+        if !issues.isEmpty {
+            animationFeedback += "跳过 \(issues.count) 段未通过校验的建议（\(issues[0])）。"
+        }
+    }
+
+    func applyAnimationReview() {
+        let selected = animationReviewItems.filter(\.isSelected).map(\.candidate)
+        guard !selected.isEmpty else { animationFeedback = "请至少勾选一段。"; return }
+        guard let baseline = animationReviewBaseline, baseline.project == projectID,
+              baseline.snapshot == makeUndoSnapshot(), !isBusy else {
+            discardAnimationReview()
+            animationFeedback = "文案或条目设置已变化，推荐结果已失效，请重新分析。"
+            return
+        }
+        do {
+            try applyAnimationCandidates(selected)
+            discardAnimationReview()
+            animationPanelTab = 0
+            isAnimationPanelPresented = false
+        } catch {
+            animationFeedback = error.localizedDescription
+        }
+    }
+
+    func discardAnimationReview() {
+        animationReviewItems = []
+        animationReviewBaseline = nil
+    }
+
+    func cancelAnimationAnalysis() {
+        discardAnimationReview()
+        animationRequestID = UUID()
+        animationRequest?.cancel()
+        animationRequest = nil
+        isAnalyzingAnimations = false
+        animationFeedback = "已取消分析，文案未修改。"
+    }
+
+    /// Shared by the network path and deterministic workflow verification.
+    func applyAnimationCandidates(_ candidates: [AnimationCandidate]) throws {
+        let pieces = try AnimationWorkflow.split(rows: rows, candidates: candidates)
+        guard !candidates.isEmpty else {
+            animationFeedback = "这段文案没有明显需要示意动画的部分，文案未修改。"
+            return
+        }
+        let before = makeUndoSnapshot()
+        applyInlineRows(pieces.map(\.text), sourceIndices: pieces.map(\.sourceIndices))
+        var reserved = Set(animationTasks.map(\.outputFilename))
+        var addedCount = 0
+        var updatedCount = 0
+        for index in pieces.indices {
+            guard let candidate = pieces[index].candidate else { continue }
+            let row = rows[index]
+            let previousReason = animationTasks.first { $0.rowID == row.id && $0.text == row.text }?.reason
+            addAnimationReasonToNote(candidate.reason, for: row.id, replacing: previousReason)
+            if let taskIndex = animationTasks.firstIndex(where: { $0.rowID == row.id && $0.text == row.text }) {
+                animationTasks[taskIndex].reason = candidate.reason
+                animationTasks[taskIndex].reasonAddedToNotes = true
+                updatedCount += 1
+            } else {
+                let filename = AnimationWorkflow.filename(for: row.text, reserved: reserved)
+                reserved.insert(filename)
+                animationTasks.append(AnimationTask(id: UUID().uuidString.lowercased(), rowID: row.id, text: row.text,
+                                                    reason: candidate.reason, outputFilename: filename, reasonAddedToNotes: true))
+                brollPreparationStatuses[row.id] = .pending
+                capturedBrollRowIDs.remove(row.id)
+                addedCount += 1
+            }
+            rollTypeOverrides[row.id] = .bRoll
+            brollProductionMethods[row.id] = .animation
+        }
+        persistPreferences()
+        registerUndo(named: "AI 分析并拆分动画文案", restoring: before)
+        animationFeedback = "已新增 \(addedCount) 条、更新 \(updatedCount) 条动画文案；在文案列表筛选“动画 + 待准备”查看制作清单，可使用 ⌘Z 撤销。"
+        statusMessage = animationFeedback
+    }
+
+    /// Migrate once so editing or clearing a note never resurrects the old AI reason.
+    @discardableResult
+    private func migrateAnimationReasonsToNotes() -> Bool {
+        var changed = false
+        for index in animationTasks.indices {
+            let task = animationTasks[index]
+            guard task.reasonAddedToNotes != true,
+                  rows.contains(where: { $0.id == task.rowID && $0.text == task.text }) else { continue }
+            addAnimationReasonToNote(task.reason, for: task.rowID)
+            animationTasks[index].reasonAddedToNotes = true
+            changed = true
+        }
+        return changed
+    }
+
+    private func addAnimationReasonToNote(_ reason: String, for rowID: String, replacing previous: String? = nil) {
+        let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reason.isEmpty else { return }
+        let existing = anchorNotes[rowID] ?? ""
+        if let previous, !previous.isEmpty, existing == previous {
+            anchorNotes[rowID] = reason
+        } else if let previous, !previous.isEmpty, existing.hasSuffix("\n\n" + previous) {
+            anchorNotes[rowID] = String(existing.dropLast(previous.count)) + reason
+        } else if !existing.contains(reason) {
+            anchorNotes[rowID] = existing.isEmpty ? reason : existing + "\n\n" + reason
+        }
+    }
+
+    private func animationPromptTask(_ task: AnimationTask) -> AnimationTask {
+        var result = task
+        // The editable production note is the source of the exported expression focus.
+        result.reason = note(for: task.rowID)
+        return result
+    }
+
+    @discardableResult
+    func copyAnimationPrompt(_ task: AnimationTask) -> Bool {
+        NSPasteboard.general.clearContents()
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompt(for: animationPromptTask(task), template: animationTemplate, character: animationCharacterPath), forType: .string)
+        animationFeedback = didCopy ? "已复制完整制作提示词。" : "复制失败，请重试。"
+        return didCopy
+    }
+
+    @discardableResult
+    func copyAllAnimationPrompts() -> Bool {
+        let tasks = activeAnimationTasks
+        guard !tasks.isEmpty else { animationFeedback = "没有可复制的动画任务。"; return false }
+        NSPasteboard.general.clearContents()
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath), forType: .string)
+        animationFeedback = didCopy ? "已复制 \(tasks.count) 条完整制作提示词，可直接粘贴给制作动画的 AI。" : "复制失败，请重试。"
+        return didCopy
+    }
+
+    private func prepareAnimationImport() -> Bool {
+        guard !isBusy else { return false }
+        guard destinationDirectoryURL != nil else {
+            animationFeedback = "请先选择剪辑项目文件夹，再导入动画。"
+            return false
+        }
+        guard !activeAnimationTasks.isEmpty else { animationFeedback = "请先生成动画任务。"; return false }
+        return true
+    }
+
+    /// Drag-and-drop entry point; shares the same preconditions as the folder picker.
+    func importDroppedAnimationDirectory(_ url: URL) {
+        guard prepareAnimationImport() else { return }
+        Task { await importAnimationDirectory(url) }
+    }
+
+    func chooseAnimationDirectory() {
+        guard prepareAnimationImport() else { return }
+        let panel = NSOpenPanel()
+        panel.title = "导入动画目录"
+        panel.message = "选择制作 AI 输出的文件夹；视频按文案文件名模糊匹配，原件保留。"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await importAnimationDirectory(url) }
+    }
+
+    func importAnimationDirectory(_ url: URL) async {
+        guard !isBusy, let destinationDirectoryURL else { return }
+        let expectedProject = projectID
+        let didStart = url.startAccessingSecurityScopedResource()
+        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
+        isBusy = true
+        defer { isBusy = false }
+        animationPanelTab = 1
+        animationImportIssues = []
+        animationFeedback = "正在扫描动画目录…"
+        do {
+            let supportedExtensions = Self.videoExtensions
+            let files = try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+                    .filter { supportedExtensions.contains($0.pathExtension.lowercased()) && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+                    .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            }.value
+            guard expectedProject == projectID else { return }
+            guard !files.isEmpty else { animationFeedback = "目录中没有支持的视频文件。"; return }
+            activateSourceDirectory(url, persistProjectSettings: false, refresh: false)
+            let tasks = activeAnimationTasks
+            let importedURLs = Set(assignments.values.flatMap { $0 }.compactMap { sourceURL(for: $0)?.standardizedFileURL })
+            let remainingFiles = files.filter { !importedURLs.contains($0.standardizedFileURL) }
+            let matches = AnimationWorkflow.matches(files: remainingFiles, tasks: tasks)
+            let before = makeUndoSnapshot()
+            var bound = 0
+            var skipped = 0
+            for file in files {
+                if importedURLs.contains(file.standardizedFileURL) { skipped += 1; continue }
+                guard let taskID = matches[file], let task = tasks.first(where: { $0.id == taskID }) else {
+                    animationImportIssues.append(AnimationImportIssue(url: file, message: "未找到明确的模糊匹配，请预览后选择文案。"))
+                    continue
+                }
+                if !assets(for: task.rowID).isEmpty { skipped += 1; continue }
+                do {
+                    try await archiveAnimation(file, task: task, projectURL: destinationDirectoryURL)
+                    bound += 1
+                } catch {
+                    animationImportIssues.append(AnimationImportIssue(url: file, message: error.localizedDescription))
+                }
+            }
+            refreshAnimationSuggestions()
+            rebuildAssignmentIndexes()
+            persistPreferences()
+            _ = saveManifest(showMessage: false)
+            refreshSourceFiles()
+            registerUndo(named: "批量导入动画", restoring: before)
+            animationFeedback = "已绑定 \(bound) 条 · 已绑定跳过 \(skipped) 个 · 待处理 \(animationImportIssues.count) 个 · 尚缺动画 \(pendingAnimationTasks.count) 条"
+            statusMessage = animationFeedback
+        } catch { animationFeedback = "导入失败：\(error.localizedDescription)" }
+    }
+
+    private func archiveAnimation(_ file: URL, task: AnimationTask, projectURL: URL) async throws {
+        guard let row = rows.first(where: { $0.id == task.rowID && $0.text == task.text }),
+              activeAnimationTasks.contains(where: { $0.id == task.id }), assets(for: task.rowID).isEmpty,
+              let brollDirectoryURL else {
+            throw AnimationWorkflowError.invalid("文案已变化或已有素材，请重新核对。")
+        }
+        let prefixPart = prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : ScriptParser.sanitizePart(prefix, maxLength: 30) + "_"
+        let filename = uniqueOutputName("\(prefixPart)BR\(String(format: "%03d", row.index))_\(ScriptParser.sanitizePart(row.text))\(ScriptParser.extensionForFileName(file.lastPathComponent))")
+        let outputURL = brollDirectoryURL.appendingPathComponent(filename)
+        let origin = sourceOrigin(for: file)
+        try await copyFile(from: file, to: outputURL)
+        guard destinationDirectoryURL == projectURL,
+              rows.contains(where: { $0.id == task.rowID && $0.text == task.text }),
+              activeAnimationTasks.contains(where: { $0.id == task.id }), assets(for: task.rowID).isEmpty else {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw AnimationWorkflowError.invalid("复制期间文案或项目发生变化，请重新核对。")
+        }
+        assignments[row.id, default: []].append(BrollAsset(
+            id: UUID().uuidString.lowercased(), anchorKey: row.id, anchorIndex: row.index, anchorText: row.text,
+            sourceName: file.lastPathComponent, sourceDirectoryID: origin.directoryID, sourceRelativePath: origin.relativePath,
+            outputName: filename, mode: .fs, targetTrack: "V2", audio: "mute", copiedAt: ISO8601DateFormatter().string(from: Date())
+        ))
+        rollTypeOverrides[row.id] = .bRoll
+    }
+
+    /// Recomputed after every import/bind so a task is never suggested for two files.
+    func refreshAnimationSuggestions() {
+        let suggestions = AnimationWorkflow.suggestions(files: animationImportIssues.map(\.url), tasks: pendingAnimationTasks)
+        for index in animationImportIssues.indices {
+            animationImportIssues[index].suggestedTaskID = suggestions[animationImportIssues[index].url]
+        }
+    }
+
+    func bindAnimationIssue(_ issueID: UUID, to taskID: String) async {
+        guard !isBusy, let issue = animationImportIssues.first(where: { $0.id == issueID }),
+              let task = pendingAnimationTasks.first(where: { $0.id == taskID }), let projectURL = destinationDirectoryURL else { return }
+        isBusy = true
+        defer { isBusy = false }
+        let before = makeUndoSnapshot()
+        do {
+            try await archiveAnimation(issue.url, task: task, projectURL: projectURL)
+            animationImportIssues.removeAll { $0.id == issueID }
+            refreshAnimationSuggestions()
+            rebuildAssignmentIndexes()
+            persistPreferences()
+            _ = saveManifest(showMessage: false)
+            refreshSourceFiles()
+            registerUndo(named: "手动匹配动画", restoring: before)
+            animationFeedback = "已绑定：\(issue.url.lastPathComponent)；尚缺动画 \(pendingAnimationTasks.count) 条。"
+        } catch { animationFeedback = error.localizedDescription }
     }
 }

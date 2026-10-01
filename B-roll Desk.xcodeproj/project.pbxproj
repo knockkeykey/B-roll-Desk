@@ -16,6 +16,8 @@
 		0A0000000000000000000027 /* SmileySans-Oblique.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0A0000000000000000000019 /* SmileySans-Oblique.ttf */; };
 		0A0000000000000000000028 /* OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0A000000000000000000001A /* OFL.txt */; };
 		0A0000000000000000000029 /* 提示词.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0A000000000000000000001B /* 提示词.txt */; };
+		0A000000000000000000002D /* AnimationWorkflow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A000000000000000000001D /* AnimationWorkflow.swift */; };
+		0A000000000000000000002E /* AnimationWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A000000000000000000001E /* AnimationWorkspaceView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +32,8 @@
 		0A0000000000000000000019 /* SmileySans-Oblique.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SmileySans-Oblique.ttf"; sourceTree = "<group>"; };
 		0A000000000000000000001A /* OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OFL.txt; sourceTree = "<group>"; };
 		0A000000000000000000001B /* 提示词.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "提示词.txt"; sourceTree = "<group>"; };
+		0A000000000000000000001D /* AnimationWorkflow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimationWorkflow.swift; sourceTree = "<group>"; };
+		0A000000000000000000001E /* AnimationWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimationWorkspaceView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +63,8 @@
 				0A0000000000000000000013 /* Models.swift */,
 				0A0000000000000000000014 /* Views.swift */,
 				0A0000000000000000000015 /* FileDropDelegate.swift */,
+				0A000000000000000000001E /* AnimationWorkspaceView.swift */,
+				0A000000000000000000001D /* AnimationWorkflow.swift */,
 				0A0000000000000000000016 /* BRollDesk.entitlements */,
 				0A0000000000000000000018 /* Fonts */,
 				0A000000000000000000001C /* Resources */,
@@ -169,6 +175,8 @@
 				0A0000000000000000000023 /* Models.swift in Sources */,
 				0A0000000000000000000024 /* Views.swift in Sources */,
 				0A0000000000000000000025 /* FileDropDelegate.swift in Sources */,
+				0A000000000000000000002E /* AnimationWorkspaceView.swift in Sources */,
+				0A000000000000000000002D /* AnimationWorkflow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

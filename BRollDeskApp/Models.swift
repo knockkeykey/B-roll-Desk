@@ -426,6 +426,7 @@ struct BrollProjectSettings: Codable {
     var brollProductionMethods: [String: BrollProductionMethod]
     var brollPreparationStatuses: [String: BrollPreparationStatus]
     var assignments: [String: [BrollAsset]]
+    var animationTasks: [AnimationTask]
 
     init(
         projectID: String = UUID().uuidString.lowercased(),
@@ -439,9 +440,10 @@ struct BrollProjectSettings: Codable {
         capturedBrollRowIDs: [String] = [],
         brollProductionMethods: [String: BrollProductionMethod] = [:],
         brollPreparationStatuses: [String: BrollPreparationStatus] = [:],
-        assignments: [String: [BrollAsset]] = [:]
+        assignments: [String: [BrollAsset]] = [:],
+        animationTasks: [AnimationTask] = []
     ) {
-        self.formatVersion = 3
+        self.formatVersion = animationTasks.isEmpty ? 3 : 4
         self.projectID = projectID
         self.prefix = prefix
         self.scriptRelativePath = scriptRelativePath
@@ -454,6 +456,7 @@ struct BrollProjectSettings: Codable {
         self.brollProductionMethods = brollProductionMethods
         self.brollPreparationStatuses = brollPreparationStatuses
         self.assignments = assignments
+        self.animationTasks = animationTasks
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -471,6 +474,7 @@ struct BrollProjectSettings: Codable {
         case brollProductionMethods
         case brollPreparationStatuses
         case assignments
+        case animationTasks
     }
 
     init(from decoder: Decoder) throws {
@@ -501,6 +505,7 @@ struct BrollProjectSettings: Codable {
             forKey: .brollPreparationStatuses
         ) ?? [:]
         assignments = try container.decodeIfPresent([String: [BrollAsset]].self, forKey: .assignments) ?? [:]
+        animationTasks = try container.decodeIfPresent([AnimationTask].self, forKey: .animationTasks) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -518,6 +523,7 @@ struct BrollProjectSettings: Codable {
         try container.encode(brollProductionMethods, forKey: .brollProductionMethods)
         try container.encode(brollPreparationStatuses, forKey: .brollPreparationStatuses)
         try container.encode(assignments, forKey: .assignments)
+        try container.encode(animationTasks, forKey: .animationTasks)
     }
 }
 
@@ -691,11 +697,11 @@ struct AppAlert: Identifiable {
 
 enum ScriptParser {
     static func split(_ raw: String, mode: SplitMode, preservingEmptyLines: Bool = false) -> [String] {
+        guard !raw.isEmpty else { return [] }
         if mode == .line && preservingEmptyLines {
             return raw
                 .replacingOccurrences(of: "\r", with: "")
                 .components(separatedBy: "\n")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         }
 
         let normalized = raw.replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespacesAndNewlines)

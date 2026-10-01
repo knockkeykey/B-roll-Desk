@@ -199,6 +199,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.isScriptEditorPresented) {
             ScriptEditorSheet(model: model)
         }
+        .sheet(isPresented: $model.isAnimationPanelPresented) {
+            AnimationWorkspaceView(model: model)
+        }
         .sheet(isPresented: $model.isManifestPreviewPresented) {
             ManifestPreviewSheet(text: model.manifestPreviewText)
         }
@@ -1628,6 +1631,13 @@ private struct AnchorListView: View {
                 .hoverHelp("编辑或导入视频文案")
                 .accessibilityLabel("编辑或导入视频文案")
                 .pointerCursor()
+                Button { model.openAnimationPanel() } label: {
+                    Image(systemName: "sparkles")
+                }
+                .buttonStyle(IconActionButtonStyle())
+                .hoverHelp("AI 动画助手：配置 DeepSeek、分析文案和复制制作提示词")
+                .accessibilityLabel("AI 动画助手")
+                .pointerCursor()
             }
             .padding(.horizontal, 16)
             .frame(height: ListPaneMetrics.headerHeight)
@@ -2177,6 +2187,8 @@ private struct AnchorRowView: View {
     @State private var pulseOffset: CGFloat = 0
     @State private var isNoteEditorPresented = false
     @State private var noteDraft = ""
+    @State private var didCopyAnimationPrompt = false
+    @State private var animationCopyToken: UUID?
 
     private var assets: [BrollAsset] { model.assets(for: row.id) }
     private var rowNote: String { model.note(for: row.id) }
@@ -2267,6 +2279,20 @@ private struct AnchorRowView: View {
                                 }
                             )
                         }
+                        if let task = model.animationTask(for: row.id) {
+                            Button {
+                                didCopyAnimationPrompt = model.copyAnimationPrompt(task)
+                                animationCopyToken = UUID()
+                            } label: {
+                                Label(didCopyAnimationPrompt ? "已复制" : "复制提示词", systemImage: didCopyAnimationPrompt ? "checkmark" : "doc.on.doc")
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .modifier(RowMetaControlChrome(isActive: false))
+                            }
+                            .buttonStyle(.plain)
+                            .help("复制这条文案的完整动画制作提示词")
+                            .accessibilityLabel(didCopyAnimationPrompt ? "已复制动画制作提示词" : "复制动画制作提示词")
+                            .pointerCursor()
+                        }
                         if isBroll {
                             BrollProductionMethodMenu(
                                 selection: model.brollProductionMethod(for: row.id),
@@ -2298,19 +2324,6 @@ private struct AnchorRowView: View {
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2, perform: beginEditing)
                             .pointerCursor()
-                    }
-                    if !rowNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "note.text")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(rowNote)
-                                .font(.system(size: 14))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(3)
-                                .truncationMode(.tail)
-                        }
-                        .accessibilityElement(children: .combine)
                     }
                 }
             }
@@ -2364,6 +2377,13 @@ private struct AnchorRowView: View {
         .offset(y: pulseOffset)
         .onAppear(perform: runPulse)
         .onChange(of: pulse) { _, _ in runPulse() }
+        .task(id: animationCopyToken) {
+            guard animationCopyToken != nil else { return }
+            do {
+                try await Task.sleep(for: .seconds(2))
+                didCopyAnimationPrompt = false
+            } catch {}
+        }
         .onDrop(
             of: [UTType.fileURL],
             delegate: FileDropDelegate(rowID: row.id, model: model, feedback: model.dropFeedback, rowState: dropState)
