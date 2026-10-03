@@ -59,6 +59,7 @@ final class AppModel {
     var animationRules = AnimationWorkflow.defaultRules
     var animationTemplate = AnimationWorkflow.defaultTemplate
     var animationCharacterPath = ""
+    var animationOutputDirectoryPath = ""
     /// Analysis results waiting for confirmation; the script is untouched until applied.
     var animationReviewItems: [AnimationReviewItem] = []
     @ObservationIgnored private var animationReviewBaseline: (project: String, snapshot: UndoSnapshot)?
@@ -73,6 +74,7 @@ final class AppModel {
     private let animationRulesKey = "broll-namer-animation-rules"
     private let animationTemplateKey = "broll-namer-animation-template"
     private let animationCharacterKey = "broll-namer-animation-character"
+    private let animationOutputDirectoryKey = "broll-namer-animation-output-directory"
 
     var isScriptEditorPresented = false
     var isManifestPreviewPresented = false
@@ -186,6 +188,7 @@ final class AppModel {
         }
         animationTemplate = defaults.string(forKey: animationTemplateKey) ?? AnimationWorkflow.defaultTemplate
         animationCharacterPath = defaults.string(forKey: animationCharacterKey) ?? ""
+        animationOutputDirectoryPath = defaults.string(forKey: animationOutputDirectoryKey) ?? ""
         if animationTemplate == AnimationWorkflow.legacyTemplate {
             // Old default embedded the character path; split it into the dedicated setting.
             animationTemplate = AnimationWorkflow.defaultTemplate
@@ -338,6 +341,10 @@ final class AppModel {
         let query = anchorSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return rows }
         return rows.filter { $0.text.localizedCaseInsensitiveContains(query) }
+    }
+
+    var aRollPacingHints: [String: ARollPacingHint] {
+        ARollPacing.hints(for: rows, rollType: { rollType(for: $0) })
     }
 
     private func rebuildVisibleSourceFiles() {
@@ -1517,10 +1524,6 @@ final class AppModel {
     func attach(urls: [URL], to rowID: String) async {
         guard !isBusy else { return }
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
-        guard !sourceDirectoryURLs.isEmpty else {
-            showError(title: "请先选择素材来源", message: "绑定素材前，请先在“素材目录”栏头选择素材来源文件夹。")
-            return
-        }
         guard destinationDirectoryURL != nil else {
             showError(title: "请先选择剪辑项目文件夹", message: "绑定素材前，请先在左侧选择剪辑项目文件夹。")
             return
@@ -2851,11 +2854,19 @@ extension AppModel {
     }
 
     var activeAnimationTasks: [AnimationTask] {
-        let order = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.index) })
-        return animationTasks.filter { task in
-            rows.contains { $0.id == task.rowID && $0.text == task.text } &&
-            rollType(for: task.rowID) == .bRoll && brollProductionMethod(for: task.rowID) == .animation
-        }.sorted { (order[$0.rowID] ?? 0) < (order[$1.rowID] ?? 0) }
+        var reserved = Set(animationTasks.map(\.outputFilename))
+        return rows.compactMap { row in
+            guard rollType(for: row.id) == .bRoll, brollProductionMethod(for: row.id) == .animation,
+                  !row.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            if let task = animationTasks.first(where: { $0.rowID == row.id && $0.text == row.text }) {
+                return task
+            }
+            // Manually tagged and edited animation rows can use the same prompt/import workflow without AI analysis.
+            let filename = AnimationWorkflow.filename(for: row.text, reserved: reserved)
+            reserved.insert(filename)
+            return AnimationTask(id: "manual-animation-" + row.id, rowID: row.id, text: row.text,
+                                 reason: note(for: row.id), outputFilename: filename, reasonAddedToNotes: true)
+        }
     }
 
     var pendingAnimationTasks: [AnimationTask] {
@@ -2887,6 +2898,8 @@ extension AppModel {
             defaults.set(animationRules, forKey: animationRulesKey)
             defaults.set(animationTemplate, forKey: animationTemplateKey)
             defaults.set(animationCharacterPath.trimmingCharacters(in: .whitespacesAndNewlines), forKey: animationCharacterKey)
+            animationOutputDirectoryPath = animationOutputDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(animationOutputDirectoryPath, forKey: animationOutputDirectoryKey)
             animationFeedback = saveAPIKey ? "设置已保存；API Key 存放在本机钥匙串。" : "设置已保存。"
             return true
         } catch {
@@ -3093,7 +3106,7 @@ extension AppModel {
     @discardableResult
     func copyAnimationPrompt(_ task: AnimationTask) -> Bool {
         NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompt(for: animationPromptTask(task), template: animationTemplate, character: animationCharacterPath), forType: .string)
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompt(for: animationPromptTask(task), template: animationTemplate, character: animationCharacterPath, outputDirectory: animationOutputDirectoryPath), forType: .string)
         animationFeedback = didCopy ? "已复制完整制作提示词。" : "复制失败，请重试。"
         return didCopy
     }
@@ -3103,7 +3116,7 @@ extension AppModel {
         let tasks = activeAnimationTasks
         guard !tasks.isEmpty else { animationFeedback = "没有可复制的动画任务。"; return false }
         NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath), forType: .string)
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath, outputDirectory: animationOutputDirectoryPath), forType: .string)
         animationFeedback = didCopy ? "已复制 \(tasks.count) 条完整制作提示词，可直接粘贴给制作动画的 AI。" : "复制失败，请重试。"
         return didCopy
     }

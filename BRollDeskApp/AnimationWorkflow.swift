@@ -258,7 +258,17 @@ enum AnimationWorkflow {
         return base
     }
 
-    static func prompt(for task: AnimationTask, template: String, character: String = "") -> String {
+    private static func expressionFocus(_ reason: String) -> String {
+        let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? "" : "表达重点：\(reason)"
+    }
+
+    private static func outputInstruction(_ directory: String) -> String {
+        let directory = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        return directory.isEmpty ? "" : "输出视频文件到目录\(directory)"
+    }
+
+    static func prompt(for task: AnimationTask, template: String, character: String = "", outputDirectory: String = "") -> String {
         let base = resolvedTemplate(template, character: character)
         let filled: String
         if base.contains("{{text}}") {
@@ -268,10 +278,11 @@ enum AnimationWorkflow {
         } else {
             filled = base + "\n\n这是我的文案：“\(task.text)”。"
         }
-        return filled + "\n\n表达重点：\(task.reason)"
+        return [filled, expressionFocus(task.reason), outputInstruction(outputDirectory)]
+            .filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
-    static func prompts(for tasks: [AnimationTask], template: String, character: String = "") -> String {
+    static func prompts(for tasks: [AnimationTask], template: String, character: String = "", outputDirectory: String = "") -> String {
         guard !tasks.isEmpty else { return "" }
         let instructions = "请按顺序制作以下 \(tasks.count) 个独立动画视频，统一放在同一目录。"
         let requirements = resolvedTemplate(template, character: character)
@@ -284,10 +295,11 @@ enum AnimationWorkflow {
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let entries = tasks.enumerated().map { index, task in
-            "【动画 \(index + 1)】\n文案：\(task.text)\n表达重点：\(task.reason)"
+            ["【动画 \(index + 1)】", "文案：\(task.text)", expressionFocus(task.reason)]
+                .filter { !$0.isEmpty }.joined(separator: "\n")
         }
         let naming = "视频文件名与对应文案一致，保留原有文字和标点，使用实际视频格式的扩展名。所有成品放在同一个输出目录。"
-        let shared = "\n\n【统一制作要求】\n" + [requirements, naming].filter { !$0.isEmpty }.joined(separator: "\n")
+        let shared = "\n\n【统一制作要求】\n" + [requirements, naming, outputInstruction(outputDirectory)].filter { !$0.isEmpty }.joined(separator: "\n")
         return instructions + shared + "\n\n" + entries.joined(separator: "\n\n")
     }
 

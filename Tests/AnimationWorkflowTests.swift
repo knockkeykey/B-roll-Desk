@@ -125,6 +125,19 @@ struct AnimationWorkflowTests {
         expect(!noCharacter.contains("{{character}}") && !noCharacter.contains("小螃蟹") && noCharacter.contains(task.text), "Empty character must drop its line")
         expect(!noCharacter.contains("【统一制作要求】") && !noCharacter.contains("所有成品放在同一个输出目录") && noCharacter.hasSuffix("表达重点：" + task.reason), "Single prompts omit the entire shared requirements block")
         expect(AnimationWorkflow.prompt(for: task, template: "做动画：{{text}}", character: "/tmp/c.png").contains("角色参考图：/tmp/c.png"), "Character appends without placeholder")
+        let outputDirectory = "/Users/keyknock/Downloads/cut/20261003动画-2"
+        let outputLine = "输出视频文件到目录" + outputDirectory
+        let withOutput = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate, outputDirectory: " \n" + outputDirectory + " \n")
+        expect(withOutput.hasSuffix(outputLine), "Single prompts append the trimmed output directory")
+        var blankFocus = task
+        blankFocus.reason = " \t\n"
+        let blankPrompt = AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate, outputDirectory: outputDirectory)
+        expect(!blankPrompt.contains("表达重点：") && blankPrompt.hasSuffix(outputLine), "Whitespace focus is omitted without dropping the directory")
+        blankFocus.reason = ""
+        expect(!AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate, outputDirectory: " \n").contains("输出视频文件到目录"), "Unset output directory is omitted")
+        let mixedBatch = AnimationWorkflow.prompts(for: [blankFocus, secondTask], template: AnimationWorkflow.defaultTemplate, outputDirectory: outputDirectory)
+        expect(mixedBatch.components(separatedBy: outputLine).count == 2, "Batch output directory appears once")
+        expect(mixedBatch.components(separatedBy: "表达重点：").count == 2 && mixedBatch.contains("表达重点：" + secondTask.reason), "Batch omits only the empty task focus")
         let fuzzy = URL(fileURLWithPath: "/tmp/素材汇聚_final.mp4")
         let other = AnimationTask(id: "o", rowID: "z", text: "完全无关的句子。", reason: "r", outputFilename: "完全无关的句子。.mp4")
         expect(AnimationWorkflow.matches(files: [fuzzy], tasks: [task, other])[fuzzy] == task.id, "Clear fuzzy names must auto-bind")
@@ -183,6 +196,13 @@ struct AnimationWorkflowTests {
         model.scriptText = ""
         model.parseScript(persist: false)
         expect(model.animationTemplate == AnimationWorkflow.defaultTemplate && model.animationCharacterPath == AnimationWorkflow.legacyCharacterPath, "Legacy template migrates character path")
+        expect(model.animationOutputDirectoryPath.isEmpty, "Existing settings default to no output directory")
+        model.animationOutputDirectoryPath = " \n" + outputs.path + " \n"
+        expect(model.saveAnimationConfiguration(saveAPIKey: false), "Output directory saves without API key access")
+        expect(model.animationOutputDirectoryPath == outputs.path && defaults.string(forKey: "broll-namer-animation-output-directory") == outputs.path, "Output directory is trimmed and persisted")
+        let restoredConfiguration = AppModel(defaults: defaults)
+        expect(restoredConfiguration.animationOutputDirectoryPath == outputs.path, "Output directory survives model recreation")
+        await Task.yield()
         model.undoManager.groupsByEvent = false
         await Task.yield()
         model.acceptDestinationDirectoryDrop(project)
@@ -194,6 +214,24 @@ struct AnimationWorkflowTests {
         event(model) { model.setBrollProductionMethod(.screenRecording, for: manualRow.id) }
         event(model) { model.setNote("保留这条备注", for: manualRow.id) }
         event(model) { model.setBrollPreparationStatus(.ready, for: manualRow.id) }
+        event(model) { model.setBrollProductionMethod(.animation, for: manualRow.id) }
+        let manualTask = model.animationTask(for: manualRow.id)!
+        expect(model.animationTasks.isEmpty && model.activeAnimationTasks.count == 1,
+               "Manually tagged animation rows are available without an AI task")
+        expect(model.animationTask(for: manualRow.id)?.id == manualTask.id, "Manual task identity is stable")
+        expect(model.copyAnimationPrompt(manualTask), "Manual animation prompt copies")
+        let manualPrompt = NSPasteboard.general.string(forType: .string) ?? ""
+        expect(manualPrompt.contains(manualRow.text) && manualPrompt.contains("保留这条备注"),
+               "Manual prompt contains the current script and editable note")
+        expect(model.copyAllAnimationPrompts() && (NSPasteboard.general.string(forType: .string) ?? "").contains(manualRow.text),
+               "Bulk copy includes manual animation rows")
+        event(model) { model.setBrollProductionMethod(.screenRecording, for: manualRow.id) }
+        expect(model.animationTask(for: manualRow.id) == nil, "Other production methods have no animation prompt")
+        model.undo()
+        expect(model.animationTask(for: manualRow.id)?.id == manualTask.id, "Undo restores the manual prompt")
+        model.undo()
+        expect(model.activeAnimationTasks.isEmpty && model.brollProductionMethod(for: manualRow.id) == .screenRecording,
+               "Undo tagging restores the original production method")
         let manualCandidate = AnimationCandidate(sourceRowIDs: [manualRow.id], text: manualRow.text, reason: "操作过程")
         try model.stageAnimationReview([manualCandidate])
         expect(model.animationTasks.isEmpty && model.brollProductionMethod(for: manualRow.id) == .screenRecording, "Analysis can recommend an organized row without changing its settings")
@@ -245,9 +283,17 @@ struct AnimationWorkflowTests {
         expect(model.copyAnimationPrompt(originalTask), "Single prompt copies from the script row")
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：" + model.note(for: originalTask.rowID)) == true, "Clipboard uses the note's expression focus")
         expect(NSPasteboard.general.string(forType: .string)?.contains("【统一制作要求】") == false, "Single-row clipboard omits shared requirements")
+        expect(NSPasteboard.general.string(forType: .string)?.contains("输出视频文件到目录" + outputs.path) == true, "Single clipboard includes configured output directory")
+        event(model) { model.setNote("", for: originalTask.rowID) }
+        expect(model.copyAnimationPrompt(originalTask), "Prompt copies with cleared note")
+        expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：") == false, "Cleared note omits focus instead of restoring AI reason")
+        expect(model.copyAllAnimationPrompts(), "Batch copies with cleared note")
+        expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：") == false, "Batch also omits cleared note focus")
+        model.undo()
         event(model) { model.setNote("自定义表达重点", for: originalTask.rowID) }
         expect(model.copyAllAnimationPrompts(), "Batch prompt copies")
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：自定义表达重点") == true, "Edited note drives batch production prompts")
+        expect(NSPasteboard.general.string(forType: .string)?.components(separatedBy: "输出视频文件到目录" + outputs.path).count == 2, "Batch clipboard includes configured directory once")
         model.undo()
         let settingsURL = project.appendingPathComponent("B-roll/project-settings.json")
         var settings = try JSONDecoder().decode(BrollProjectSettings.self, from: Data(contentsOf: settingsURL))
@@ -304,7 +350,9 @@ struct AnimationWorkflowTests {
         settings = try JSONDecoder().decode(BrollProjectSettings.self, from: Data(contentsOf: settingsURL))
         expect(settings.animationTasks.first?.id == originalTask.id, "Import must retain task identity")
         event(model) { model.replaceInlineRow(at: 1, with: "已经修改的文案。") }
-        expect(model.activeAnimationTasks.isEmpty && model.animationTasks.count == 1, "Changed source task should remain visible but excluded from matching/copying")
+        expect(model.activeAnimationTasks.count == 1 && model.animationTasks.count == 1, "Edited animation rows still have a prompt without overwriting the saved AI task")
+        expect(model.activeAnimationTasks[0].text == "已经修改的文案。" && model.activeAnimationTasks[0].id != originalTask.id,
+               "Edited animation prompts use the current text and exclude the stale AI task")
         model.undo()
         expect(model.activeAnimationTasks.count == 1, "Undo edit restores task validity")
         await model.importAnimationDirectory(outputs)

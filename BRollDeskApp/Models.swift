@@ -202,6 +202,72 @@ struct AnchorRow: Identifiable, Hashable {
     let text: String
 }
 
+struct ARollPacingHint: Equatable {
+    let startRowIndex: Int
+    let endRowIndex: Int
+    let cumulativeCharacterCount: Int
+    let totalCharacterCount: Int
+
+    var cumulativeSeconds: Double { ARollPacing.seconds(for: cumulativeCharacterCount) }
+    var totalSeconds: Double { ARollPacing.seconds(for: totalCharacterCount) }
+}
+
+enum ARollPacing {
+    static let charactersPerMinute = 350.0
+    static let maximumContinuousSeconds = 5.0
+
+    static func seconds(for characterCount: Int) -> Double {
+        Double(characterCount) * 60 / charactersPerMinute
+    }
+
+    /// Punctuation, whitespace and visual symbols are not spoken characters.
+    static func spokenCharacterCount(in text: String) -> Int {
+        text.reduce(into: 0) { count, character in
+            if character.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) {
+                count += 1
+            }
+        }
+    }
+
+    /// Analyze the complete script before any search or view filters are applied.
+    static func hints(
+        for rows: [AnchorRow],
+        rollType: (String) -> AnchorRollType
+    ) -> [String: ARollPacingHint] {
+        var result: [String: ARollPacingHint] = [:]
+        var run: [(row: AnchorRow, cumulativeCount: Int)] = []
+        var characterCount = 0
+
+        func finishRun() {
+            guard let first = run.first, let last = run.last else { return }
+            for entry in run where seconds(for: entry.cumulativeCount) > maximumContinuousSeconds {
+                result[entry.row.id] = ARollPacingHint(
+                    startRowIndex: first.row.index,
+                    endRowIndex: last.row.index,
+                    cumulativeCharacterCount: entry.cumulativeCount,
+                    totalCharacterCount: characterCount
+                )
+            }
+        }
+
+        for row in rows {
+            let count = spokenCharacterCount(in: row.text)
+            // Empty anchors cannot provide a visual break, even when marked B-roll.
+            guard count > 0 else { continue }
+            if rollType(row.id) == .bRoll {
+                finishRun()
+                run.removeAll(keepingCapacity: true)
+                characterCount = 0
+            } else {
+                characterCount += count
+                run.append((row, characterCount))
+            }
+        }
+        finishRun()
+        return result
+    }
+}
+
 struct BrollAsset: Identifiable, Codable, Hashable {
     let id: String
     let anchorKey: String

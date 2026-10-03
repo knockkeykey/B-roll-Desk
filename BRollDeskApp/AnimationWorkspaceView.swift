@@ -248,6 +248,9 @@ extension AnimationWorkspaceView {
                     Divider().padding(.leading, 46)
                     SettingsRow(systemImage: "person.crop.square", tint: .orange, title: "角色参考图",
                                 value: model.animationCharacterPath.isEmpty ? "未设置" : (model.animationCharacterPath as NSString).lastPathComponent) { settingsDestination = .character }
+                    Divider().padding(.leading, 46)
+                    SettingsRow(systemImage: "folder", tint: .blue, title: "视频输出目录",
+                                value: model.animationOutputDirectoryPath.isEmpty ? "未设置" : (model.animationOutputDirectoryPath as NSString).lastPathComponent) { settingsDestination = .outputDirectory }
                 }
 
                 GroupCard(title: "分析后会发生什么") {
@@ -491,7 +494,7 @@ extension AnimationWorkspaceView {
 // MARK: - Settings
 
 private enum AnimationSettingsDestination: String, Identifiable {
-    case overview, deepSeek, rules, template, character
+    case overview, deepSeek, rules, template, character, outputDirectory
     var id: Self { self }
     var title: String {
         switch self {
@@ -500,14 +503,16 @@ private enum AnimationSettingsDestination: String, Identifiable {
         case .rules: return "动画判断规则"
         case .template: return "制作提示词模板"
         case .character: return "角色参考图"
+        case .outputDirectory: return "视频输出目录"
         }
     }
     var height: CGFloat {
         switch self {
-        case .overview: return 360
+        case .overview: return 410
         case .deepSeek: return 310
         case .rules, .template: return 560
         case .character: return 330
+        case .outputDirectory: return 310
         }
     }
 }
@@ -540,6 +545,7 @@ private struct AnimationSettingsSheet: View {
                         settingsLink(.rules, icon: "checklist", tint: .purple)
                         settingsLink(.template, icon: "text.badge.star", tint: .pink)
                         settingsLink(.character, icon: "person.crop.square", tint: .orange)
+                        settingsLink(.outputDirectory, icon: "folder", tint: .blue)
                     }
                 }
                 if destination == .deepSeek {
@@ -600,6 +606,21 @@ private struct AnimationSettingsSheet: View {
                         Text("角色参考图")
                     }
 
+                }
+                if destination == .outputDirectory {
+                    Section {
+                        TextField("目录路径", text: $model.animationOutputDirectoryPath, prompt: Text("粘贴完整文件夹路径"))
+                            .accessibilityLabel("视频输出目录路径")
+                        HStack {
+                            Spacer()
+                            if !model.animationOutputDirectoryPath.isEmpty {
+                                Button("清空") { model.animationOutputDirectoryPath = "" }
+                            }
+                            Button("选择文件夹…") { chooseOutputDirectory() }
+                        }
+                    } header: {
+                        Text("视频输出目录")
+                    }
                 }
                 if destination == .template {
                     Section {
@@ -667,8 +688,9 @@ private struct AnimationSettingsSheet: View {
         case .overview: return nil
         case .deepSeek: return "API Key 只保存在本机钥匙串，不写入项目文件或导出的 JSON。"
         case .rules: return "告诉 DeepSeek 什么样的段落值得做动画。输出格式由软件自动约束，表格要求会被忽略。"
-        case .template: return "{{text}} 替换为该条文案，{{character}} 替换为角色参考图；表达重点和统一命名要求会自动追加。"
+        case .template: return "{{text}} 替换为该条文案，{{character}} 替换为角色参考图；非空的表达重点和已设置的视频输出目录会自动追加。"
         case .character: return "替换模板中的 {{character}}；模板里没有该占位符时会追加到提示词末尾。未设置时，含 {{character}} 的那一行会被省略。"
+        case .outputDirectory: return "复制单条或全部提示词时，会自动加上这个输出目录。可以粘贴尚未创建的目录路径；未设置时省略该要求。"
         }
     }
 
@@ -691,6 +713,19 @@ private struct AnimationSettingsSheet: View {
                 .frame(width: 44, height: 44)
                 .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
+    }
+
+    private func chooseOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "选择视频输出目录"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        let path = model.animationOutputDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !path.isEmpty { panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true) }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.animationOutputDirectoryPath = url.path
     }
 
     private func chooseCharacter() {
