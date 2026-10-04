@@ -32,6 +32,15 @@ private enum ListPaneMetrics {
     static let anchorToolsHeight: CGFloat = toolsHeight
 }
 
+private enum WorkspacePaneMetrics {
+    static let minimumSidebarWidth: CGFloat = 270
+    static let minimumSourceWidth: CGFloat = 340
+    static let minimumPreviewWidth: CGFloat = 280
+    static let dividerWidth: CGFloat = 8
+
+    static let minimumDetailWidth = minimumSourceWidth + minimumPreviewWidth + dividerWidth
+}
+
 private enum AnchorPreparationFilter: Hashable {
     case all
     case pendingPreparation
@@ -147,7 +156,9 @@ struct ContentView: View {
     @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
     @State private var isSidebarVisible = true
     @State private var isSidebarMounted = true
+    @State private var isMaterialListVisible = true
     @State private var isMediaPreviewVisible = true
+    @State private var isWindowFullscreen = false
 
     private var theme: AppTheme {
         AppTheme(rawValue: themeRawValue) ?? .system
@@ -168,12 +179,36 @@ struct ContentView: View {
         )
     }
 
+    private var materialListVisibility: Binding<Bool> {
+        Binding(
+            get: { isMaterialListVisible },
+            set: { isVisible in
+                if !isVisible { isMediaPreviewVisible = false }
+                isMaterialListVisible = isVisible
+            }
+        )
+    }
+
+    private var mediaPreviewVisibility: Binding<Bool> {
+        Binding(
+            get: { isMaterialListVisible && isMediaPreviewVisible },
+            set: { isMediaPreviewVisible = isMaterialListVisible && $0 }
+        )
+    }
+
+    private var minimumDetailWidth: CGFloat {
+        guard isMaterialListVisible else { return 0 }
+        return isMediaPreviewVisible
+            ? WorkspacePaneMetrics.minimumDetailWidth
+            : WorkspacePaneMetrics.minimumSourceWidth
+    }
+
     private var minimumContentWidth: CGFloat {
-        let sidebarWidth: CGFloat = isSidebarVisible ? 270 : 0
-        let detailWidth: CGFloat = isMediaPreviewVisible ? 780 : 420
+        let sidebarWidth: CGFloat = isSidebarVisible ? WorkspacePaneMetrics.minimumSidebarWidth : 0
+        let detailWidth = minimumDetailWidth
         let outerDividerCount: CGFloat = isSidebarMounted ? 2 : 1
-        let previewDividerCount: CGFloat = isMediaPreviewVisible ? 1 : 0
-        return sidebarWidth + ListPaneMetrics.minimumAnchorWidth + detailWidth + (outerDividerCount + previewDividerCount) * 8
+        return sidebarWidth + ListPaneMetrics.minimumAnchorWidth + detailWidth
+            + outerDividerCount * WorkspacePaneMetrics.dividerWidth
     }
 
     private func setSidebarVisible(_ isVisible: Bool) {
@@ -203,7 +238,7 @@ struct ContentView: View {
             if isSidebarMounted {
                 SidebarView(model: model, themeRawValue: $themeRawValue, isSidebarVisible: sidebarVisibility)
                     .frame(
-                        minWidth: isSidebarVisible ? 270 : 0,
+                        minWidth: isSidebarVisible ? WorkspacePaneMetrics.minimumSidebarWidth : 0,
                         idealWidth: isSidebarVisible ? 300 : 0,
                         maxWidth: isSidebarVisible ? 360 : 0
                     )
@@ -213,21 +248,34 @@ struct ContentView: View {
                     .accessibilityHidden(!isSidebarVisible)
                     .animation(.easeInOut(duration: 0.24), value: isSidebarVisible)
             }
-            AnchorListView(model: model, isSidebarVisible: sidebarVisibility)
-                .frame(minWidth: ListPaneMetrics.minimumAnchorWidth, idealWidth: 760, maxWidth: 760)
+            AnchorListView(
+                model: model,
+                isSidebarVisible: sidebarVisibility,
+                isMaterialListVisible: materialListVisibility
+            )
+                .frame(minWidth: ListPaneMetrics.minimumAnchorWidth, idealWidth: 760,
+                       maxWidth: isMaterialListVisible ? 760 : .infinity)
                 .background(SplitViewAutosaveInstaller(
                     name: isSidebarMounted
                         ? "com.keyknock.BrollNamer.main-columns-v3-with-sidebar"
                         : "com.keyknock.BrollNamer.main-columns-v3-without-sidebar"
                 ))
-            DetailView(model: model, isMediaPreviewVisible: $isMediaPreviewVisible)
-                .frame(minWidth: isMediaPreviewVisible ? 780 : 420, idealWidth: 820)
+            DetailView(
+                model: model,
+                isMaterialListVisible: materialListVisibility,
+                isMediaPreviewVisible: mediaPreviewVisibility
+            )
+                .frame(minWidth: minimumDetailWidth, idealWidth: isMaterialListVisible ? 820 : 0,
+                       maxWidth: isMaterialListVisible ? .infinity : 0)
+                .allowsHitTesting(isMaterialListVisible)
+                .accessibilityHidden(!isMaterialListVisible)
         }
         .onDrop(of: [UTType.fileURL], delegate: WholeWindowDirectoryDropDelegate(feedback: folderDragFeedback))
         .environmentObject(folderDragFeedback)
         .frame(minWidth: minimumContentWidth)
-        .padding(.top, -28)
+        .padding(.top, isWindowFullscreen ? 0 : -28)
         .ignoresSafeArea(.container, edges: .top)
+        .background(WindowFullscreenObserver(isFullscreen: $isWindowFullscreen))
         .sheet(isPresented: $model.isScriptEditorPresented) {
             ScriptEditorSheet(model: model)
         }
@@ -271,6 +319,53 @@ struct ContentView: View {
         }
         .preferredColorScheme(preferredColorScheme)
         .font(.system(size: 16))
+    }
+}
+
+// The hidden title bar needs compensation in a window, but not in full screen.
+private struct WindowFullscreenObserver: NSViewRepresentable {
+    @Binding var isFullscreen: Bool
+
+    func makeNSView(context: Context) -> WindowFullscreenObserverView {
+        let view = WindowFullscreenObserverView()
+        view.onChange = { isFullscreen = $0 }
+        return view
+    }
+
+    func updateNSView(_ view: WindowFullscreenObserverView, context: Context) {
+        view.onChange = { isFullscreen = $0 }
+    }
+}
+
+private final class WindowFullscreenObserverView: NSView {
+    var onChange: ((Bool) -> Void)?
+    private var observers: [NSObjectProtocol] = []
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        guard let window else { return }
+        reportFullscreenState()
+        for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: name, object: window, queue: .main
+            ) { [weak self] _ in
+                self?.reportFullscreenState()
+            })
+        }
+    }
+
+    private func reportFullscreenState() {
+        guard let window else { return }
+        let isFullscreen = window.styleMask.contains(.fullScreen)
+        DispatchQueue.main.async { [weak self] in
+            self?.onChange?(isFullscreen)
+        }
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 }
 
@@ -587,6 +682,7 @@ private struct SidebarView: View {
     @Binding var isSidebarVisible: Bool
     @FocusState private var isPrefixFocused: Bool
     @State private var isWorkflowHelpPresented = false
+    @State private var isSettingsPresented = false
 
     private enum AppVersion {
         private static var shortVersion: String {
@@ -759,6 +855,18 @@ private struct SidebarView: View {
                     .accessibilityLabel(AppVersion.details.replacingOccurrences(of: "\n\n", with: "，"))
                 Spacer()
                 Button {
+                    isSettingsPresented = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(IconActionButtonStyle(usesAnimation: false))
+                .help("设置")
+                .accessibilityLabel("设置")
+                .pointerCursor()
+                .popover(isPresented: $isSettingsPresented, arrowEdge: .bottom) {
+                    PacingSettingsPopover(model: model)
+                }
+                Button {
                     isWorkflowHelpPresented = true
                 } label: {
                     Image(systemName: "questionmark.circle")
@@ -787,6 +895,115 @@ private struct SidebarView: View {
         .onChange(of: model.prefix) { _, _ in
             model.persistPreferences()
         }
+    }
+}
+
+private struct PacingSettingsPopover: View {
+    @Bindable var model: AppModel
+    @State private var rateText: String
+    @State private var thresholdText: String
+
+    init(model: AppModel) {
+        self.model = model
+        _rateText = State(initialValue: String(model.pacingSettings.charactersPerMinute))
+        _thresholdText = State(initialValue: model.pacingSettings.thresholdLabel)
+    }
+
+    private var parsedRate: Int? {
+        guard let value = Int(rateText.trimmingCharacters(in: .whitespaces)), value > 0 else { return nil }
+        return value
+    }
+
+    private var parsedThreshold: Double? {
+        let text = thresholdText.trimmingCharacters(in: .whitespaces)
+        let value = Double(text) ?? Double(text.replacingOccurrences(of: ",", with: "."))
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
+    }
+
+    private func applyDraft() {
+        guard let rate = parsedRate, let threshold = parsedThreshold else { return }
+        model.updatePacingSettings(ARollPacingSettings(
+            charactersPerMinute: rate,
+            maximumContinuousSeconds: threshold,
+            remindersEnabled: model.pacingSettings.remindersEnabled
+        ))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("设置")
+                .font(.system(size: 17, weight: .semibold))
+            Divider()
+            Text("文案语速与提醒")
+                .font(.system(size: 14, weight: .medium))
+
+            HStack {
+                Text("估算语速")
+                Spacer()
+                HStack(spacing: 6) {
+                    TextField("350", text: $rateText)
+                        .accessibilityLabel("估算语速")
+                        .frame(width: 80)
+                    Text("字/分钟").foregroundStyle(.secondary)
+                }
+            }
+
+            Toggle("连续 A-roll 时长提醒", isOn: Binding(
+                get: { model.pacingSettings.remindersEnabled },
+                set: { enabled in
+                    model.updatePacingSettings(ARollPacingSettings(
+                        charactersPerMinute: model.pacingSettings.charactersPerMinute,
+                        maximumContinuousSeconds: model.pacingSettings.maximumContinuousSeconds,
+                        remindersEnabled: enabled
+                    ))
+                }
+            ))
+            .toggleStyle(.switch)
+
+            HStack {
+                Text("连续超过")
+                Spacer()
+                HStack(spacing: 6) {
+                    TextField("5", text: $thresholdText)
+                        .accessibilityLabel("连续 A-roll 提醒时长")
+                        .frame(width: 80)
+                    Text("秒时提醒").foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!model.pacingSettings.remindersEnabled)
+
+            if parsedRate == nil || parsedThreshold == nil {
+                Text("语速请输入大于 0 的整数；提醒秒数请输入大于 0 的数字。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("按整篇文案累计连续 A-roll 时长，B-roll 会中断计时。忽略标点和空白，实际节奏以口播为准。")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Text("修改后自动保存，适用于所有项目。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button("恢复默认") {
+                    let settings = ARollPacingSettings()
+                    rateText = String(settings.charactersPerMinute)
+                    thresholdText = settings.thresholdLabel
+                    model.updatePacingSettings(settings)
+                }
+                .controlSize(.small)
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+        .padding(20)
+        .frame(width: 360)
+        .onChange(of: rateText) { _, _ in applyDraft() }
+        .onChange(of: thresholdText) { _, _ in applyDraft() }
     }
 }
 
@@ -1677,6 +1894,7 @@ private struct BrollStatisticsView: View {
 private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
+    @Binding var isMaterialListVisible: Bool
     @State private var selectedProductionMethods: Set<BrollProductionMethod> = []
     @State private var productionMethodFilterMode = ProductionMethodFilterMode.include
     @State private var preparationFilter = AnchorPreparationFilter.all
@@ -1688,10 +1906,13 @@ private struct AnchorListView: View {
     @State private var pendingScrollRowID: String?
     @State private var revealedDeleteRowID: String?
     @State private var rowPulse: AnchorRowPulse?
+    @State private var bindingExitTokens: [String: UUID] = [:]
+    @State private var fadingBoundRowIDs: Set<String> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let pacingHints = model.aRollPacingHints
+        let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
         let filteredRows = model.filteredRows.filter { row in
             let rollType = model.rollType(for: row.id)
             guard rollFilter.includes(rollType) else { return false }
@@ -1707,9 +1928,11 @@ private struct AnchorListView: View {
             case .all:
                 return true
             case .pendingPreparation:
-                return rollType == .bRoll && model.brollPreparationStatus(for: row.id) == .pending
+                return rollType == .bRoll && (model.brollPreparationStatus(for: row.id) == .pending
+                    || bindingExitTokens[row.id] != nil)
             case .pendingBinding:
-                return rollType == .bRoll && model.brollPreparationStatus(for: row.id) != .bound
+                return rollType == .bRoll && (model.brollPreparationStatus(for: row.id) != .bound
+                    || bindingExitTokens[row.id] != nil)
             }
         }
         let hasActiveFilters = rollFilter != .all || !selectedProductionMethods.isEmpty || preparationFilter != .all
@@ -1736,6 +1959,19 @@ private struct AnchorListView: View {
                     .lineLimit(1)
                 WindowDragRegion()
                     .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
+                if !isMaterialListVisible {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isMaterialListVisible = true
+                        }
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .buttonStyle(IconActionButtonStyle(usesAnimation: false))
+                    .hoverHelp("展开素材列表")
+                    .accessibilityLabel("展开素材列表")
+                    .pointerCursor()
+                }
                 Button { model.isScriptEditorPresented = true } label: {
                     Image(systemName: "square.and.pencil")
                 }
@@ -1829,49 +2065,6 @@ private struct AnchorListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .modifier(ScriptFileDropTargetModifier { model.importScript(from: $0) })
-            } else if filteredRows.isEmpty {
-                ContentUnavailableView {
-                    Label(
-                        isShowingPendingBroll
-                            ? "没有待准备的 B-roll"
-                            : (isShowingUnboundBroll ? "没有待绑定的 B-roll" : "没有匹配的文案"),
-                        systemImage: isShowingPendingBroll || isShowingUnboundBroll ? "checkmark.circle" : "magnifyingglass"
-                    )
-                } description: {
-                    if preparationFilter == .pendingPreparation || preparationFilter == .pendingBinding {
-                        if isShowingPendingBroll {
-                            Text(model.anchorSearchText.isEmpty
-                                ? "当前没有待准备的 B-roll。"
-                                : "当前搜索结果中没有待准备的 B-roll。")
-                        } else if isShowingUnboundBroll {
-                            Text(model.anchorSearchText.isEmpty
-                                ? "当前没有待绑定的 B-roll。"
-                                : "当前搜索结果中没有待绑定的 B-roll。")
-                        } else {
-                            Text("当前搜索与筛选条件下没有符合条件的文案。")
-                        }
-                    } else if hasActiveFilters {
-                        Text(model.anchorSearchText.isEmpty
-                            ? "当前筛选条件下没有符合条件的文案。"
-                            : "当前搜索与筛选条件下没有符合条件的文案。")
-                    } else {
-                        Text("试试其他文案关键词。")
-                    }
-                } actions: {
-                    Button(hasActiveFilters ? "重置筛选" : "清除搜索") {
-                        if hasActiveFilters {
-                            rollFilter = .all
-                            selectedProductionMethods.removeAll()
-                            productionMethodFilterMode = .include
-                            preparationFilter = .all
-                        } else {
-                            model.anchorSearchText = ""
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .pointerCursor()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
                     List {
@@ -1896,10 +2089,16 @@ private struct AnchorListView: View {
                                     },
                                     mergeWithPrevious: { text in mergeRow(row, text: text) },
                                     pacingHint: pacingHints[row.id],
-                                    pulse: rowPulse?.pulse(for: row.id)
+                                    pulse: rowPulse?.pulse(for: row.id),
+                                    onBindingStarted: { retainRowForBinding(row.id) },
+                                    onBindingFinished: { finishBindingExit(row.id) }
                                 )
                             }
                             .id(row.id)
+                            .opacity(fadingBoundRowIDs.contains(row.id) ? 0 : 1)
+                            .scaleEffect(fadingBoundRowIDs.contains(row.id) ? 0.96 : 1)
+                            .offset(y: fadingBoundRowIDs.contains(row.id) ? -12 : 0)
+                            .allowsHitTesting(bindingExitTokens[row.id] == nil)
                             .listRowSeparator(.hidden)
                         }
                     }
@@ -1924,12 +2123,112 @@ private struct AnchorListView: View {
                         }
                     }
                 }
+                .overlay {
+                    if filteredRows.isEmpty {
+                        ContentUnavailableView {
+                            Label(
+                                isShowingPendingBroll
+                                    ? "没有待准备的 B-roll"
+                                    : (isShowingUnboundBroll ? "没有待绑定的 B-roll" : "没有匹配的文案"),
+                                systemImage: isShowingPendingBroll || isShowingUnboundBroll ? "checkmark.circle" : "magnifyingglass"
+                            )
+                        } description: {
+                            if preparationFilter == .pendingPreparation || preparationFilter == .pendingBinding {
+                                if isShowingPendingBroll {
+                                    Text(model.anchorSearchText.isEmpty
+                                        ? "当前没有待准备的 B-roll。"
+                                        : "当前搜索结果中没有待准备的 B-roll。")
+                                } else if isShowingUnboundBroll {
+                                    Text(model.anchorSearchText.isEmpty
+                                        ? "当前没有待绑定的 B-roll。"
+                                        : "当前搜索结果中没有待绑定的 B-roll。")
+                                } else {
+                                    Text("当前搜索与筛选条件下没有符合条件的文案。")
+                                }
+                            } else if hasActiveFilters {
+                                Text(model.anchorSearchText.isEmpty
+                                    ? "当前筛选条件下没有符合条件的文案。"
+                                    : "当前搜索与筛选条件下没有符合条件的文案。")
+                            } else {
+                                Text("试试其他文案关键词。")
+                            }
+                        } actions: {
+                            Button(hasActiveFilters ? "重置筛选" : "清除搜索") {
+                                if hasActiveFilters {
+                                    rollFilter = .all
+                                    selectedProductionMethods.removeAll()
+                                    productionMethodFilterMode = .include
+                                    preparationFilter = .all
+                                } else {
+                                    model.anchorSearchText = ""
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .pointerCursor()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity)
+                    }
+                }
             }
         }
         .background(.windowBackground)
+        // Binding completes asynchronously; animate the parent list, not just its row content.
+        .animation(rowEditAnimation, value: boundRowIDs)
         .onChange(of: filteredRows.map(\.id)) { _, _ in
             revealedDeleteRowID = nil
         }
+        .onChange(of: preparationFilter) { _, _ in resetBindingExits() }
+        .onChange(of: model.destinationDirectoryURL) { _, _ in resetBindingExits() }
+        .onChange(of: boundRowIDs) { oldIDs, newIDs in
+            for rowID in oldIDs.subtracting(newIDs) {
+                // Undo or unbinding cancels a pending departure immediately.
+                bindingExitTokens.removeValue(forKey: rowID)
+                fadingBoundRowIDs.remove(rowID)
+            }
+        }
+        .onChange(of: reduceMotion) { _, isReduced in
+            if isReduced { resetBindingExits() }
+        }
+    }
+
+    private func retainRowForBinding(_ rowID: String) {
+        guard preparationFilter != .all else { return }
+        // Retain the row before the asynchronous copy updates the status filter.
+        bindingExitTokens[rowID] = UUID()
+        fadingBoundRowIDs.remove(rowID)
+    }
+
+    private func finishBindingExit(_ rowID: String) {
+        guard let token = bindingExitTokens[rowID] else { return }
+        guard !reduceMotion, model.brollPreparationStatus(for: rowID) == .bound else {
+            bindingExitTokens.removeValue(forKey: rowID)
+            fadingBoundRowIDs.remove(rowID)
+            return
+        }
+
+        Task { @MainActor in
+            // Show the bound state briefly, then fade the card before closing its gap.
+            try? await Task.sleep(for: .milliseconds(250))
+            guard bindingExitTokens[rowID] == token else { return }
+            withAnimation(.easeInOut(duration: 0.55)) {
+                _ = fadingBoundRowIDs.insert(rowID)
+            }
+            try? await Task.sleep(for: .milliseconds(550))
+            guard bindingExitTokens[rowID] == token else { return }
+            withAnimation(.snappy(duration: 0.42, extraBounce: 0.04)) {
+                bindingExitTokens.removeValue(forKey: rowID)
+            }
+            // Keep the removed card transparent while the List closes its gap.
+            try? await Task.sleep(for: .milliseconds(450))
+            guard bindingExitTokens[rowID] == nil else { return }
+            fadingBoundRowIDs.remove(rowID)
+        }
+    }
+
+    private func resetBindingExits() {
+        bindingExitTokens.removeAll()
+        fadingBoundRowIDs.removeAll()
     }
 
     private func deleteRow(_ row: AnchorRow) {
@@ -2166,7 +2465,8 @@ private struct PaneHeader: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(title)
                             .font(titleFont ?? .system(size: 17, weight: .semibold))
-                            .fixedSize(horizontal: true, vertical: false)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
                         if let titleCredit {
                             Text(titleCredit)
                                 .font(.system(size: 10, weight: .regular))
@@ -2191,8 +2491,8 @@ private struct PaneHeader: View {
                                 .frame(width: 8, height: 8)
                         }
                 }
-                .frame(minWidth: 150, alignment: .leading)
-                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
                 .offset(y: 8)
                 .accessibilityElement(children: .combine)
             } else {
@@ -2303,6 +2603,8 @@ private struct AnchorRowView: View {
     let mergeWithPrevious: (String) -> Void
     let pacingHint: ARollPacingHint?
     var pulse: AnchorRowPulse.Target? = nil
+    var onBindingStarted: () -> Void = {}
+    var onBindingFinished: () -> Void = {}
     @StateObject private var dropState = AnchorDropState()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulseGlow: Double = 0
@@ -2527,7 +2829,10 @@ private struct AnchorRowView: View {
         }
         .onDrop(
             of: [UTType.fileURL],
-            delegate: FileDropDelegate(rowID: row.id, model: model, feedback: model.dropFeedback, rowState: dropState)
+            delegate: FileDropDelegate(
+                rowID: row.id, model: model, feedback: model.dropFeedback, rowState: dropState,
+                onBindingStarted: onBindingStarted, onBindingFinished: onBindingFinished
+            )
         )
         .animation(.snappy(duration: 0.2), value: assets.count)
         .animation(.snappy(duration: 0.2), value: isPendingBinding)
@@ -2565,7 +2870,7 @@ private struct ARollPacingReminder: View {
         .fixedSize()
         .onHover { isHovered = $0 }
         .help("截至本条，连续 A-roll 约 \(elapsed) 秒，建议补一段 B-roll。点击查看。")
-        .accessibilityLabel("连续 A-roll 约 \(elapsed) 秒，超过 5 秒，建议补充 B-roll")
+        .accessibilityLabel("连续 A-roll 约 \(elapsed) 秒，超过 \(hint.settings.thresholdLabel) 秒，建议补充 B-roll")
         .accessibilityValue(isExpanded ? "已展开" : "已收起")
         .accessibilityHint("展开或收起估算说明，并可将本条设为 B-roll")
         .pointerCursor()
@@ -2601,7 +2906,7 @@ private struct ARollPacingDetails: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("按 350 字/分钟、连续 5 秒估算，忽略标点和空白；实际节奏以口播为准。")
+            Text("按 \(hint.settings.charactersPerMinute) 字/分钟、连续 \(hint.settings.thresholdLabel) 秒估算，忽略标点和空白；实际节奏以口播为准。")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3269,6 +3574,7 @@ private struct AssetChip: View {
 private struct MaterialListHeader: View {
     @Bindable var model: AppModel
     @Binding var isDirectoryPopoverPresented: Bool
+    @Binding var isMaterialListVisible: Bool
     @Binding var isMediaPreviewVisible: Bool
 
     var body: some View {
@@ -3359,7 +3665,7 @@ private struct MaterialListHeader: View {
 
         if !isMediaPreviewVisible {
             actions.append(
-                PaneHeaderAction(systemImage: "chevron.left", help: "展开当前媒体栏", usesAnimation: false) {
+                PaneHeaderAction(systemImage: "sidebar.right", help: "展开当前媒体栏", usesAnimation: false) {
                     withAnimation(.easeInOut(duration: 0.18)) {
                         isMediaPreviewVisible = true
                     }
@@ -3367,6 +3673,13 @@ private struct MaterialListHeader: View {
             )
         }
 
+        actions.append(
+            PaneHeaderAction(systemImage: "sidebar.left", help: "收起素材列表", usesAnimation: false) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isMaterialListVisible = false
+                }
+            }
+        )
         return actions
     }
 }
@@ -3731,6 +4044,7 @@ private struct SavedDirectoryRow: View {
 
 private struct DetailView: View {
     @Bindable var model: AppModel
+    @Binding var isMaterialListVisible: Bool
     @Binding var isMediaPreviewVisible: Bool
     @State private var selectedSourceFileURLs: Set<URL> = []
     @State private var isDirectoryPopoverPresented = false
@@ -3743,25 +4057,21 @@ private struct DetailView: View {
 
     var body: some View {
         Group {
-            if isMediaPreviewVisible {
+            if isMaterialListVisible && isMediaPreviewVisible {
                 HSplitView {
                     materialList
-                        .frame(minWidth: 420, idealWidth: 440, maxWidth: .infinity)
+                        .frame(minWidth: WorkspacePaneMetrics.minimumSourceWidth, idealWidth: 440, maxWidth: .infinity)
                         .background(SplitViewAutosaveInstaller(
                             name: "com.keyknock.BrollNamer.media-columns-with-preview"
                         ))
 
-                    MediaPreviewView(
-                        file: selectedSourceFileURL.flatMap(model.sourceFile(at:)),
-                        controller: previewController,
-                        model: model,
-                        isMediaPreviewVisible: $isMediaPreviewVisible
-                    )
-                    .frame(minWidth: 340, idealWidth: 480, maxWidth: .infinity)
+                    mediaPreview
                 }
-            } else {
+            } else if isMaterialListVisible {
                 materialList
-                    .frame(minWidth: 420, maxWidth: .infinity)
+                    .frame(minWidth: WorkspacePaneMetrics.minimumSourceWidth, maxWidth: .infinity)
+            } else {
+                Color.clear
             }
         }
         .background(.windowBackground)
@@ -3778,6 +4088,16 @@ private struct DetailView: View {
         }
     }
 
+    private var mediaPreview: some View {
+        MediaPreviewView(
+            file: selectedSourceFileURL.flatMap(model.sourceFile(at:)),
+            controller: previewController,
+            model: model,
+            isMediaPreviewVisible: $isMediaPreviewVisible
+        )
+        .frame(minWidth: WorkspacePaneMetrics.minimumPreviewWidth, idealWidth: 480, maxWidth: .infinity)
+    }
+
     private var materialList: some View {
         let visibleFiles = model.visibleSourceFiles
 
@@ -3788,6 +4108,7 @@ private struct DetailView: View {
                 MaterialListHeader(
                     model: model,
                     isDirectoryPopoverPresented: $isDirectoryPopoverPresented,
+                    isMaterialListVisible: $isMaterialListVisible,
                     isMediaPreviewVisible: $isMediaPreviewVisible
                 )
 
@@ -3953,7 +4274,7 @@ private struct MediaPreviewView: View {
                 count: file == nil ? "未选择" : nil,
                 disablesTitleIconAnimation: true,
                 actions: [
-                    PaneHeaderAction(systemImage: "chevron.right", help: "收起当前媒体栏", usesAnimation: false) {
+                    PaneHeaderAction(systemImage: "sidebar.right", help: "收起当前媒体栏", usesAnimation: false) {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             isMediaPreviewVisible = false
                         }

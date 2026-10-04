@@ -134,6 +134,8 @@ struct FileDropDelegate: DropDelegate {
     let model: AppModel
     let feedback: DropFeedbackModel
     let rowState: AnchorDropState
+    var onBindingStarted: () -> Void = {}
+    var onBindingFinished: () -> Void = {}
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [UTType.fileURL])
@@ -157,8 +159,12 @@ struct FileDropDelegate: DropDelegate {
         rowState.isActive = false
 
         model.bindingRowIDs.insert(rowID)
+        onBindingStarted()
         Task { @MainActor in
-            defer { model.bindingRowIDs.remove(rowID) }
+            defer {
+                model.bindingRowIDs.remove(rowID)
+                onBindingFinished()
+            }
             let urls = await Self.urls(from: providers)
             await model.attach(urls: urls, to: rowID)
         }

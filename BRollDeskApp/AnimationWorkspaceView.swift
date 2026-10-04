@@ -39,10 +39,61 @@ struct AnimationWorkspaceView: View {
                 .padding(.vertical, 14)
         }
         .frame(width: 820, height: 640)
-        .interactiveDismissDisabled(model.isBusy)
+        .disabled(model.isAnalyzingAnimations)
+        .accessibilityHidden(model.isAnalyzingAnimations)
+        .blur(radius: model.isAnalyzingAnimations ? 2 : 0)
+        .overlay {
+            if model.isAnalyzingAnimations {
+                analysisLoadingOverlay
+            }
+        }
+        .interactiveDismissDisabled(model.isBusy || model.isAnalyzingAnimations)
         .sheet(item: $settingsDestination) { destination in
             AnimationSettingsSheet(model: model, destination: destination)
         }
+    }
+
+    private var analysisLoadingOverlay: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor).opacity(0.65)
+                .contentShape(Rectangle())
+
+            VStack(spacing: 16) {
+                ProgressView()
+                    .controlSize(.large)
+                    .scaleEffect(1.4)
+                    .frame(width: 52, height: 52)
+                    .accessibilityLabel("分析进行中")
+
+                VStack(spacing: 6) {
+                    Text("正在分析全文")
+                        .font(.title3.weight(.semibold))
+                    Text("DeepSeek 正在筛选适合动画的段落")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("\(scriptRowCount) 条文案 · 通常需要几十秒")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+
+                Button("取消分析") { model.cancelAnimationAnalysis() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(28)
+            .frame(width: 320)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08))
+            }
+            .shadow(color: .black.opacity(0.12), radius: 24, y: 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("全文分析进行中")
     }
 
     // MARK: Header
@@ -64,7 +115,7 @@ struct AnimationWorkspaceView: View {
                 Spacer()
             }
             HStack(spacing: 6) {
-                stepButton(0, title: "分析文案", detail: model.isAnalyzingAnimations ? "分析中…" : (isReviewing ? "\(model.animationReviewItems.count) 段待确认" : "\(scriptRowCount) 条文案 · 全文分析"),
+                stepButton(0, title: "分析文案", detail: model.isAnalyzingAnimations ? "DeepSeek 分析中…" : (isReviewing ? "\(model.animationReviewItems.count) 段待确认" : "\(scriptRowCount) 条文案 · 全文分析"),
                            done: !model.activeAnimationTasks.isEmpty)
                 Image(systemName: "chevron.compact.right").foregroundStyle(.tertiary)
                 stepButton(1, title: "导入匹配",
@@ -76,13 +127,19 @@ struct AnimationWorkspaceView: View {
 
     private func stepButton(_ tab: Int, title: String, detail: String, done: Bool) -> some View {
         let selected = model.animationPanelTab == tab
+        let isLoading = tab == 0 && model.isAnalyzingAnimations
         return Button {
             withAnimation(.snappy(duration: 0.2)) { model.animationPanelTab = tab }
         } label: {
             HStack(spacing: 10) {
                 ZStack {
-                    Circle().fill(selected ? Color.accentColor : (done ? Color.green : Color.secondary.opacity(0.18)))
-                    if done && !selected {
+                    Circle().fill(selected || isLoading ? Color.accentColor : (done ? Color.green : Color.secondary.opacity(0.18)))
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .environment(\.colorScheme, .dark)
+                            .accessibilityLabel("正在分析全文")
+                    } else if done && !selected {
                         Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
                     } else {
                         Text("\(tab + 1)").font(.system(size: 11, weight: .semibold))
@@ -113,13 +170,13 @@ struct AnimationWorkspaceView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if model.isAnalyzingAnimations || model.isTestingDeepSeek || model.isBusy {
+            if model.isTestingDeepSeek || model.isBusy {
                 ProgressView().controlSize(.small)
             }
             Text(model.animationFeedback.isEmpty ? footerHint : model.animationFeedback)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(2, reservesSpace: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("完成") { dismiss() }
@@ -150,9 +207,13 @@ struct AnimationWorkspaceView: View {
                 Button("应用 \(selectedReviewCount) 段") { model.applyAnimationReview() }
                     .disabled(selectedReviewCount == 0 || model.isBusy)
             } else if model.isAnalyzingAnimations {
-                Button("取消分析") { model.cancelAnimationAnalysis() }
+                Button { model.cancelAnimationAnalysis() } label: {
+                    Text("取消分析").frame(minWidth: 84)
+                }
             } else {
-                Button("分析动画段落") { model.startAnimationAnalysis() }
+                Button { model.startAnimationAnalysis() } label: {
+                    Text("分析动画段落").frame(minWidth: 84)
+                }
                     .disabled(!hasKey || scriptRowCount == 0 || model.isTestingDeepSeek || model.isBusy)
             }
         }
@@ -219,18 +280,28 @@ extension AnimationWorkspaceView {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel("全文分析的范围")
+                        .accessibilityLabel("全文分析说明")
+                        .help("查看分析范围及应用后的变化")
                         .popover(isPresented: $isAnalysisHelpPresented) {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("哪些条目参与分析？").font(.headline)
                                 Text("所有有文字的文案条目都参与分析，不计空白条目。")
                                 Text("A-roll / B-roll 标签、制作方式、准备状态、已绑定素材和已有动画任务，都不会排除条目。AI 根据文案内容判断哪些段落适合动画。")
                                 Text("这里显示的是全文条目数。AI 会列出推荐段落，勾选并确认应用后，才会拆分文案、标记动画和更新制作备注。")
+                                Divider()
+                                Text("分析后会发生什么").font(.headline)
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ExplainRow(systemImage: "checklist.checked", text: "先列出推荐段落供你勾选，确认后才改动文案。")
+                                    ExplainRow(systemImage: "scissors", text: "按原文逐字拆分出适合动画的段落，不改写文案。")
+                                    ExplainRow(systemImage: "tag", text: "自动标记为 B-roll · 动画，把表达重点放入备注；在文案列表筛选“动画 + 待准备”即可查看制作清单。")
+                                    ExplainRow(systemImage: "text.magnifyingglass", text: "所有有文字的条目都参与判断，不按已有标签或绑定状态过滤。")
+                                    ExplainRow(systemImage: "arrow.uturn.backward", text: "结果不满意可以 ⌘Z 一步撤销。")
+                                }
                             }
                             .font(.callout)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(18)
-                            .frame(width: 330, alignment: .leading)
+                            .frame(width: 420, alignment: .leading)
                         }
                     }
                 }
@@ -246,32 +317,10 @@ extension AnimationWorkspaceView {
                     SettingsRow(systemImage: "text.badge.star", tint: .pink, title: "制作提示词模板",
                                 value: model.animationTemplate == AnimationWorkflow.defaultTemplate ? "默认" : "已自定义") { settingsDestination = .template }
                     Divider().padding(.leading, 46)
-                    SettingsRow(systemImage: "person.crop.square", tint: .orange, title: "角色参考图",
-                                value: model.animationCharacterPath.isEmpty ? "未设置" : (model.animationCharacterPath as NSString).lastPathComponent) { settingsDestination = .character }
+                    AnimationCharacterReferenceEditor(model: model)
                     Divider().padding(.leading, 46)
                     SettingsRow(systemImage: "folder", tint: .blue, title: "视频输出目录",
                                 value: model.animationOutputDirectoryPath.isEmpty ? "未设置" : (model.animationOutputDirectoryPath as NSString).lastPathComponent) { settingsDestination = .outputDirectory }
-                }
-
-                GroupCard(title: "分析后会发生什么") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ExplainRow(systemImage: "checklist.checked", text: "先列出推荐段落供你勾选，确认后才改动文案。")
-                        ExplainRow(systemImage: "scissors", text: "按原文逐字拆分出适合动画的段落，不改写文案。")
-                        ExplainRow(systemImage: "tag", text: "自动标记为 B-roll · 动画，把表达重点放入备注；在文案列表筛选“动画 + 待准备”即可查看制作清单。")
-                        ExplainRow(systemImage: "text.magnifyingglass", text: "所有有文字的条目都参与判断，不按已有标签或绑定状态过滤。")
-                        ExplainRow(systemImage: "arrow.uturn.backward", text: "结果不满意可以 ⌘Z 一步撤销。")
-                    }
-                    .padding(14)
-                }
-
-                if model.isAnalyzingAnimations {
-                    HStack(spacing: 12) {
-                        ProgressView().controlSize(.small)
-                        Text("DeepSeek 正在阅读全文，通常需要几十秒…").foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .transition(.opacity)
                 }
             }
             .padding(24)
@@ -493,6 +542,76 @@ extension AnimationWorkspaceView {
 
 // MARK: - Settings
 
+private struct AnimationCharacterReferenceEditor: View {
+    @Bindable var model: AppModel
+    @State private var isDropTargeted = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            thumbnail
+            VStack(alignment: .leading, spacing: 4) {
+                Text("角色参考图").font(.system(size: 14, weight: .medium))
+                Text(model.animationCharacterPath.isEmpty ? "拖入图片，或点击选择图片" : (model.animationCharacterPath as NSString).lastPathComponent)
+                    .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text("复制提示词时自动加入角色替换说明")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if !model.animationCharacterPath.isEmpty {
+                Button("移除") { model.removeAnimationCharacterImage() }
+                    .accessibilityLabel("移除角色参考图")
+            }
+            Button(model.animationCharacterPath.isEmpty ? "选择图片…" : "更换图片…") { chooseCharacter() }
+                .accessibilityLabel("选择角色参考图")
+        }
+        .padding(12)
+        .background(isDropTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            }
+        }
+        .contentShape(Rectangle())
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            FileURLDropLoader.loadURLs(from: providers) { urls in
+                model.setAnimationCharacterImage(urls.first(where: { $0.isFileURL && NSImage(contentsOf: $0) != nil }))
+            }
+            return true
+        }
+        .animation(.easeOut(duration: 0.15), value: isDropTargeted)
+    }
+
+    private var thumbnail: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.secondary.opacity(0.08))
+            if let image = model.animationCharacterImage {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: model.animationCharacterPath.isEmpty ? "photo.badge.plus" : "exclamationmark.triangle")
+                    .font(.system(size: 24)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 64, height: 64)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityLabel(model.animationCharacterPath.isEmpty ? "未设置角色参考图" : "角色参考图预览")
+        .help(model.animationCharacterPath.isEmpty ? "将图片文件拖入此行" : model.animationCharacterPath)
+    }
+
+    private func chooseCharacter() {
+        let panel = NSOpenPanel()
+        panel.title = "选择角色参考图"
+        panel.allowedContentTypes = [.image]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if !model.animationCharacterPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: model.animationCharacterPath).deletingLastPathComponent()
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.setAnimationCharacterImage(url)
+    }
+}
+
 private enum AnimationSettingsDestination: String, Identifiable {
     case overview, deepSeek, rules, template, character, outputDirectory
     var id: Self { self }
@@ -586,22 +705,7 @@ private struct AnimationSettingsSheet: View {
                 }
                 if destination == .character {
                     Section {
-                        HStack(spacing: 12) {
-                            characterThumbnail
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(model.animationCharacterPath.isEmpty ? "未设置" : (model.animationCharacterPath as NSString).lastPathComponent)
-                                    .lineLimit(1)
-                                if !model.animationCharacterPath.isEmpty {
-                                    Text(model.animationCharacterPath).font(.caption).foregroundStyle(.secondary)
-                                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                                }
-                            }
-                            Spacer()
-                            if !model.animationCharacterPath.isEmpty {
-                                Button("移除") { model.animationCharacterPath = "" }
-                            }
-                            Button("选择图片…") { chooseCharacter() }
-                        }
+                        AnimationCharacterReferenceEditor(model: model)
                     } header: {
                         Text("角色参考图")
                     }
@@ -689,7 +793,7 @@ private struct AnimationSettingsSheet: View {
         case .deepSeek: return "API Key 只保存在本机钥匙串，不写入项目文件或导出的 JSON。"
         case .rules: return "告诉 DeepSeek 什么样的段落值得做动画。输出格式由软件自动约束，表格要求会被忽略。"
         case .template: return "{{text}} 替换为该条文案，{{character}} 替换为角色参考图；非空的表达重点和已设置的视频输出目录会自动追加。"
-        case .character: return "替换模板中的 {{character}}；模板里没有该占位符时会追加到提示词末尾。未设置时，含 {{character}} 的那一行会被省略。"
+        case .character: return "替换模板中的 {{character}}；模板里没有该占位符时会追加到提示词末尾。未设置时，会保留使用你提供的角色参考图的说明。"
         case .outputDirectory: return "复制单条或全部提示词时，会自动加上这个输出目录。可以粘贴尚未创建的目录路径；未设置时省略该要求。"
         }
     }
@@ -697,21 +801,6 @@ private struct AnimationSettingsSheet: View {
     private func settingsLink(_ target: AnimationSettingsDestination, icon: String, tint: Color) -> some View {
         SettingsRow(systemImage: icon, tint: tint, title: target.title, value: "") {
             destination = target
-        }
-    }
-
-    @ViewBuilder private var characterThumbnail: some View {
-        // Sandbox access to the image may not survive relaunch; fall back to a symbol.
-        if !model.animationCharacterPath.isEmpty, let image = NSImage(contentsOfFile: model.animationCharacterPath) {
-            Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        } else {
-            Image(systemName: "person.crop.square")
-                .font(.system(size: 22))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, height: 44)
-                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 
@@ -726,19 +815,6 @@ private struct AnimationSettingsSheet: View {
         if !path.isEmpty { panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true) }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         model.animationOutputDirectoryPath = url.path
-    }
-
-    private func chooseCharacter() {
-        let panel = NSOpenPanel()
-        panel.title = "选择角色参考图"
-        panel.allowedContentTypes = [.image]
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        if !model.animationCharacterPath.isEmpty {
-            panel.directoryURL = URL(fileURLWithPath: model.animationCharacterPath).deletingLastPathComponent()
-        }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.animationCharacterPath = url.path
     }
 
     private func sectionHeader(_ title: String, isDefault: Bool, reset: @escaping () -> Void) -> some View {

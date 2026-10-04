@@ -122,7 +122,10 @@ struct AnimationWorkflowTests {
         var duplicateTask = task; duplicateTask.id = "other"
         expect(AnimationWorkflow.matches(files: [file], tasks: [task, duplicateTask]).isEmpty, "Duplicate text must remain ambiguous")
         let noCharacter = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate)
-        expect(!noCharacter.contains("{{character}}") && !noCharacter.contains("小螃蟹") && noCharacter.contains(task.text), "Empty character must drop its line")
+        expect(!noCharacter.contains("{{character}}") && noCharacter.contains("小螃蟹角色换成 你提供的角色参考图") && noCharacter.contains(task.text), "Unset character preserves the replacement instruction without an unresolved placeholder")
+        let noCharacterBatch = AnimationWorkflow.prompts(for: [task, secondTask], template: AnimationWorkflow.defaultTemplate)
+        expect(noCharacterBatch.components(separatedBy: "小螃蟹角色换成 你提供的角色参考图").count == 2, "Batch preserves the unset reference instruction once")
+        expect(AnimationWorkflow.prompt(for: task, template: "角色：{{character}}；文案：{{text}}", character: " \n").contains(task.text), "Unset character must not remove text sharing the same template line")
         expect(!noCharacter.contains("【统一制作要求】") && !noCharacter.contains("所有成品放在同一个输出目录") && noCharacter.hasSuffix("表达重点：" + task.reason), "Single prompts omit the entire shared requirements block")
         expect(AnimationWorkflow.prompt(for: task, template: "做动画：{{text}}", character: "/tmp/c.png").contains("角色参考图：/tmp/c.png"), "Character appends without placeholder")
         let outputDirectory = "/Users/keyknock/Downloads/cut/20261003动画-2"
@@ -202,6 +205,30 @@ struct AnimationWorkflowTests {
         expect(model.animationOutputDirectoryPath == outputs.path && defaults.string(forKey: "broll-namer-animation-output-directory") == outputs.path, "Output directory is trimmed and persisted")
         let restoredConfiguration = AppModel(defaults: defaults)
         expect(restoredConfiguration.animationOutputDirectoryPath == outputs.path, "Output directory survives model recreation")
+        let characterURL = outputs.appendingPathComponent("角色参考图.png")
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        try bitmap.representation(using: .png, properties: [:])!.write(to: characterURL)
+        let droppedProvider = NSItemProvider(contentsOf: characterURL)!
+        let droppedURLs = await FileURLDropLoader.urls(from: [droppedProvider])
+        expect(model.setAnimationCharacterImage(droppedURLs.first), "Dropped image file payload resolves to a readable reference")
+        expect(model.setAnimationCharacterImage(characterURL), "Inline selection accepts a readable image")
+        expect(defaults.data(forKey: "broll-namer-animation-character-bookmark") != nil,
+               "Reference selection must persist a security-scoped bookmark, not only the path")
+        var characterBookmarkIsStale = false
+        let characterBookmarkURL = try URL(resolvingBookmarkData: defaults.data(forKey: "broll-namer-animation-character-bookmark")!,
+                                          options: [.withSecurityScope], relativeTo: nil,
+                                          bookmarkDataIsStale: &characterBookmarkIsStale)
+        let characterAccess = characterBookmarkURL.startAccessingSecurityScopedResource()
+        let restoredCharacterData = try Data(contentsOf: characterBookmarkURL)
+        expect(NSImage(data: restoredCharacterData) != nil,
+               "Persisted reference bookmark must restore readable image bytes")
+        if characterAccess { characterBookmarkURL.stopAccessingSecurityScopedResource() }
+        expect(AppModel(defaults: defaults).animationCharacterPath == characterURL.path, "Reference image saves immediately without closing a settings sheet")
+        expect(!model.setAnimationCharacterImage(outputs) && model.animationCharacterPath == characterURL.path, "Invalid drop must preserve the current reference")
+        let previousBookmark = defaults.data(forKey: "broll-namer-animation-character-bookmark")
+        expect(!model.setAnimationCharacterImage(outputs.appendingPathComponent("missing.png"))
+               && defaults.data(forKey: "broll-namer-animation-character-bookmark") == previousBookmark,
+               "Unreadable reference must preserve the previous bookmark")
         await Task.yield()
         model.undoManager.groupsByEvent = false
         await Task.yield()
@@ -223,8 +250,15 @@ struct AnimationWorkflowTests {
         let manualPrompt = NSPasteboard.general.string(forType: .string) ?? ""
         expect(manualPrompt.contains(manualRow.text) && manualPrompt.contains("保留这条备注"),
                "Manual prompt contains the current script and editable note")
+        expect(manualPrompt.contains("小螃蟹角色换成 " + characterURL.path), "Row clipboard includes the saved character replacement")
         expect(model.copyAllAnimationPrompts() && (NSPasteboard.general.string(forType: .string) ?? "").contains(manualRow.text),
                "Bulk copy includes manual animation rows")
+        expect((NSPasteboard.general.string(forType: .string) ?? "").contains("小螃蟹角色换成 " + characterURL.path), "Bulk clipboard includes the saved character replacement")
+        model.removeAnimationCharacterImage()
+        expect(defaults.data(forKey: "broll-namer-animation-character-bookmark") == nil,
+               "Removing the reference must also remove its persistent file access")
+        expect(AppModel(defaults: defaults).animationCharacterPath.isEmpty, "Removing the reference saves immediately")
+        expect(model.copyAnimationPrompt(manualTask) && (NSPasteboard.general.string(forType: .string) ?? "").contains("小螃蟹角色换成 你提供的角色参考图"), "Row clipboard retains replacement instructions after removing the reference")
         event(model) { model.setBrollProductionMethod(.screenRecording, for: manualRow.id) }
         expect(model.animationTask(for: manualRow.id) == nil, "Other production methods have no animation prompt")
         model.undo()

@@ -43,6 +43,7 @@ final class AppModel {
     var splitMode: SplitMode
     private var preservesEmptyAnchors: Bool
     var prefix: String
+    private(set) var pacingSettings: ARollPacingSettings
     var anchorSearchText = ""
     let dropFeedback = DropFeedbackModel()
     var selectedSourceFileURL: URL?
@@ -59,6 +60,7 @@ final class AppModel {
     var animationRules = AnimationWorkflow.defaultRules
     var animationTemplate = AnimationWorkflow.defaultTemplate
     var animationCharacterPath = ""
+    private(set) var animationCharacterImage: NSImage?
     var animationOutputDirectoryPath = ""
     /// Analysis results waiting for confirmation; the script is untouched until applied.
     var animationReviewItems: [AnimationReviewItem] = []
@@ -74,6 +76,7 @@ final class AppModel {
     private let animationRulesKey = "broll-namer-animation-rules"
     private let animationTemplateKey = "broll-namer-animation-template"
     private let animationCharacterKey = "broll-namer-animation-character"
+    private let animationCharacterBookmarkKey = "broll-namer-animation-character-bookmark"
     private let animationOutputDirectoryKey = "broll-namer-animation-output-directory"
 
     var isScriptEditorPresented = false
@@ -150,6 +153,9 @@ final class AppModel {
     private let brollProductionMethodsKey = "broll-namer-production-methods"
     private let brollPreparationStatusesKey = "broll-namer-preparation-statuses"
     private let prefixKey = "broll-namer-prefix"
+    private let pacingRateKey = "broll-namer-pacing-characters-per-minute"
+    private let pacingThresholdKey = "broll-namer-pacing-maximum-continuous-seconds"
+    private let pacingEnabledKey = "broll-namer-pacing-reminders-enabled"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
     private let savedDirectoriesKey = "broll-namer-saved-directories"
@@ -161,6 +167,12 @@ final class AppModel {
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
         preservesEmptyAnchors = defaults.bool(forKey: preservesEmptyAnchorsKey)
         prefix = defaults.string(forKey: prefixKey) ?? ""
+        pacingSettings = ARollPacingSettings(
+            charactersPerMinute: defaults.integer(forKey: pacingRateKey),
+            maximumContinuousSeconds: defaults.double(forKey: pacingThresholdKey),
+            remindersEnabled: defaults.object(forKey: pacingEnabledKey) == nil
+                ? true : defaults.bool(forKey: pacingEnabledKey)
+        )
         anchorNotes = defaults.dictionary(forKey: anchorNotesKey) as? [String: String] ?? [:]
         rollTypeOverrides = (defaults.dictionary(forKey: rollTypeOverridesKey) ?? [:]).compactMapValues { value in
             guard let rawValue = value as? String else { return nil }
@@ -198,6 +210,7 @@ final class AppModel {
             defaults.set(animationTemplate, forKey: animationTemplateKey)
             defaults.set(animationCharacterPath, forKey: animationCharacterKey)
         }
+        restoreAnimationCharacterImage()
         if let data = defaults.data(forKey: animationTasksKey) {
             animationTasks = (try? JSONDecoder().decode([AnimationTask].self, from: data)) ?? []
         }
@@ -344,7 +357,14 @@ final class AppModel {
     }
 
     var aRollPacingHints: [String: ARollPacingHint] {
-        ARollPacing.hints(for: rows, rollType: { rollType(for: $0) })
+        ARollPacing.hints(for: rows, settings: pacingSettings, rollType: { rollType(for: $0) })
+    }
+
+    func updatePacingSettings(_ settings: ARollPacingSettings) {
+        pacingSettings = settings
+        defaults.set(settings.charactersPerMinute, forKey: pacingRateKey)
+        defaults.set(settings.maximumContinuousSeconds, forKey: pacingThresholdKey)
+        defaults.set(settings.remindersEnabled, forKey: pacingEnabledKey)
     }
 
     private func rebuildVisibleSourceFiles() {
@@ -2882,6 +2902,76 @@ extension AppModel {
         do { deepSeekKeyDraft = try DeepSeekKeychain.read() }
         catch { animationFeedback = error.localizedDescription }
         isAnimationPanelPresented = true
+    }
+
+    @discardableResult
+    func setAnimationCharacterImage(_ url: URL?) -> Bool {
+        guard let url, url.isFileURL else {
+            animationFeedback = "请选择或拖入可读取的图片文件。"
+            return false
+        }
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
+        do {
+            // Read all bytes while access is active; NSImage(contentsOf:) can defer file reads.
+            guard let image = NSImage(data: try Data(contentsOf: url)) else {
+                animationFeedback = "请选择或拖入可读取的图片文件。"
+                return false
+            }
+            let bookmark = try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                                                includingResourceValuesForKeys: nil, relativeTo: nil)
+            defaults.set(bookmark, forKey: animationCharacterBookmarkKey)
+            animationCharacterPath = url.path
+            animationCharacterImage = image
+            defaults.set(animationCharacterPath, forKey: animationCharacterKey)
+            animationFeedback = "角色参考图已保存，复制提示词时会带上角色替换说明。"
+            return true
+        } catch {
+            animationFeedback = "角色参考图保存失败，请重新选择图片：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func restoreAnimationCharacterImage() {
+        guard !animationCharacterPath.isEmpty else { return }
+        if let bookmark = defaults.data(forKey: animationCharacterBookmarkKey) {
+            do {
+                var isStale = false
+                let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                                  relativeTo: nil, bookmarkDataIsStale: &isStale)
+                let didStartAccess = url.startAccessingSecurityScopedResource()
+                defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
+                guard let image = NSImage(data: try Data(contentsOf: url)) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                if isStale {
+                    let renewed = try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                                                       includingResourceValuesForKeys: nil, relativeTo: nil)
+                    defaults.set(renewed, forKey: animationCharacterBookmarkKey)
+                }
+                if URL(fileURLWithPath: animationCharacterPath).resolvingSymlinksInPath() != url.resolvingSymlinksInPath() {
+                    animationCharacterPath = url.path
+                }
+                animationCharacterImage = image
+                defaults.set(animationCharacterPath, forKey: animationCharacterKey)
+                return
+            } catch {
+                // Keep the saved path so an unavailable file can be reselected.
+            }
+        } else if setAnimationCharacterImage(URL(fileURLWithPath: animationCharacterPath)) {
+            // Migrate old path-only settings when access is still available.
+            animationFeedback = ""
+            return
+        }
+        animationFeedback = "无法读取已保存的角色参考图，请重新选择图片以恢复预览和访问权限。"
+    }
+
+    func removeAnimationCharacterImage() {
+        animationCharacterPath = ""
+        animationCharacterImage = nil
+        defaults.removeObject(forKey: animationCharacterKey)
+        defaults.removeObject(forKey: animationCharacterBookmarkKey)
+        animationFeedback = "已移除角色参考图，提示词会保留使用你提供的角色参考图的说明。"
     }
 
     @discardableResult

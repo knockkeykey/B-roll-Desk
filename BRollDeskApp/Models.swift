@@ -202,21 +202,41 @@ struct AnchorRow: Identifiable, Hashable {
     let text: String
 }
 
+struct ARollPacingSettings: Equatable {
+    let charactersPerMinute: Int
+    let maximumContinuousSeconds: Double
+    let remindersEnabled: Bool
+
+    init(charactersPerMinute: Int = 350, maximumContinuousSeconds: Double = 5,
+         remindersEnabled: Bool = true) {
+        self.charactersPerMinute = charactersPerMinute > 0 ? charactersPerMinute : 350
+        self.maximumContinuousSeconds = maximumContinuousSeconds.isFinite && maximumContinuousSeconds > 0
+            ? maximumContinuousSeconds : 5
+        self.remindersEnabled = remindersEnabled
+    }
+
+    var thresholdLabel: String {
+        maximumContinuousSeconds.formatted(.number.grouping(.never).precision(.significantDigits(1...15)))
+    }
+}
+
 struct ARollPacingHint: Equatable {
     let startRowIndex: Int
     let endRowIndex: Int
     let cumulativeCharacterCount: Int
     let totalCharacterCount: Int
+    let settings: ARollPacingSettings
 
-    var cumulativeSeconds: Double { ARollPacing.seconds(for: cumulativeCharacterCount) }
-    var totalSeconds: Double { ARollPacing.seconds(for: totalCharacterCount) }
+    var cumulativeSeconds: Double {
+        ARollPacing.seconds(for: cumulativeCharacterCount, charactersPerMinute: Double(settings.charactersPerMinute))
+    }
+    var totalSeconds: Double {
+        ARollPacing.seconds(for: totalCharacterCount, charactersPerMinute: Double(settings.charactersPerMinute))
+    }
 }
 
 enum ARollPacing {
-    static let charactersPerMinute = 350.0
-    static let maximumContinuousSeconds = 5.0
-
-    static func seconds(for characterCount: Int) -> Double {
+    static func seconds(for characterCount: Int, charactersPerMinute: Double = 350) -> Double {
         Double(characterCount) * 60 / charactersPerMinute
     }
 
@@ -232,20 +252,24 @@ enum ARollPacing {
     /// Analyze the complete script before any search or view filters are applied.
     static func hints(
         for rows: [AnchorRow],
+        settings: ARollPacingSettings = ARollPacingSettings(),
         rollType: (String) -> AnchorRollType
     ) -> [String: ARollPacingHint] {
+        guard settings.remindersEnabled else { return [:] }
         var result: [String: ARollPacingHint] = [:]
         var run: [(row: AnchorRow, cumulativeCount: Int)] = []
         var characterCount = 0
 
         func finishRun() {
             guard let first = run.first, let last = run.last else { return }
-            for entry in run where seconds(for: entry.cumulativeCount) > maximumContinuousSeconds {
+            for entry in run where seconds(for: entry.cumulativeCount,
+                                          charactersPerMinute: Double(settings.charactersPerMinute)) > settings.maximumContinuousSeconds {
                 result[entry.row.id] = ARollPacingHint(
                     startRowIndex: first.row.index,
                     endRowIndex: last.row.index,
                     cumulativeCharacterCount: entry.cumulativeCount,
-                    totalCharacterCount: characterCount
+                    totalCharacterCount: characterCount,
+                    settings: settings
                 )
             }
         }

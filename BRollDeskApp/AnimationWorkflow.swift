@@ -248,10 +248,7 @@ enum AnimationWorkflow {
         let character = character.trimmingCharacters(in: .whitespacesAndNewlines)
         var base = template
         if base.contains("{{character}}") {
-            // Without a reference image, drop the whole instruction line rather than leaving a dangling placeholder.
-            base = character.isEmpty
-                ? base.components(separatedBy: "\n").filter { !$0.contains("{{character}}") }.joined(separator: "\n")
-                : base.replacingOccurrences(of: "{{character}}", with: character)
+            base = base.replacingOccurrences(of: "{{character}}", with: character.isEmpty ? "你提供的角色参考图" : character)
         } else if !character.isEmpty {
             base += "\n角色参考图：\(character)"
         }

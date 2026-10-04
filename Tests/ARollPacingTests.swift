@@ -40,6 +40,17 @@ struct ARollPacingTests {
         expect(ARollPacing.hints(for: [row(1, 60)]) { _ in .aRoll }["row-1"] != nil,
                "A single long A-roll row also needs a reminder")
 
+        let custom = ARollPacingSettings(charactersPerMinute: 600, maximumContinuousSeconds: 3)
+        let customHints = ARollPacing.hints(for: boundaryRows, settings: custom) { _ in .aRoll }
+        expect(customHints["row-2"] == nil && customHints["row-3"]?.cumulativeSeconds == 4,
+               "Custom rate and threshold use a strict boundary and update displayed seconds together")
+        expect(customHints["row-3"]?.totalSeconds == 4 && customHints["row-3"]?.settings == custom,
+               "Reminder details carry the configuration used for the calculation")
+        expect(ARollPacing.hints(for: boundaryRows, settings: ARollPacingSettings(remindersEnabled: false)) { _ in .aRoll }.isEmpty,
+               "Disabled reminders are absent")
+        expect(ARollPacingSettings(charactersPerMinute: 0, maximumContinuousSeconds: .nan) == ARollPacingSettings(),
+               "Invalid stored values safely fall back to defaults")
+
         let suite = "com.keyknock.BrollNamer.PacingTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -47,6 +58,16 @@ struct ARollPacingTests {
                      + "\n第三条" + String(repeating: "丙", count: 12), forKey: "broll-namer-script")
         let model = AppModel(defaults: defaults)
         let ids = model.rows.map(\.id)
+        expect(model.pacingSettings == ARollPacingSettings(), "Existing users keep the original defaults")
+        model.updatePacingSettings(custom)
+        expect(model.aRollPacingHints[ids[1]] == nil && model.aRollPacingHints[ids[2]]?.cumulativeSeconds == 4.5,
+               "Changing preferences immediately recalculates the existing script")
+        expect(AppModel(defaults: defaults).pacingSettings == custom, "Rate and threshold survive model recreation")
+        model.updatePacingSettings(ARollPacingSettings(charactersPerMinute: 600,
+                                                     maximumContinuousSeconds: 3, remindersEnabled: false))
+        expect(model.aRollPacingHints.isEmpty && !AppModel(defaults: defaults).pacingSettings.remindersEnabled,
+               "Disabling reminders persists independently of the numeric settings")
+        model.updatePacingSettings(ARollPacingSettings())
         expect(model.aRollPacingHints[ids[1]] != nil, "The model exposes cross-row reminders")
         model.anchorSearchText = "第三条"
         expect(model.filteredRows.count == 1 && model.aRollPacingHints[ids[2]]?.cumulativeCharacterCount == 45,
@@ -67,6 +88,6 @@ struct ARollPacingTests {
         model.undoManager.endUndoGrouping()
         expect(model.aRollPacingHints[model.rows.last!.id]?.cumulativeCharacterCount == 45,
                "Splitting an A-roll row preserves cumulative timing")
-        print("PASS A-roll pacing: boundaries, interruptions, empty anchors, search, roll changes, undo/redo and split")
+        print("PASS A-roll pacing: custom settings, persistence, defaults, boundaries, interruptions, search, undo/redo and split")
     }
 }
