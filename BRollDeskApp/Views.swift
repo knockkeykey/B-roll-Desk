@@ -30,7 +30,7 @@ private enum ListPaneMetrics {
     static let headerHeight: CGFloat = WindowHeaderMetrics.height
     static let toolsHeight: CGFloat = 54
     static let anchorToolsHeight: CGFloat = toolsHeight
-    static let scriptTimelineHeight: CGFloat = 64
+    static let scriptTimelineHeight: CGFloat = 96
 }
 
 private enum WorkspacePaneMetrics {
@@ -461,26 +461,30 @@ private struct ListScrollbarOverlay: NSViewRepresentable {
     }
 
     private func findScrollView(around view: NSView) -> NSScrollView? {
-        var ancestor = view.superview
-        while let candidate = ancestor {
-            if let scrollView = candidate as? NSScrollView { return scrollView }
-            ancestor = candidate.superview
-        }
-
-        guard let root = view.window?.contentView else { return nil }
-        let marker = view.convert(view.bounds, to: nil)
-        let point = NSPoint(x: marker.midX, y: marker.midY)
-        var candidates: [NSScrollView] = []
-        var pending = [root]
-        while let current = pending.popLast() {
-            if let scrollView = current as? NSScrollView,
-               scrollView.convert(scrollView.bounds, to: nil).contains(point) {
-                candidates.append(scrollView)
-            }
-            pending.append(contentsOf: current.subviews)
-        }
-        return candidates.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
+        enclosingListScrollView(around: view)
     }
+}
+
+private func enclosingListScrollView(around view: NSView) -> NSScrollView? {
+    var ancestor = view.superview
+    while let candidate = ancestor {
+        if let scrollView = candidate as? NSScrollView { return scrollView }
+        ancestor = candidate.superview
+    }
+
+    guard let root = view.window?.contentView else { return nil }
+    let marker = view.convert(view.bounds, to: nil)
+    let point = NSPoint(x: marker.midX, y: marker.midY)
+    var candidates: [NSScrollView] = []
+    var pending = [root]
+    while let current = pending.popLast() {
+        if let scrollView = current as? NSScrollView,
+           scrollView.convert(scrollView.bounds, to: nil).contains(point) {
+            candidates.append(scrollView)
+        }
+        pending.append(contentsOf: current.subviews)
+    }
+    return candidates.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
 }
 
 private final class ListScrollbar: NSView {
@@ -1744,14 +1748,9 @@ private struct SidebarRollRatioView: View {
     }
 }
 
-private struct BrollProductionMethodStat: Identifiable {
-    let method: BrollProductionMethod
-    let count: Int
-
-    var id: String { method.rawValue }
-
+private extension BrollProductionMethod {
     var color: Color {
-        switch method {
+        switch self {
         case .undecided: return .gray
         case .liveAction: return .green
         case .animation: return .orange
@@ -1762,6 +1761,14 @@ private struct BrollProductionMethodStat: Identifiable {
         case .other: return .indigo
         }
     }
+}
+
+private struct BrollProductionMethodStat: Identifiable {
+    let method: BrollProductionMethod
+    let count: Int
+
+    var id: String { method.rawValue }
+    var color: Color { method.color }
 
     func percentageText(of total: Int) -> String {
         Self.percentageText(for: count, of: total)
@@ -1892,11 +1899,200 @@ private struct BrollStatisticsView: View {
     }
 }
 
+private struct ScriptRowVisibilityMarker: NSViewRepresentable {
+    let rowID: String
+    var tracksTextEditing = false
+
+    func makeNSView(context: Context) -> ScriptRowMarkerView {
+        let view = ScriptRowMarkerView()
+        view.rowID = rowID
+        view.tracksTextEditing = tracksTextEditing
+        return view
+    }
+
+    func updateNSView(_ view: ScriptRowMarkerView, context: Context) {
+        view.rowID = rowID
+        view.tracksTextEditing = tracksTextEditing
+    }
+}
+
+private final class ScriptRowMarkerView: NSView {
+    var rowID = ""
+    var tracksTextEditing = false
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct ScriptListVisibilityObserver: NSViewRepresentable {
+    let onChange: ([VisibleScriptRow]) -> Void
+    let onSelectRow: (String) -> Void
+    let onDoubleClickRow: (String) -> Void
+
+    func makeNSView(context: Context) -> ScriptListVisibilityView {
+        let view = ScriptListVisibilityView()
+        view.onChange = onChange
+        view.onSelectRow = onSelectRow
+        view.onDoubleClickRow = onDoubleClickRow
+        return view
+    }
+
+    func updateNSView(_ view: ScriptListVisibilityView, context: Context) {
+        view.onChange = onChange
+        view.onSelectRow = onSelectRow
+        view.onDoubleClickRow = onDoubleClickRow
+        view.scheduleUpdate()
+    }
+
+    static func dismantleNSView(_ view: ScriptListVisibilityView, coordinator: ()) {
+        view.stopObserving()
+    }
+}
+
+/// Read the native list viewport so cached/offscreen SwiftUI rows cannot trigger follow mode.
+private final class ScriptListVisibilityView: NSView {
+    var onChange: (([VisibleScriptRow]) -> Void)?
+    var onSelectRow: ((String) -> Void)?
+    var onDoubleClickRow: ((String) -> Void)?
+    private weak var scrollView: NSScrollView?
+    private weak var documentView: NSView?
+    private var observers: [NSObjectProtocol] = []
+    private var pendingUpdate: DispatchWorkItem?
+    private var mouseMonitor: Any?
+    private var lastVisibleRows: [VisibleScriptRow] = []
+    private var attachmentAttempts = 0
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { stopObserving() }
+        else { attachmentAttempts = 0; scheduleUpdate() }
+    }
+
+    override func layout() {
+        super.layout()
+        scheduleUpdate()
+    }
+
+    func stopObserving() {
+        pendingUpdate?.cancel()
+        pendingUpdate = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        mouseMonitor = nil
+        scrollView = nil
+        documentView = nil
+    }
+
+    func scheduleUpdate() {
+        guard window != nil, pendingUpdate == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingUpdate = nil
+            self.updateVisibleRows()
+        }
+        pendingUpdate = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: work)
+    }
+
+    private func updateVisibleRows() {
+        guard let list = enclosingListScrollView(around: self), let document = list.documentView else {
+            if attachmentAttempts < 20 { attachmentAttempts += 1; scheduleUpdate() }
+            return
+        }
+        if list !== scrollView || document !== documentView {
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers.removeAll()
+            scrollView = list
+            documentView = document
+            // Keep native row selection and keyboard navigation, using our card highlight.
+            (document as? NSTableView)?.selectionHighlightStyle = .none
+            if mouseMonitor == nil {
+                mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                    self?.handleRowClick(event)
+                    return event
+                }
+            }
+            list.contentView.postsBoundsChangedNotifications = true
+            document.postsFrameChangedNotifications = true
+            for (name, object) in [(NSView.boundsDidChangeNotification, list.contentView),
+                                   (NSView.frameDidChangeNotification, document)] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) {
+                    [weak self] _ in self?.scheduleUpdate()
+                })
+            }
+        }
+        let clip = list.contentView
+        var pending = [document]
+        var visible: [(CGFloat, VisibleScriptRow)] = []
+        while let view = pending.popLast() {
+            if let marker = view as? ScriptRowMarkerView, !marker.tracksTextEditing,
+               !marker.isHiddenOrHasHiddenAncestor,
+               marker.bounds.height > 0 {
+                let rect = marker.convert(marker.bounds, to: clip)
+                let intersection = rect.intersection(clip.bounds)
+                if !intersection.isNull, intersection.height > 1 {
+                    let top = clip.isFlipped ? intersection.minY - rect.minY : rect.maxY - intersection.maxY
+                    let start = min(1, max(0, top / rect.height))
+                    let end = min(1, start + intersection.height / rect.height)
+                    let order = clip.isFlipped ? rect.minY : -rect.maxY
+                    visible.append((order, VisibleScriptRow(id: marker.rowID,
+                                                           startFraction: Double(start), endFraction: Double(end))))
+                }
+            }
+            pending.append(contentsOf: view.subviews)
+        }
+        // Quantize subpixel layout changes to avoid repeatedly updating SwiftUI during a scroll.
+        let rows = visible.sorted { $0.0 < $1.0 }.map { _, row in
+            VisibleScriptRow(id: row.id, startFraction: (row.startFraction * 100).rounded() / 100,
+                             endFraction: (row.endFraction * 100).rounded() / 100)
+        }
+        guard rows != lastVisibleRows else { return }
+        lastVisibleRows = rows
+        onChange?(rows)
+    }
+
+    private func handleRowClick(_ event: NSEvent) {
+        guard event.window === window, let documentView, let clip = scrollView?.contentView,
+              clip.convert(clip.bounds, to: nil).contains(event.locationInWindow) else { return }
+        var pending = [documentView]
+        var clickedRowID: String?
+        var clickedTextRowID: String?
+        while let view = pending.popLast() {
+            if let marker = view as? ScriptRowMarkerView, !marker.isHiddenOrHasHiddenAncestor,
+               marker.convert(marker.bounds, to: nil).contains(event.locationInWindow) {
+                if marker.tracksTextEditing { clickedTextRowID = marker.rowID }
+                else { clickedRowID = marker.rowID }
+            }
+            pending.append(contentsOf: view.subviews)
+        }
+        let isDoubleClick = event.clickCount == 2
+        // Let controls handle the event before committing the row selection or replacing its text.
+        DispatchQueue.main.async { [weak self] in
+            if let clickedRowID { self?.onSelectRow?(clickedRowID) }
+            if isDoubleClick, let clickedTextRowID { self?.onDoubleClickRow?(clickedTextRowID) }
+        }
+    }
+}
+
+private enum ScriptRowSelectionStyle {
+    static let fill = Color.blue.opacity(0.13)
+    static let border = Color.blue.opacity(0.75)
+    static let borderWidth: CGFloat = 1.5
+}
+
 private struct ScriptDistributionTimeline: View {
     let distribution: ScriptDistribution
+    let productionMethod: (String) -> BrollProductionMethod
+    let visibleRows: [VisibleScriptRow]
+    let selectedRowID: String?
     let onSelectRow: (String) -> Void
     @State private var hoveredRowID: String?
+    @State private var viewport = ScriptTimelineViewport.full
+    @State private var followsScript = true
+    @AppStorage("broll-namer-timeline-visible-fraction") private var storedVisibleFraction = 0.1
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var aRollColor: Color {
         colorScheme == .dark
@@ -1919,64 +2115,167 @@ private struct ScriptDistributionTimeline: View {
                 Text("\(distribution.segments.count) 段")
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
+                HStack(spacing: 2) {
+                    zoomButton("minus", label: "缩小时间线", factor: 1 / 1.5, disabled: viewport.span >= 0.999)
+                    Text("\((1 / viewport.span).formatted(.number.precision(.fractionLength(1))))×")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34)
+                    zoomButton("plus", label: "放大时间线", factor: 1.5,
+                               disabled: viewport.span <= ScriptTimelineViewport.minimumSpan + 0.0001)
+                }
+                Button {
+                    followsScript.toggle()
+                    updateFollowRange()
+                } label: {
+                    Label(followsScript ? "自适应" : "全局总览",
+                          systemImage: followsScript ? "arrow.left.and.right.righttriangle.left.righttriangle.right" : "rectangle.expand.vertical")
+                        .frame(width: 76)
+                        .padding(.vertical, 3)
+                        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                .hoverHelp(followsScript ? "切换到全局总览，固定显示全部文案" : "切换到自适应，恢复记住的缩放比例并跟随文案列表移动")
+                .accessibilityLabel("时间线模式：\(followsScript ? "自适应" : "全局总览")")
+                .accessibilityHint("切换自适应与全局总览")
+                .pointerCursor()
             }
             .font(.system(size: 9, weight: .medium))
             .lineLimit(1)
 
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    ForEach(distribution.segments) { segment in
-                        let width = geometry.size.width * segment.fraction
-                        Button {
-                            onSelectRow(segment.id)
-                        } label: {
-                            Rectangle()
-                                .fill(segment.rollType == .aRoll ? aRollColor : bRollColor)
-                                .overlay(alignment: .trailing) {
-                                    if width >= 3, segment.id != distribution.segments.last?.id {
-                                        Color(nsColor: .windowBackgroundColor).opacity(0.7)
-                                            .frame(width: 0.5)
-                                    }
-                                }
-                                .overlay {
-                                    if hoveredRowID == segment.id {
-                                        Color.primary.opacity(0.15)
-                                    }
-                                }
-                                .frame(width: width, height: 14)
-                                .padding(.vertical, 3)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("第 \(segment.row.index) 条 · \(segment.rollType.title)\n\(segment.row.text)\n点击定位文案")
-                        .accessibilityLabel("第 \(segment.row.index) 条，\(segment.rollType.title)，\(segment.row.text)")
-                        .accessibilityHint("定位到这条文案")
-                        .onHover { isHovered in
-                            if isHovered {
-                                hoveredRowID = segment.id
-                            } else if hoveredRowID == segment.id {
-                                hoveredRowID = nil
-                            }
-                        }
-                        .pointerCursor()
-                        .offset(x: geometry.size.width * segment.startFraction)
+                    ForEach(visibleSegments) { segment in
+                        let start = max(segment.startFraction, viewport.start)
+                        let end = min(segment.endFraction, viewport.end)
+                        segmentButton(segment, width: geometry.size.width * (end - start) / viewport.span)
+                            .offset(x: geometry.size.width * (start - viewport.start) / viewport.span)
                     }
                 }
-                .frame(width: geometry.size.width, height: 20, alignment: .leading)
+                .frame(width: geometry.size.width, height: 24, alignment: .leading)
                 .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-                .overlay(alignment: .bottomLeading) {
-                    endpointLabel("开头").offset(y: 14)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    endpointLabel("结尾").offset(y: 14)
-                }
             }
-            .frame(height: 20)
+            .frame(height: 24)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("文案分布")
+            .accessibilityLabel("文案分布，\(rangeDescription)")
 
+            HStack {
+                endpointLabel(viewport.start <= 0.0001 ? "开头" : "第 \(visibleSegments.first?.row.index ?? 1) 条")
+                Spacer()
+                endpointLabel(viewport.end >= 0.9999 ? "结尾" : "第 \(visibleSegments.last?.row.index ?? 1) 条")
+            }
+            ScriptTimelineNavigator(distribution: distribution, viewport: viewport,
+                                    aRollColor: aRollColor, bRollColor: bRollColor,
+                                    onChange: manuallySetRange)
+                .frame(height: 16)
         }
-        .padding(.bottom, 14)
+        .onAppear { updateFollowRange() }
+        .onChange(of: visibleRows) { _, _ in
+            if followsScript { updateFollowRange() }
+        }
+        .onChange(of: distribution) { _, _ in updateFollowRange() }
+        .onChange(of: selectedRowID) { _, rowID in
+            guard followsScript, let segment = distribution.segments.first(where: { $0.id == rowID }),
+                  segment.startFraction < viewport.start || segment.endFraction > viewport.end else { return }
+            let center = (segment.startFraction + segment.endFraction) / 2
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                viewport = ScriptTimelineViewport(start: center - viewport.span / 2,
+                                                  end: center + viewport.span / 2)
+            }
+        }
+    }
+
+    private var visibleSegments: [ScriptDistribution.Segment] {
+        distribution.segments.filter { $0.endFraction > viewport.start && $0.startFraction < viewport.end }
+    }
+
+    private var rangeDescription: String {
+        "第 \(visibleSegments.first?.row.index ?? 1) 至 \(visibleSegments.last?.row.index ?? 1) 条"
+    }
+
+    private var rememberedSpan: Double {
+        storedVisibleFraction.isFinite
+            ? min(1, max(ScriptTimelineViewport.minimumSpan, storedVisibleFraction))
+            : 0.1
+    }
+
+    private func updateFollowRange() {
+        let next = followsScript
+            ? (ScriptTimelineViewport.following(visibleRows, in: distribution, preservingSpan: rememberedSpan)
+               ?? ScriptTimelineViewport(start: viewport.center - rememberedSpan / 2,
+                                         end: viewport.center + rememberedSpan / 2))
+            : .full
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) { viewport = next }
+    }
+
+    private func manuallySetRange(_ range: ScriptTimelineViewport) {
+        followsScript = true
+        if abs(storedVisibleFraction - range.span) > 0.000000001 || !storedVisibleFraction.isFinite {
+            storedVisibleFraction = range.span
+        }
+        viewport = range
+    }
+
+    private func zoomButton(_ symbol: String, label: String, factor: Double, disabled: Bool) -> some View {
+        Button {
+            manuallySetRange(viewport.zoomed(by: factor))
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .frame(width: 20, height: 18)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .hoverHelp(label)
+        .accessibilityLabel(label)
+        .pointerCursor()
+    }
+
+    private func segmentButton(_ segment: ScriptDistribution.Segment, width: CGFloat) -> some View {
+        let method = productionMethod(segment.id)
+        let methodDescription = segment.rollType == .bRoll ? "，制作方式：\(method.title)" : ""
+        let isSelected = selectedRowID == segment.id
+        return Button {
+            onSelectRow(segment.id)
+        } label: {
+            VStack(spacing: 2) {
+                Rectangle()
+                    .fill(isSelected ? ScriptRowSelectionStyle.fill
+                                     : (segment.rollType == .aRoll ? aRollColor : bRollColor))
+                    .overlay(alignment: .trailing) {
+                        if width >= 3, segment.id != distribution.segments.last?.id {
+                            Color(nsColor: .windowBackgroundColor).opacity(0.7).frame(width: 0.5)
+                        }
+                    }
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 2)
+                                .strokeBorder(ScriptRowSelectionStyle.border,
+                                              lineWidth: min(ScriptRowSelectionStyle.borderWidth, width))
+                        } else if hoveredRowID == segment.id {
+                            Color.blue.opacity(0.08)
+                        }
+                    }
+                    .frame(height: 14)
+                Rectangle()
+                    .fill(segment.rollType == .bRoll ? method.color : .clear)
+                    .frame(height: 2)
+            }
+            .frame(width: max(0, width))
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("第 \(segment.row.index) 条 · \(segment.rollType.title)\(methodDescription)\n\(segment.row.text)\n点击定位文案")
+        .accessibilityLabel("第 \(segment.row.index) 条，\(segment.rollType.title)\(methodDescription)，\(segment.row.text)")
+        .accessibilityHint("定位到这条文案")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .onHover { isHovered in
+            if isHovered { hoveredRowID = segment.id }
+            else if hoveredRowID == segment.id { hoveredRowID = nil }
+        }
+        .pointerCursor()
     }
 
     private func endpointLabel(_ title: String) -> some View {
@@ -1998,6 +2297,90 @@ private struct ScriptDistributionTimeline: View {
     }
 }
 
+private struct ScriptTimelineNavigator: View {
+    let distribution: ScriptDistribution
+    let viewport: ScriptTimelineViewport
+    let aRollColor: Color
+    let bRollColor: Color
+    let onChange: (ScriptTimelineViewport) -> Void
+    @State private var dragOrigin: ScriptTimelineViewport?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(1, geometry.size.width)
+            let selectionWidth = width * viewport.span
+            ZStack(alignment: .leading) {
+                ZStack(alignment: .leading) {
+                    Color.primary.opacity(0.06)
+                    ForEach(distribution.segments) { segment in
+                        Rectangle()
+                            .fill(segment.rollType == .aRoll ? aRollColor.opacity(0.45) : bRollColor.opacity(0.65))
+                            .frame(width: width * segment.fraction, height: 8)
+                            .offset(x: width * segment.startFraction)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                    let center = Double(value.location.x / width)
+                    onChange(ScriptTimelineViewport(start: center - viewport.span / 2, end: center + viewport.span / 2))
+                })
+                .accessibilityHidden(true)
+
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.yellow.opacity(0.16))
+                    .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(.yellow, lineWidth: 2) }
+                    .frame(width: selectionWidth, height: 16)
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 2)
+                        .onChanged { value in
+                            if dragOrigin == nil { dragOrigin = viewport }
+                            guard let origin = dragOrigin else { return }
+                            onChange(origin.moved(by: Double(value.translation.width / width)))
+                        }
+                        .onEnded { _ in dragOrigin = nil })
+                    .offset(x: width * viewport.start)
+                    .help("拖动范围框平移时间线；拖动两端调整并记住缩放比例。滚动文案时只跟随移动，保持缩放比例")
+                    .accessibilityLabel("时间线可视范围")
+                    .accessibilityAdjustableAction { direction in
+                        onChange(viewport.moved(by: direction == .increment ? 0.05 : -0.05))
+                    }
+
+                rangeHandle(isStart: true, width: width)
+                    .offset(x: width * viewport.start - 4)
+                rangeHandle(isStart: false, width: width)
+                    .offset(x: width * viewport.end - 6)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("时间线缩放导航条")
+    }
+
+    private func rangeHandle(isStart: Bool, width: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 3)
+            .fill(.yellow)
+            .overlay { Capsule().fill(Color.black.opacity(0.45)).frame(width: 2, height: 8) }
+            .frame(width: 10, height: 16)
+            .contentShape(Rectangle())
+            .highPriorityGesture(DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    if dragOrigin == nil { dragOrigin = viewport }
+                    guard let origin = dragOrigin else { return }
+                    let offset = Double(value.translation.width / width)
+                    onChange(isStart ? origin.resizingStart(to: origin.start + offset)
+                                     : origin.resizingEnd(to: origin.end + offset))
+                }
+                .onEnded { _ in dragOrigin = nil })
+            .help(isStart ? "拖动左端调整时间线范围起点" : "拖动右端调整时间线范围终点")
+            .accessibilityLabel(isStart ? "时间线范围起点" : "时间线范围终点")
+            .accessibilityAdjustableAction { direction in
+                let offset = direction == .increment ? 0.01 : -0.01
+                onChange(isStart ? viewport.resizingStart(to: viewport.start + offset)
+                                 : viewport.resizingEnd(to: viewport.end + offset))
+            }
+    }
+}
+
 private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
@@ -2015,6 +2398,8 @@ private struct AnchorListView: View {
     @State private var rowPulse: AnchorRowPulse?
     @State private var bindingExitTokens: [String: UUID] = [:]
     @State private var fadingBoundRowIDs: Set<String> = []
+    @State private var visibleScriptRows: [VisibleScriptRow] = []
+    @State private var selectedScriptRowID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -2161,7 +2546,13 @@ private struct AnchorListView: View {
             }
 
             if !distribution.segments.isEmpty {
-                ScriptDistributionTimeline(distribution: distribution, onSelectRow: revealTimelineRow)
+                ScriptDistributionTimeline(
+                    distribution: distribution,
+                    productionMethod: { model.brollProductionMethod(for: $0) },
+                    visibleRows: visibleScriptRows,
+                    selectedRowID: selectedScriptRowID,
+                    onSelectRow: revealTimelineRow
+                )
                     .padding(.horizontal, 16)
                     .frame(height: ListPaneMetrics.scriptTimelineHeight)
                     .overlay(alignment: .bottom) { Divider() }
@@ -2183,7 +2574,7 @@ private struct AnchorListView: View {
                 .modifier(ScriptFileDropTargetModifier { model.importScript(from: $0) })
             } else {
                 ScrollViewReader { proxy in
-                    List {
+                    List(selection: $selectedScriptRowID) {
                         ForEach(filteredRows) { row in
                             SwipeToDeleteAnchorRow(
                                 rowID: row.id,
@@ -2195,6 +2586,7 @@ private struct AnchorListView: View {
                                     row: row,
                                     model: model,
                                     isEditing: editingIndex == row.index - 1,
+                                    isSelected: selectedScriptRowID == row.id,
                                     editingText: $editingText,
                                     editingCursor: editingCursor,
                                     editingSession: editingSession,
@@ -2211,17 +2603,26 @@ private struct AnchorListView: View {
                                 )
                             }
                             .id(row.id)
+                            .tag(row.id)
+                            .background(ScriptRowVisibilityMarker(rowID: row.id).accessibilityHidden(true))
                             .opacity(fadingBoundRowIDs.contains(row.id) ? 0 : 1)
                             .scaleEffect(fadingBoundRowIDs.contains(row.id) ? 0.96 : 1)
                             .offset(y: fadingBoundRowIDs.contains(row.id) ? -12 : 0)
                             .allowsHitTesting(bindingExitTokens[row.id] == nil)
                             .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
                         }
                     }
                     .listStyle(.inset)
                     .scrollIndicators(.hidden)
                     .overlay {
                         AnchorListDropOutline(feedback: model.dropFeedback)
+                    }
+                    .background {
+                        ScriptListVisibilityObserver(onChange: { visibleScriptRows = $0 },
+                                                     onSelectRow: selectScriptRow,
+                                                     onDoubleClickRow: beginEditingRow)
+                            .accessibilityHidden(true)
                     }
                     .overlay(alignment: .trailing) {
                         ListScrollbarOverlay()
@@ -2294,8 +2695,17 @@ private struct AnchorListView: View {
         .onChange(of: filteredRows.map(\.id)) { _, _ in
             revealedDeleteRowID = nil
         }
+        .onChange(of: selectedScriptRowID) { _, _ in revealedDeleteRowID = nil }
+        .onChange(of: model.rows.map(\.id)) { _, rowIDs in
+            if let selectedScriptRowID, !rowIDs.contains(selectedScriptRowID) {
+                self.selectedScriptRowID = nil
+            }
+        }
         .onChange(of: preparationFilter) { _, _ in resetBindingExits() }
-        .onChange(of: model.destinationDirectoryURL) { _, _ in resetBindingExits() }
+        .onChange(of: model.destinationDirectoryURL) { _, _ in
+            resetBindingExits()
+            selectedScriptRowID = nil
+        }
         .onChange(of: boundRowIDs) { oldIDs, newIDs in
             for rowID in oldIDs.subtracting(newIDs) {
                 // Undo or unbinding cancels a pending departure immediately.
@@ -2354,15 +2764,24 @@ private struct AnchorListView: View {
     }
 
     private func revealTimelineRow(_ rowID: String) {
+        guard let index = model.rows.firstIndex(where: { $0.id == rowID }) else { return }
         finishEditing(session: editingSession)
-        guard model.rows.contains(where: { $0.id == rowID }) else { return }
+        guard model.rows.indices.contains(index) else { return }
+        let rowID = model.rows[index].id
+        selectScriptRow(rowID)
         model.anchorSearchText = ""
         rollFilter = .all
         selectedProductionMethods.removeAll()
         preparationFilter = .all
         resetBindingExits()
         pendingScrollRowID = rowID
-        triggerPulse([rowID: .located])
+    }
+
+    private func selectScriptRow(_ rowID: String) {
+        guard bindingExitTokens[rowID] == nil,
+              let index = model.rows.firstIndex(where: { $0.id == rowID }) else { return }
+        if let editingIndex, editingIndex != index { finishEditing(session: editingSession) }
+        selectedScriptRowID = model.rows[index].id
     }
 
     private func beginEditing(_ row: AnchorRow) {
@@ -2370,6 +2789,7 @@ private struct AnchorListView: View {
         if editingIndex != row.index - 1 {
             finishEditing(session: editingSession)
         }
+        selectedScriptRowID = row.id
         model.anchorSearchText = ""
         editingIndex = row.index - 1
         editingText = row.text
@@ -2377,12 +2797,19 @@ private struct AnchorListView: View {
         editingSession = UUID()
     }
 
+    private func beginEditingRow(_ rowID: String) {
+        guard let row = model.rows.first(where: { $0.id == rowID }), editingIndex != row.index - 1 else { return }
+        beginEditing(row)
+    }
+
     private func finishEditing(session: UUID) {
         guard session == editingSession, let index = editingIndex else { return }
         let text = editingText
         editingIndex = nil
         guard model.rows.indices.contains(index), model.rows[index].text != text else { return }
+        let wasSelected = selectedScriptRowID == model.rows[index].id
         model.replaceInlineRow(at: index, with: text)
+        if wasSelected { selectedScriptRowID = model.rows[index].id }
     }
 
     private func splitRow(_ row: AnchorRow, text: String, selection: NSRange) {
@@ -2396,6 +2823,7 @@ private struct AnchorListView: View {
             editingCursor = 0
         }
         pendingScrollRowID = model.rows[index + 1].id
+        selectedScriptRowID = model.rows[index + 1].id
         triggerPulse([
             model.rows[index].id: .splitSource,
             model.rows[index + 1].id: .splitInserted
@@ -2418,6 +2846,7 @@ private struct AnchorListView: View {
         }
         guard mergedCursor != nil else { return }
         pendingScrollRowID = model.rows[index - 1].id
+        selectedScriptRowID = model.rows[index - 1].id
         triggerPulse([model.rows[index - 1].id: .merged])
     }
 
@@ -2443,7 +2872,6 @@ struct AnchorRowPulse: Equatable {
         case splitSource
         case splitInserted
         case merged
-        case located
     }
 
     struct Target: Equatable {
@@ -2723,6 +3151,7 @@ private struct AnchorRowView: View {
     let row: AnchorRow
     @Bindable var model: AppModel
     let isEditing: Bool
+    let isSelected: Bool
     @Binding var editingText: String
     let editingCursor: Int
     let editingSession: UUID
@@ -2755,15 +3184,17 @@ private struct AnchorRowView: View {
     private var isBroll: Bool { model.rollType(for: row.id) == .bRoll }
 
     private var rowFill: Color {
-        isDropTarget ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.025)
+        if isSelected { return ScriptRowSelectionStyle.fill }
+        return isDropTarget ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.025)
     }
 
     private var rowBorder: Color {
-        isDropTarget || isBinding ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.07)
+        if isSelected { return ScriptRowSelectionStyle.border }
+        return isDropTarget || isBinding ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.07)
     }
 
     private var rowBorderWidth: CGFloat {
-        isDropTarget ? 1.5 : 0.5
+        isSelected ? ScriptRowSelectionStyle.borderWidth : (isDropTarget ? 1.5 : 0.5)
     }
 
     // Pulse tint follows the row's roll type: blue for A-roll, green for B-roll.
@@ -2784,8 +3215,6 @@ private struct AnchorRowView: View {
                 pulseScale = 0.99
             case .merged:
                 pulseScale = 0.955
-            case .located:
-                break
             }
         }
         withAnimation(.spring(response: 0.38, dampingFraction: pulse.kind == .merged ? 0.52 : 0.7)) {
@@ -2883,6 +3312,8 @@ private struct AnchorRowView: View {
                             .foregroundStyle(row.text.isEmpty ? .tertiary : .primary)
                             .lineSpacing(2)
                             .contentShape(Rectangle())
+                            .background(ScriptRowVisibilityMarker(rowID: row.id, tracksTextEditing: true)
+                                .accessibilityHidden(true))
                             .onTapGesture(count: 2, perform: beginEditing)
                             .pointerCursor()
                     }

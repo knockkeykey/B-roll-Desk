@@ -236,6 +236,71 @@ struct ScriptDistribution: Equatable {
     }
 }
 
+struct VisibleScriptRow: Equatable {
+    let id: String
+    let startFraction: Double
+    let endFraction: Double
+}
+
+/// A normalized window into the complete script; all navigation shares these bounds.
+struct ScriptTimelineViewport: Equatable {
+    static let minimumSpan = 0.02
+    static let full = ScriptTimelineViewport(start: 0, end: 1)
+
+    let start: Double
+    let end: Double
+
+    var span: Double { end - start }
+    var center: Double { (start + end) / 2 }
+
+    init(start: Double, end: Double) {
+        guard start.isFinite, end.isFinite else {
+            self.start = 0
+            self.end = 1
+            return
+        }
+        let span = min(1, max(Self.minimumSpan, end - start))
+        let lower = min(1 - span, max(0, (start + end - span) / 2))
+        self.start = lower
+        self.end = lower + span
+    }
+
+    func zoomed(by factor: Double) -> Self {
+        guard factor.isFinite, factor > 0 else { return self }
+        let newSpan = min(1, max(Self.minimumSpan, span / factor))
+        return Self(start: center - newSpan / 2, end: center + newSpan / 2)
+    }
+
+    func moved(by offset: Double) -> Self {
+        guard offset.isFinite else { return self }
+        let lower = min(1 - span, max(0, start + offset))
+        return Self(start: lower, end: lower + span)
+    }
+
+    func resizingStart(to value: Double) -> Self {
+        guard value.isFinite else { return self }
+        return Self(start: min(end - Self.minimumSpan, max(0, value)), end: end)
+    }
+
+    func resizingEnd(to value: Double) -> Self {
+        guard value.isFinite else { return self }
+        return Self(start: start, end: max(start + Self.minimumSpan, min(1, value)))
+    }
+
+    static func following(_ visibleRows: [VisibleScriptRow], in distribution: ScriptDistribution,
+                          preservingSpan span: Double) -> Self? {
+        let visible = Dictionary(visibleRows.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let ranges = distribution.segments.compactMap { segment -> (Double, Double)? in
+            guard let row = visible[segment.id] else { return nil }
+            return (segment.startFraction + segment.fraction * row.startFraction,
+                    segment.startFraction + segment.fraction * row.endFraction)
+        }
+        guard let lower = ranges.map(\.0).min(), let upper = ranges.map(\.1).max() else { return nil }
+        let center = (lower + upper) / 2
+        return Self(start: center - span / 2, end: center + span / 2)
+    }
+}
+
 struct ARollPacingSettings: Equatable {
     let charactersPerMinute: Int
     let maximumContinuousSeconds: Double
