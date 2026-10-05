@@ -864,7 +864,7 @@ private struct SidebarView: View {
                 .accessibilityLabel("设置")
                 .pointerCursor()
                 .popover(isPresented: $isSettingsPresented, arrowEdge: .bottom) {
-                    PacingSettingsPopover(model: model)
+                    AppSettingsPopover(model: model)
                 }
                 Button {
                     isWorkflowHelpPresented = true
@@ -898,7 +898,7 @@ private struct SidebarView: View {
     }
 }
 
-private struct PacingSettingsPopover: View {
+private struct AppSettingsPopover: View {
     @Bindable var model: AppModel
     @State private var rateText: String
     @State private var thresholdText: String
@@ -986,7 +986,7 @@ private struct PacingSettingsPopover: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
-                Text("修改后自动保存，适用于所有项目。")
+                Text("语速和提醒修改后自动保存。")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                 Spacer()
@@ -998,12 +998,79 @@ private struct PacingSettingsPopover: View {
                 }
                 .controlSize(.small)
             }
+
+            Divider()
+            ShootingDeviceSettingsView(model: model)
         }
         .textFieldStyle(.roundedBorder)
         .padding(20)
         .frame(width: 360)
         .onChange(of: rateText) { _, _ in applyDraft() }
         .onChange(of: thresholdText) { _, _ in applyDraft() }
+    }
+}
+
+private struct ShootingDeviceSettingsView: View {
+    @Bindable var model: AppModel
+    @State private var drafts: [ShootingDevice]
+
+    init(model: AppModel) {
+        self.model = model
+        _drafts = State(initialValue: model.shootingDevices)
+    }
+
+    private var validatedDrafts: [ShootingDevice]? { ShootingDevice.validated(drafts) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("拍摄设备")
+                .font(.system(size: 14, weight: .medium))
+            Text("用于 A-roll 条目的拍摄设备选项。")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach($drafts) { $device in
+                        HStack {
+                            TextField("设备名称", text: $device.name)
+                                .accessibilityLabel("拍摄设备名称：\(device.name)")
+                            Button {
+                                drafts.removeAll { $0.id == device.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain)
+                            .help("删除设备选项")
+                            .accessibilityLabel("删除拍摄设备：\(device.name)")
+                        }
+                    }
+                }
+            }
+            .frame(height: min(132, CGFloat(drafts.count) * 30))
+
+            if validatedDrafts == nil {
+                Text("设备名称不能为空或重复。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+            }
+
+            HStack {
+                Button("添加设备", systemImage: "plus") {
+                    drafts.append(ShootingDevice(name: ""))
+                }
+                Spacer()
+                Button("保存设备选项") {
+                    if model.updateShootingDevices(drafts) { drafts = model.shootingDevices }
+                }
+                .disabled(validatedDrafts == nil || validatedDrafts == model.shootingDevices)
+            }
+            .controlSize(.small)
+
+            Text("修改后点击保存，适用于所有项目。")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
     }
 }
 
@@ -2724,9 +2791,21 @@ private struct AnchorRowView: View {
                             .pointerCursor()
                         }
                         if isBroll {
-                            BrollProductionMethodMenu(
+                            RollProductionMethodMenu(
                                 selection: model.brollProductionMethod(for: row.id),
+                                rollType: .bRoll,
                                 onSelect: { model.setBrollProductionMethod($0, for: row.id) }
+                            )
+                        } else {
+                            ShootingDeviceMenu(
+                                selection: model.shootingDevice(for: row.id),
+                                devices: model.shootingDevices,
+                                onSelect: { model.setShootingDevice($0, for: row.id) }
+                            )
+                            RollProductionMethodMenu(
+                                selection: model.arollProductionMethod(for: row.id),
+                                rollType: .aRoll,
+                                onSelect: { model.setArollProductionMethod($0, for: row.id) }
                             )
                         }
                         RollTypeTag(
@@ -3115,15 +3194,62 @@ private struct BrollProductionMethodFilterMenu: View {
     }
 }
 
-private struct BrollProductionMethodMenu: View {
-    let selection: BrollProductionMethod
-    let onSelect: (BrollProductionMethod) -> Void
+private struct ShootingDeviceMenu: View {
+    let selection: ShootingDevice?
+    let devices: [ShootingDevice]
+    let onSelect: (ShootingDevice?) -> Void
+
+    var body: some View {
+        Menu {
+            Button { onSelect(nil) } label: {
+                if selection == nil {
+                    Label("无", systemImage: "checkmark")
+                } else {
+                    Text("无")
+                }
+            }
+            ForEach(devices) { device in
+                Button { onSelect(device) } label: {
+                    if selection?.id == device.id {
+                        Label(device.name, systemImage: "checkmark")
+                    } else {
+                        Text(device.name)
+                    }
+                }
+            }
+            if let selection, !devices.contains(where: { $0.id == selection.id }) {
+                Divider()
+                Label(selection.name, systemImage: "checkmark")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "camera")
+                Text(selection?.name ?? "拍摄设备")
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .modifier(RowMetaControlChrome())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("选择这个 A-roll 的拍摄设备，可在左下角设置中编辑设备选项")
+        .accessibilityLabel("拍摄设备：\(selection?.name ?? "无")")
+        .pointerCursor()
+    }
+}
+
+private struct RollProductionMethodMenu<Method: RollProductionMethod>: View {
+    let selection: Method
+    let rollType: AnchorRollType
+    let onSelect: (Method) -> Void
 
     private var title: String { selection.title }
 
     var body: some View {
         Menu {
-            ForEach(BrollProductionMethod.allCases) { method in
+            ForEach(Array(Method.allCases)) { method in
                 Button {
                     onSelect(method)
                 } label: {
@@ -3147,7 +3273,7 @@ private struct BrollProductionMethodMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("选择这个 B-roll 的制作方式")
+        .help("选择这个 \(rollType.title) 的制作方式")
         .accessibilityLabel("制作方式：\(selection.title)")
         .pointerCursor()
     }

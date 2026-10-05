@@ -16,6 +16,8 @@ final class AppModel {
         let anchorNotes: [String: String]
         let rollTypeOverrides: [String: AnchorRollType]
         let capturedBrollRowIDs: Set<String>
+        let arollProductionMethods: [String: ArollProductionMethod]
+        let arollShootingDevices: [String: ShootingDevice?]
         let brollProductionMethods: [String: BrollProductionMethod]
         let brollPreparationStatuses: [String: BrollPreparationStatus]
         let animationTasks: [AnimationTask]
@@ -44,6 +46,7 @@ final class AppModel {
     private var preservesEmptyAnchors: Bool
     var prefix: String
     private(set) var pacingSettings: ARollPacingSettings
+    private(set) var shootingDevices: [ShootingDevice] = ShootingDevice.defaults
     var anchorSearchText = ""
     let dropFeedback = DropFeedbackModel()
     var selectedSourceFileURL: URL?
@@ -99,6 +102,8 @@ final class AppModel {
     private(set) var anchorNotes: [String: String] = [:]
     private(set) var rollTypeOverrides: [String: AnchorRollType] = [:]
     private(set) var capturedBrollRowIDs: Set<String> = []
+    private(set) var arollProductionMethods: [String: ArollProductionMethod] = [:]
+    private(set) var arollShootingDevices: [String: ShootingDevice?] = [:]
     private(set) var brollProductionMethods: [String: BrollProductionMethod] = [:]
     private(set) var brollPreparationStatuses: [String: BrollPreparationStatus] = [:]
     private(set) var sourceFiles: [SourceFile] = []
@@ -150,6 +155,9 @@ final class AppModel {
     private let anchorNotesKey = "broll-namer-anchor-notes"
     private let rollTypeOverridesKey = "broll-namer-roll-type-overrides"
     private let capturedBrollRowsKey = "broll-namer-captured-broll-rows"
+    private let arollProductionMethodsKey = "broll-namer-aroll-production-methods"
+    private let shootingDevicesKey = "broll-namer-shooting-devices"
+    private let arollShootingDevicesKey = "broll-namer-aroll-shooting-devices"
     private let brollProductionMethodsKey = "broll-namer-production-methods"
     private let brollPreparationStatusesKey = "broll-namer-preparation-statuses"
     private let prefixKey = "broll-namer-prefix"
@@ -162,6 +170,14 @@ final class AppModel {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        if let data = defaults.data(forKey: shootingDevicesKey),
+           let saved = try? JSONDecoder().decode([ShootingDevice].self, from: data),
+           let validated = ShootingDevice.validated(saved) {
+            shootingDevices = validated
+        }
+        if let data = defaults.data(forKey: arollShootingDevicesKey) {
+            arollShootingDevices = (try? JSONDecoder().decode([String: ShootingDevice?].self, from: data)) ?? [:]
+        }
         undoManager.levelsOfUndo = 50
         scriptText = defaults.string(forKey: scriptKey) ?? ""
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
@@ -179,6 +195,10 @@ final class AppModel {
             return AnchorRollType(rawValue: rawValue)
         }
         capturedBrollRowIDs = Set(defaults.stringArray(forKey: capturedBrollRowsKey) ?? [])
+        arollProductionMethods = (defaults.dictionary(forKey: arollProductionMethodsKey) ?? [:]).compactMapValues { value in
+            guard let rawValue = value as? String else { return nil }
+            return ArollProductionMethod(rawValue: rawValue)
+        }
         brollProductionMethods = (defaults.dictionary(forKey: brollProductionMethodsKey) ?? [:]).compactMapValues { value in
             guard let rawValue = value as? String else { return nil }
             return BrollProductionMethod(rawValue: rawValue)
@@ -422,6 +442,61 @@ final class AppModel {
         registerUndo(named: "切换 A/B-roll", restoring: before)
     }
 
+    func shootingDevice(for rowID: String) -> ShootingDevice? {
+        guard let selection = arollShootingDevices[rowID] else {
+            return shootingDevices.first(where: { $0.id == ShootingDevice.defaults[0].id })
+        }
+        guard let saved = selection else { return nil }
+        return shootingDevices.first(where: { $0.id == saved.id }) ?? saved
+    }
+
+    func setShootingDevice(_ device: ShootingDevice?, for rowID: String) {
+        guard let row = rows.first(where: { $0.id == rowID }), rollType(for: rowID) == .aRoll,
+              shootingDevice(for: rowID)?.id != device?.id else { return }
+        if let device, !shootingDevices.contains(where: { $0.id == device.id }) { return }
+
+        let before = makeUndoSnapshot()
+        if let device {
+            arollShootingDevices[rowID] = shootingDevices.first(where: { $0.id == device.id })
+        } else {
+            arollShootingDevices.updateValue(nil, forKey: rowID)
+        }
+        persistPreferences()
+        lastSaved = "本机已保存 \(Self.timeString())"
+        statusMessage = "BR\(String(format: "%03d", row.index)) 拍摄设备：\(device?.name ?? "无")"
+        registerUndo(named: "更改 A-roll 拍摄设备", restoring: before)
+    }
+
+    @discardableResult
+    func updateShootingDevices(_ devices: [ShootingDevice]) -> Bool {
+        guard let validated = ShootingDevice.validated(devices) else { return false }
+        shootingDevices = validated
+        defaults.set(try? JSONEncoder().encode(validated), forKey: shootingDevicesKey)
+        arollShootingDevices = arollShootingDevices.mapValues { saved -> ShootingDevice? in
+            guard let saved else { return nil }
+            return validated.first(where: { $0.id == saved.id }) ?? saved
+        }
+        persistPreferences()
+        statusMessage = "拍摄设备选项已保存"
+        return true
+    }
+
+    func arollProductionMethod(for rowID: String) -> ArollProductionMethod {
+        arollProductionMethods[rowID] ?? .none
+    }
+
+    func setArollProductionMethod(_ method: ArollProductionMethod, for rowID: String) {
+        guard let row = rows.first(where: { $0.id == rowID }), rollType(for: rowID) == .aRoll,
+              arollProductionMethod(for: rowID) != method else { return }
+
+        let before = makeUndoSnapshot()
+        arollProductionMethods[rowID] = method
+        persistPreferences()
+        lastSaved = "本机已保存 \(Self.timeString())"
+        statusMessage = "BR\(String(format: "%03d", row.index)) 制作方式：\(method.title)"
+        registerUndo(named: "更改 A-roll 制作方式", restoring: before)
+    }
+
     func brollProductionMethod(for rowID: String) -> BrollProductionMethod {
         brollProductionMethods[rowID] ?? .liveAction
     }
@@ -499,6 +574,8 @@ final class AppModel {
         defaults.set(prefix, forKey: prefixKey)
         defaults.set(rollTypeOverrides.mapValues(\.rawValue), forKey: rollTypeOverridesKey)
         defaults.set(capturedBrollRowIDs.sorted(), forKey: capturedBrollRowsKey)
+        defaults.set(arollProductionMethods.mapValues(\.rawValue), forKey: arollProductionMethodsKey)
+        defaults.set(try? JSONEncoder().encode(arollShootingDevices), forKey: arollShootingDevicesKey)
         defaults.set(brollProductionMethods.mapValues(\.rawValue), forKey: brollProductionMethodsKey)
         defaults.set(brollPreparationStatuses.mapValues(\.rawValue), forKey: brollPreparationStatusesKey)
         defaults.set(try? JSONEncoder().encode(animationTasks), forKey: animationTasksKey)
@@ -569,6 +646,8 @@ final class AppModel {
         }
         rollTypeOverrides = rollTypeOverrides.filter { currentRowIDs.contains($0.key) }
         capturedBrollRowIDs = capturedBrollRowIDs.filter { currentRowIDs.contains($0) }
+        arollProductionMethods = arollProductionMethods.filter { currentRowIDs.contains($0.key) }
+        arollShootingDevices = arollShootingDevices.filter { currentRowIDs.contains($0.key) }
         brollProductionMethods = brollProductionMethods.filter { currentRowIDs.contains($0.key) }
         brollPreparationStatuses = brollPreparationStatuses.filter { currentRowIDs.contains($0.key) }
         rebuildAssignmentIndexes()
@@ -639,6 +718,8 @@ final class AppModel {
         let previousNotes = anchorNotes
         let previousRollTypeOverrides = rollTypeOverrides
         let previousCapturedBrollRowIDs = capturedBrollRowIDs
+        let previousArollProductionMethods = arollProductionMethods
+        let previousShootingDevices = arollShootingDevices
         let previousBrollProductionMethods = brollProductionMethods
         let previousBrollPreparationStatuses = brollPreparationStatuses
         let previousAnimationTasks = animationTasks
@@ -675,6 +756,24 @@ final class AppModel {
                     previousCapturedBrollRowIDs.contains(previousRows[sourceIndex].id)
             }
             return wasCaptured ? row.id : nil
+        })
+        arollProductionMethods = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
+            guard sourceIndices.indices.contains(offset) else { return nil }
+            let inheritedMethod = sourceIndices[offset]
+                .compactMap { sourceIndex -> ArollProductionMethod? in
+                    guard previousRows.indices.contains(sourceIndex) else { return nil }
+                    return previousArollProductionMethods[previousRows[sourceIndex].id]
+                }
+                .first
+            return inheritedMethod.map { (row.id, $0) }
+        })
+        arollShootingDevices = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
+            guard sourceIndices.indices.contains(offset) else { return nil }
+            let inheritedDevice = sourceIndices[offset].compactMap { sourceIndex -> ShootingDevice?? in
+                guard previousRows.indices.contains(sourceIndex) else { return nil }
+                return previousShootingDevices[previousRows[sourceIndex].id]
+            }.first
+            return inheritedDevice.map { (row.id, $0) }
         })
         brollProductionMethods = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
             guard sourceIndices.indices.contains(offset) else { return nil }
@@ -901,6 +1000,8 @@ final class AppModel {
         anchorNotes = [:]
         rollTypeOverrides = [:]
         capturedBrollRowIDs = []
+        arollProductionMethods = [:]
+        arollShootingDevices = [:]
         brollProductionMethods = [:]
         brollPreparationStatuses = [:]
         rebuildAssignmentIndexes()
@@ -1768,6 +1869,8 @@ final class AppModel {
             anchorNotes: anchorNotes,
             rollTypeOverrides: rollTypeOverrides,
             capturedBrollRowIDs: capturedBrollRowIDs,
+            arollProductionMethods: arollProductionMethods,
+            arollShootingDevices: arollShootingDevices,
             brollProductionMethods: brollProductionMethods,
             brollPreparationStatuses: brollPreparationStatuses,
             animationTasks: animationTasks
@@ -1798,6 +1901,8 @@ final class AppModel {
         anchorNotes = snapshot.anchorNotes
         rollTypeOverrides = snapshot.rollTypeOverrides
         capturedBrollRowIDs = snapshot.capturedBrollRowIDs
+        arollProductionMethods = snapshot.arollProductionMethods
+        arollShootingDevices = snapshot.arollShootingDevices
         brollProductionMethods = snapshot.brollProductionMethods
         brollPreparationStatuses = snapshot.brollPreparationStatuses
         animationTasks = snapshot.animationTasks
@@ -2477,6 +2582,11 @@ final class AppModel {
         anchorNotes = settings.anchorNotes
         rollTypeOverrides = settings.rollTypeOverrides
         capturedBrollRowIDs = Set(settings.capturedBrollRowIDs)
+        arollProductionMethods = settings.arollProductionMethods
+        arollShootingDevices = settings.arollShootingDevices.mapValues { saved -> ShootingDevice? in
+            guard let saved else { return nil }
+            return shootingDevices.first(where: { $0.id == saved.id }) ?? saved
+        }
         brollProductionMethods = settings.brollProductionMethods
         cancelAnimationAnalysis()
         animationImportIssues = []
@@ -2661,6 +2771,11 @@ final class AppModel {
             anchorNotes: anchorNotes,
             rollTypeOverrides: rollTypeOverrides,
             capturedBrollRowIDs: capturedBrollRowIDs.sorted(),
+            arollProductionMethods: arollProductionMethods,
+            arollShootingDevices: arollShootingDevices.mapValues { saved -> ShootingDevice? in
+                guard let saved else { return nil }
+                return shootingDevices.first(where: { $0.id == saved.id }) ?? saved
+            },
             brollProductionMethods: brollProductionMethods,
             brollPreparationStatuses: brollPreparationStatuses,
             assignments: assignments,

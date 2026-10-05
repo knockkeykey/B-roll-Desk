@@ -59,7 +59,61 @@ enum AnchorRollType: String, Codable, Equatable {
     }
 }
 
-enum BrollProductionMethod: String, CaseIterable, Codable, Equatable, Hashable, Identifiable {
+protocol RollProductionMethod: CaseIterable, Equatable, Identifiable {
+    var title: String { get }
+    var systemImage: String { get }
+}
+
+struct ShootingDevice: Codable, Equatable, Identifiable {
+    let id: String
+    var name: String
+
+    init(id: String = UUID().uuidString.lowercased(), name: String) {
+        self.id = id
+        self.name = name
+    }
+
+    static let defaults = [
+        ShootingDevice(id: "sony", name: "索尼"),
+        ShootingDevice(id: "dji", name: "大疆")
+    ]
+
+    static func validated(_ devices: [ShootingDevice]) -> [ShootingDevice]? {
+        let normalized = devices.map {
+            ShootingDevice(id: $0.id, name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard normalized.allSatisfy({ !$0.id.isEmpty && !$0.name.isEmpty }),
+              Set(normalized.map(\.id)).count == normalized.count,
+              Set(normalized.map { $0.name.lowercased() }).count == normalized.count else { return nil }
+        return normalized
+    }
+}
+
+enum ArollProductionMethod: String, RollProductionMethod, Codable, Hashable {
+    case none
+    case text
+    case searchMaterial
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: return "无"
+        case .text: return "文字"
+        case .searchMaterial: return "搜索素材"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .none: return "minus.circle"
+        case .text: return "text.alignleft"
+        case .searchMaterial: return "magnifyingglass"
+        }
+    }
+}
+
+enum BrollProductionMethod: String, RollProductionMethod, Codable, Hashable {
     case undecided
     case liveAction
     case animation
@@ -513,6 +567,8 @@ struct BrollProjectSettings: Codable {
     var anchorNotes: [String: String]
     var rollTypeOverrides: [String: AnchorRollType]
     var capturedBrollRowIDs: [String]
+    var arollProductionMethods: [String: ArollProductionMethod]
+    var arollShootingDevices: [String: ShootingDevice?]
     var brollProductionMethods: [String: BrollProductionMethod]
     var brollPreparationStatuses: [String: BrollPreparationStatus]
     var assignments: [String: [BrollAsset]]
@@ -528,6 +584,8 @@ struct BrollProjectSettings: Codable {
         anchorNotes: [String: String] = [:],
         rollTypeOverrides: [String: AnchorRollType] = [:],
         capturedBrollRowIDs: [String] = [],
+        arollProductionMethods: [String: ArollProductionMethod] = [:],
+        arollShootingDevices: [String: ShootingDevice?] = [:],
         brollProductionMethods: [String: BrollProductionMethod] = [:],
         brollPreparationStatuses: [String: BrollPreparationStatus] = [:],
         assignments: [String: [BrollAsset]] = [:],
@@ -543,6 +601,8 @@ struct BrollProjectSettings: Codable {
         self.anchorNotes = anchorNotes
         self.rollTypeOverrides = rollTypeOverrides
         self.capturedBrollRowIDs = capturedBrollRowIDs
+        self.arollProductionMethods = arollProductionMethods
+        self.arollShootingDevices = arollShootingDevices
         self.brollProductionMethods = brollProductionMethods
         self.brollPreparationStatuses = brollPreparationStatuses
         self.assignments = assignments
@@ -561,6 +621,8 @@ struct BrollProjectSettings: Codable {
         case anchorNotes
         case rollTypeOverrides
         case capturedBrollRowIDs
+        case arollProductionMethods
+        case arollShootingDevices
         case brollProductionMethods
         case brollPreparationStatuses
         case assignments
@@ -586,6 +648,13 @@ struct BrollProjectSettings: Codable {
         anchorNotes = try container.decodeIfPresent([String: String].self, forKey: .anchorNotes) ?? [:]
         rollTypeOverrides = try container.decodeIfPresent([String: AnchorRollType].self, forKey: .rollTypeOverrides) ?? [:]
         capturedBrollRowIDs = try container.decodeIfPresent([String].self, forKey: .capturedBrollRowIDs) ?? []
+        arollProductionMethods = try container.decodeIfPresent(
+            [String: ArollProductionMethod].self,
+            forKey: .arollProductionMethods
+        ) ?? [:]
+        arollShootingDevices = try container.decodeIfPresent(
+            [String: ShootingDevice?].self, forKey: .arollShootingDevices
+        ) ?? [:]
         brollProductionMethods = try container.decodeIfPresent(
             [String: BrollProductionMethod].self,
             forKey: .brollProductionMethods
@@ -610,6 +679,8 @@ struct BrollProjectSettings: Codable {
         try container.encode(anchorNotes, forKey: .anchorNotes)
         try container.encode(rollTypeOverrides, forKey: .rollTypeOverrides)
         try container.encode(capturedBrollRowIDs, forKey: .capturedBrollRowIDs)
+        try container.encode(arollProductionMethods, forKey: .arollProductionMethods)
+        try container.encode(arollShootingDevices, forKey: .arollShootingDevices)
         try container.encode(brollProductionMethods, forKey: .brollProductionMethods)
         try container.encode(brollPreparationStatuses, forKey: .brollPreparationStatuses)
         try container.encode(assignments, forKey: .assignments)
