@@ -17,12 +17,6 @@ private func rejects(_ message: String, _ work: () throws -> Void) {
     try action()
 }
 
-@MainActor private func asyncEvent(_ model: AppModel, _ action: () async -> Void) async {
-    model.undoManager.beginUndoGrouping()
-    await action()
-    model.undoManager.endUndoGrouping()
-}
-
 private final class MockDeepSeekProtocol: URLProtocol {
     static var status = 200
     static var body = ""
@@ -116,11 +110,6 @@ struct AnimationWorkflowTests {
         expect(prompt.contains("【统一制作要求】") && prompt.contains("视频文件名与对应文案一致"), "Naming belongs in shared requirements")
         let singlePrompt = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate)
         expect(singlePrompt.contains("表达重点：汇聚") && !singlePrompt.contains("画面思路：") && singlePrompt.contains("视频文件的命名需要是文案。"), "Single copy retains template naming and expression focus")
-        let file = URL(fileURLWithPath: "/tmp/素材汇聚.mov")
-        expect(AnimationWorkflow.matches(files: [file], tasks: [task])[file] == task.id, "Punctuation and extension differences should match")
-        expect(AnimationWorkflow.matches(files: [file, URL(fileURLWithPath: "/tmp/素材汇聚。.mp4")], tasks: [task]).isEmpty, "Two versions must not select arbitrarily")
-        var duplicateTask = task; duplicateTask.id = "other"
-        expect(AnimationWorkflow.matches(files: [file], tasks: [task, duplicateTask]).isEmpty, "Duplicate text must remain ambiguous")
         let noCharacter = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate)
         expect(!noCharacter.contains("{{character}}") && noCharacter.contains("小螃蟹角色换成 你提供的角色参考图") && noCharacter.contains(task.text), "Unset character preserves the replacement instruction without an unresolved placeholder")
         let noCharacterBatch = AnimationWorkflow.prompts(for: [task, secondTask], template: AnimationWorkflow.defaultTemplate)
@@ -141,30 +130,7 @@ struct AnimationWorkflowTests {
         let mixedBatch = AnimationWorkflow.prompts(for: [blankFocus, secondTask], template: AnimationWorkflow.defaultTemplate, outputDirectory: outputDirectory)
         expect(mixedBatch.components(separatedBy: outputLine).count == 2, "Batch output directory appears once")
         expect(mixedBatch.components(separatedBy: "表达重点：").count == 2 && mixedBatch.contains("表达重点：" + secondTask.reason), "Batch omits only the empty task focus")
-        let fuzzy = URL(fileURLWithPath: "/tmp/素材汇聚_final.mp4")
-        let other = AnimationTask(id: "o", rowID: "z", text: "完全无关的句子。", reason: "r", outputFilename: "完全无关的句子。.mp4")
-        expect(AnimationWorkflow.matches(files: [fuzzy], tasks: [task, other])[fuzzy] == task.id, "Clear fuzzy names must auto-bind")
-        expect(AnimationWorkflow.suggestions(files: [fuzzy], tasks: [task, other])[fuzzy] == task.id, "Fuzzy names should be suggested")
-        let fuzzy2 = URL(fileURLWithPath: "/tmp/素材汇聚_v2.mp4")
-        expect(AnimationWorkflow.matches(files: [fuzzy, fuzzy2], tasks: [task]).isEmpty, "Multiple fuzzy versions must remain unresolved")
-        expect(AnimationWorkflow.matches(files: [file, fuzzy], tasks: [task]).isEmpty, "Exact and fuzzy versions must not select arbitrarily")
-        let numbered = URL(fileURLWithPath: "/tmp/03_素材汇聚_最终版.mov")
-        expect(AnimationWorkflow.matches(files: [numbered], tasks: [task])[numbered] == task.id, "Numbered output names should match")
-        expect(AnimationWorkflow.matches(files: [fuzzy], tasks: [task, duplicateTask]).isEmpty, "Duplicate fuzzy task candidates must stay unresolved")
-        expect(AnimationWorkflow.matches(files: [URL(fileURLWithPath: "/tmp/风景.mp4")], tasks: [task]).isEmpty, "Unrelated names must not bind")
-        let longTask = AnimationTask(id: "long", rowID: "l", text: "把分散的素材统一放进一个文件夹。", reason: "汇聚", outputFilename: "把分散的素材统一放进一个文件夹。.mp4")
-        let truncated = URL(fileURLWithPath: "/tmp/把分散的素材统一放进.mp4")
-        let typo = URL(fileURLWithPath: "/tmp/把分散的素材统一放到一个文件夹.mp4")
-        expect(AnimationWorkflow.matches(files: [truncated], tasks: [longTask])[truncated] == longTask.id, "Truncated script names should match")
-        expect(AnimationWorkflow.matches(files: [typo], tasks: [longTask])[typo] == longTask.id, "Small wording differences should match")
-        var similarTask = longTask
-        similarTask.id = "similar"
-        similarTask.text = "把分散的素材统一放进一个目录。"
-        similarTask.outputFilename = "把分散的素材统一放进一个目录。.mp4"
-        expect(AnimationWorkflow.matches(files: [truncated], tasks: [longTask, similarTask]).isEmpty, "Close fuzzy task candidates must stay unresolved")
-        expect(Set(AnimationWorkflow.suggestions(files: [fuzzy, fuzzy2], tasks: [task]).values).count == 1
-               && AnimationWorkflow.suggestions(files: [fuzzy, fuzzy2], tasks: [task]).count == 1, "A task is suggested for at most one file")
-        print("PASS segmentation, source integrity, filenames, complete prompts, character, conservative matching, suggestions")
+        print("PASS segmentation, source integrity, filenames, complete prompts and character handling")
 
         let suite = "BrollAnimationTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
@@ -296,7 +262,7 @@ struct AnimationWorkflowTests {
         model.animationReviewItems[1].isSelected = false
         event(model) { model.applyAnimationReview() }
         expect(model.animationReviewItems.isEmpty && model.activeAnimationTasks.count == 1 && model.activeAnimationTasks[0].text == selected.text, "Only checked candidates apply")
-        expect(model.animationPanelTab == 0 && !model.isAnimationPanelPresented, "Applying review returns to the script list")
+        expect(!model.isAnimationPanelPresented, "Applying review returns to the script list")
         expect(model.note(for: model.activeAnimationTasks[0].rowID) == selected.reason, "Animation reason becomes the editable production note")
         model.undo()
         expect(model.animationTasks.isEmpty && model.rows.count == 3, "Applied review undoes as one step")
@@ -344,59 +310,28 @@ struct AnimationWorkflowTests {
         model.acceptDestinationDirectoryDrop(project)
         expect(model.activeAnimationTasks.first?.id == originalTask.id, "Reconnect restores stable task ID")
         expect(model.note(for: originalTask.rowID) == "原有手写备注\n\n" + originalTask.reason && model.activeAnimationTasks[0].reasonAddedToNotes == true, "Legacy task reasons migrate into notes alongside existing manual content")
-        let actualFile = outputs.appendingPathComponent((originalTask.outputFilename as NSString).deletingPathExtension + "_final.mp4")
-        let unmatched = outputs.appendingPathComponent("不属于任务的视频.mp4")
-        try Data("fixture-media-original".utf8).write(to: actualFile)
-        try Data("unmatched-media".utf8).write(to: unmatched)
-        await asyncEvent(model) { await model.importAnimationDirectory(outputs) }
-        expect(model.assets(for: originalTask.rowID).count == 1 && model.animationImportIssues.count == 1, "Import must auto-bind a clear fuzzy name and retain unmatched")
-        let asset = model.assets(for: originalTask.rowID)[0]
-        expect(model.animationScriptRowCount == model.rows.count, "Existing tasks and bound assets must remain in the full analysis count")
+        expect(model.animationScriptRowCount == model.rows.count, "Existing tasks do not exclude nonblank script rows from analysis")
         let repeated = AnimationCandidate(sourceRowIDs: [originalTask.rowID], text: originalTask.text, reason: "更新理由")
         try model.stageAnimationReview([repeated])
         event(model) { model.applyAnimationReview() }
         expect(model.animationTasks.count == 1 && model.activeAnimationTasks[0].id == originalTask.id && model.activeAnimationTasks[0].outputFilename == originalTask.outputFilename, "Reanalysis updates an existing task without duplicating it or changing its identity")
-        expect(model.activeAnimationTasks[0].reason == "更新理由" && model.assets(for: originalTask.rowID)[0] == asset && model.brollPreparationStatus(for: originalTask.rowID) == .bound, "Reanalysis preserves existing bindings while updating the recommendation")
+        expect(model.activeAnimationTasks[0].reason == "更新理由", "Reanalysis updates the existing recommendation")
         model.undo()
-        expect(model.activeAnimationTasks[0] == originalTask && model.assets(for: originalTask.rowID)[0] == asset, "Repeated recommendation undo restores the prior task and binding")
-        let copy = project.appendingPathComponent("B-roll/" + asset.outputName)
-        expect(FileManager.default.contentsEqual(atPath: actualFile.path, andPath: copy.path), "Archive must preserve original bytes")
-        expect(FileManager.default.fileExists(atPath: actualFile.path), "Source must remain")
-        let handoff = try JSONDecoder().decode(CodexBrollManifest.self, from: Data(contentsOf: project.appendingPathComponent("B-roll/broll-for-codex.json")))
-        expect(handoff.placements.contains(where: { $0.text == originalTask.text && $0.files.contains(asset.outputName) }), "Editing handoff must be updated")
-        await model.importAnimationDirectory(outputs)
-        expect(model.assets(for: originalTask.rowID).count == 1, "Repeated import must not duplicate bindings")
-        model.undo()
-        expect(model.assets(for: originalTask.rowID).isEmpty && !FileManager.default.fileExists(atPath: copy.path), "Batch undo must remove the archive copy")
-        model.redo()
-        // Existing redo restores archive copies asynchronously.
-        for _ in 0..<200 {
-            if FileManager.default.fileExists(atPath: copy.path) { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        expect(model.assets(for: originalTask.rowID).count == 1 && FileManager.default.fileExists(atPath: copy.path), "Redo must restore archive copy using retained source")
-        event(model) { model.unbind(model.assets(for: originalTask.rowID)[0]) }
-        let issue = model.animationImportIssues[0]
-        await asyncEvent(model) { await model.bindAnimationIssue(issue.id, to: originalTask.id) }
-        expect(model.animationImportIssues.isEmpty && model.assets(for: originalTask.rowID).first?.sourceName == unmatched.lastPathComponent, "Manual matching must use selected task")
-        // Suggestions are recomputed against pending tasks only.
-        expect(model.animationImportIssues.allSatisfy { $0.suggestedTaskID == nil }, "No suggestions once nothing is pending")
+        expect(model.activeAnimationTasks[0] == originalTask, "Undo restores the previous animation recommendation")
         settings = try JSONDecoder().decode(BrollProjectSettings.self, from: Data(contentsOf: settingsURL))
-        expect(settings.animationTasks.first?.id == originalTask.id, "Import must retain task identity")
+        expect(settings.animationTasks.first?.id == originalTask.id, "Project retains animation task identity")
         event(model) { model.replaceInlineRow(at: 1, with: "已经修改的文案。") }
         expect(model.activeAnimationTasks.count == 1 && model.animationTasks.count == 1, "Edited animation rows still have a prompt without overwriting the saved AI task")
         expect(model.activeAnimationTasks[0].text == "已经修改的文案。" && model.activeAnimationTasks[0].id != originalTask.id,
                "Edited animation prompts use the current text and exclude the stale AI task")
         model.undo()
         expect(model.activeAnimationTasks.count == 1, "Undo edit restores task validity")
-        await model.importAnimationDirectory(outputs)
-        expect(model.animationImportIssues.isEmpty, "A manually matched file must be skipped on later imports")
         event(model) { model.setNote("", for: originalTask.rowID) }
         model.clearDestinationDirectory()
         model.acceptDestinationDirectoryDrop(project)
         expect(model.note(for: originalTask.rowID).isEmpty, "Cleared production note stays empty after reopening")
         model.undoManager.removeAllActions()
-        print("PASS actual model: full-script review, existing settings, repeated task update, undo/redo, project restore, archive, repeated import, manual match, stale source")
+        print("PASS actual model: full-script review, existing settings, repeated task update, undo/redo, project restore and edited task handling")
 
         model.clearDestinationDirectory()
         model.scriptText = "重复的流程。\n重复的流程。"

@@ -32,14 +32,6 @@ struct AnimationSplitPiece {
     let candidate: AnimationCandidate?
 }
 
-struct AnimationImportIssue: Identifiable {
-    let id = UUID()
-    let url: URL
-    var message: String
-    /// Best similarity guess, assigned uniquely across the current issue list; never auto-bound.
-    var suggestedTaskID: String?
-}
-
 /// An analysis result awaiting the user's confirmation before the script is split.
 struct AnimationReviewItem: Identifiable {
     let id = UUID()
@@ -298,86 +290,6 @@ enum AnimationWorkflow {
         let naming = "视频文件名与对应文案一致，保留原有文字和标点，使用实际视频格式的扩展名。所有成品放在同一个输出目录。"
         let shared = "\n\n【统一制作要求】\n" + [requirements, naming, outputInstruction(outputDirectory)].filter { !$0.isEmpty }.joined(separator: "\n")
         return instructions + shared + "\n\n" + entries.joined(separator: "\n\n")
-    }
-
-    static func normalizedStem(_ name: String) -> String {
-        let stem = (name as NSString).deletingPathExtension.precomposedStringWithCompatibilityMapping.lowercased()
-        let ignored = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
-        return String(stem.unicodeScalars.filter { !ignored.contains($0) })
-    }
-
-    /// Dice coefficient over character bigrams of normalized stems; robust for CJK without word segmentation.
-    static func similarity(_ lhs: String, _ rhs: String) -> Double {
-        func bigrams(_ value: String) -> [String: Int] {
-            let chars = Array(normalizedStem(value))
-            guard chars.count > 1 else { return chars.isEmpty ? [:] : [String(chars): 1] }
-            return (0..<chars.count - 1).reduce(into: [:]) { $0[String(chars[$1...$1 + 1]), default: 0] += 1 }
-        }
-        let a = bigrams(lhs), b = bigrams(rhs)
-        let total = a.values.reduce(0, +) + b.values.reduce(0, +)
-        guard total > 0 else { return 0 }
-        let shared = a.reduce(0) { $0 + min($1.value, b[$1.key] ?? 0) }
-        return Double(2 * shared) / Double(total)
-    }
-
-    static func score(file: URL, task: AnimationTask) -> Double {
-        let fileKey = normalizedStem(file.lastPathComponent)
-        return [task.outputFilename, task.text + ".mp4"].map { name in
-            let taskKey = normalizedStem(name)
-            let dice = similarity(file.lastPathComponent, name)
-            let shorter = min(fileKey.count, taskKey.count)
-            let longer = max(fileKey.count, taskKey.count)
-            // Numbering, version suffixes and truncated script filenames can retain a full substring.
-            guard shorter >= 4, fileKey.contains(taskKey) || taskKey.contains(fileKey) else { return dice }
-            return max(dice, 0.65 + 0.3 * Double(shorter) / Double(longer))
-        }.max() ?? 0
-    }
-
-    /// Greedy unique suggestions: each file and each task is proposed at most once, highest scores first.
-    static func suggestions(files: [URL], tasks: [AnimationTask], threshold: Double = 0.35) -> [URL: String] {
-        let pairs = files.flatMap { file in tasks.map { (file, $0.id, score(file: file, task: $0)) } }
-            .filter { $0.2 >= threshold }
-            .sorted { $0.2 > $1.2 }
-        var usedFiles: Set<URL> = [], usedTasks: Set<String> = []
-        var result: [URL: String] = [:]
-        for (file, taskID, _) in pairs where !usedFiles.contains(file) && !usedTasks.contains(taskID) {
-            result[file] = taskID
-            usedFiles.insert(file)
-            usedTasks.insert(taskID)
-        }
-        return result
-    }
-
-    /// Exact names take priority, then fuzzy names with a clear best candidate.
-    /// Multiple files for one task or similarly ranked tasks stay unresolved.
-    static func matches(files: [URL], tasks: [AnimationTask]) -> [URL: String] {
-        var edges: [URL: [String]] = [:]
-        for file in files {
-            let stem = file.deletingPathExtension().lastPathComponent.precomposedStringWithCanonicalMapping
-            let exact = tasks.filter {
-                ($0.outputFilename as NSString).deletingPathExtension.precomposedStringWithCanonicalMapping == stem
-            }
-            if !exact.isEmpty {
-                edges[file] = exact.map(\.id)
-            } else {
-                let key = normalizedStem(file.lastPathComponent)
-                let normalized = key.isEmpty ? [] : tasks.filter {
-                    normalizedStem($0.outputFilename) == key || normalizedStem($0.text + ".mp4") == key
-                }
-                if !normalized.isEmpty {
-                    edges[file] = normalized.map(\.id)
-                } else {
-                    let ranked = tasks.map { ($0.id, score(file: file, task: $0)) }
-                    let best = ranked.map(\.1).max() ?? 0
-                    edges[file] = best >= 0.6 ? ranked.filter { best - $0.1 < 0.1 }.map(\.0) : []
-                }
-            }
-        }
-        var fileCounts: [String: Int] = [:]
-        for ids in edges.values { for id in Set(ids) { fileCounts[id, default: 0] += 1 } }
-        return edges.reduce(into: [:]) { result, pair in
-            if pair.value.count == 1, let id = pair.value.first, fileCounts[id] == 1 { result[pair.key] = id }
-        }
     }
 }
 

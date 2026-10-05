@@ -2,19 +2,15 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// Analysis and import; production tasks live in the filtered script list. Configuration lives in a secondary sheet so
-/// the primary surface is about progress, not about editing long prompt text.
+/// Script analysis workspace; production tasks live in the filtered script list.
 struct AnimationWorkspaceView: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var issueSelections: [UUID: String] = [:]
     @State private var settingsDestination: AnimationSettingsDestination?
     @State private var isAnalysisHelpPresented = false
-    @State private var isDropTargeted = false
 
     private var hasKey: Bool { !model.deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var scriptRowCount: Int { model.animationScriptRowCount }
-    private var boundCount: Int { model.activeAnimationTasks.count - model.pendingAnimationTasks.count }
     private var selectedReviewCount: Int { model.animationReviewItems.filter(\.isSelected).count }
     private var isReviewing: Bool { !model.animationReviewItems.isEmpty }
 
@@ -25,14 +21,9 @@ struct AnimationWorkspaceView: View {
                 .padding(.top, 20)
                 .padding(.bottom, 16)
             Divider()
-            Group {
-                switch model.animationPanelTab {
-                case 1: importPage
-                default: analyzePage
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color(nsColor: .windowBackgroundColor))
+            analyzePage
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
             Divider()
             footer
                 .padding(.horizontal, 20)
@@ -109,61 +100,12 @@ struct AnimationWorkspaceView: View {
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("AI 动画助手").font(.title3.weight(.semibold))
-                    Text("筛选动画文案，在文案列表中制作，再把成品自动绑定回文案。")
+                    Text("分析全文，筛选适合动画的段落。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
-            HStack(spacing: 6) {
-                stepButton(0, title: "分析文案", detail: model.isAnalyzingAnimations ? "DeepSeek 分析中…" : (isReviewing ? "\(model.animationReviewItems.count) 段待确认" : "\(scriptRowCount) 条文案 · 全文分析"),
-                           done: !model.activeAnimationTasks.isEmpty)
-                Image(systemName: "chevron.compact.right").foregroundStyle(.tertiary)
-                stepButton(1, title: "导入匹配",
-                           detail: model.animationImportIssues.isEmpty ? "已绑定 \(boundCount) 条" : "\(model.animationImportIssues.count) 个待处理",
-                           done: !model.activeAnimationTasks.isEmpty && model.pendingAnimationTasks.isEmpty)
-            }
         }
-    }
-
-    private func stepButton(_ tab: Int, title: String, detail: String, done: Bool) -> some View {
-        let selected = model.animationPanelTab == tab
-        let isLoading = tab == 0 && model.isAnalyzingAnimations
-        return Button {
-            withAnimation(.snappy(duration: 0.2)) { model.animationPanelTab = tab }
-        } label: {
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle().fill(selected || isLoading ? Color.accentColor : (done ? Color.green : Color.secondary.opacity(0.18)))
-                    if isLoading {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .environment(\.colorScheme, .dark)
-                            .accessibilityLabel("正在分析全文")
-                    } else if done && !selected {
-                        Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                    } else {
-                        Text("\(tab + 1)").font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(selected ? Color.white : Color.secondary)
-                    }
-                }
-                .frame(width: 22, height: 22)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(selected ? Color.primary : Color.secondary)
-                    Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity)
-            .background(selected ? Color.accentColor.opacity(0.12) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("第 \(tab + 1) 步：\(title)，\(detail)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     // MARK: Footer
@@ -191,36 +133,27 @@ struct AnimationWorkspaceView: View {
     }
 
     private var footerHint: String {
-        switch model.animationPanelTab {
-        case 1: return "成品按文案文件名模糊匹配，复制到项目 B-roll 目录，原件保留。"
-        default: return isReviewing ? "勾选要做动画的段落；应用后会拆分并标记，可 ⌘Z 撤销。" : "整篇文案会发送给 DeepSeek；所有有文字的条目都参与判断，勾选应用后才修改。"
-        }
+        isReviewing ? "勾选要做动画的段落；应用后会拆分并标记，可 ⌘Z 撤销。" : "整篇文案会发送给 DeepSeek；所有有文字的条目都参与判断，勾选应用后才修改。"
     }
 
     @ViewBuilder private var primaryAction: some View {
-        switch model.animationPanelTab {
-        case 1:
-            Button("选择动画文件夹…") { model.chooseAnimationDirectory() }
-                .disabled(model.isBusy || model.isAnalyzingAnimations || model.activeAnimationTasks.isEmpty)
-        default:
-            if isReviewing {
-                Button("应用 \(selectedReviewCount) 段") { model.applyAnimationReview() }
-                    .disabled(selectedReviewCount == 0 || model.isBusy)
-            } else if model.isAnalyzingAnimations {
-                Button { model.cancelAnimationAnalysis() } label: {
-                    Text("取消分析").frame(minWidth: 84)
-                }
-            } else {
-                Button { model.startAnimationAnalysis() } label: {
-                    Text("分析动画段落").frame(minWidth: 84)
-                }
-                    .disabled(!hasKey || scriptRowCount == 0 || model.isTestingDeepSeek || model.isBusy)
+        if isReviewing {
+            Button("应用 \(selectedReviewCount) 段") { model.applyAnimationReview() }
+                .disabled(selectedReviewCount == 0 || model.isBusy)
+        } else if model.isAnalyzingAnimations {
+            Button { model.cancelAnimationAnalysis() } label: {
+                Text("取消分析").frame(minWidth: 84)
             }
+        } else {
+            Button { model.startAnimationAnalysis() } label: {
+                Text("分析动画段落").frame(minWidth: 84)
+            }
+                .disabled(!hasKey || scriptRowCount == 0 || model.isTestingDeepSeek || model.isBusy)
         }
     }
 }
 
-// MARK: - Step 1 · 分析
+// MARK: - 文案分析
 
 extension AnimationWorkspaceView {
     @ViewBuilder var analyzePage: some View {
@@ -424,119 +357,6 @@ extension View {
     func cardBackground(cornerRadius: CGFloat = 10) -> some View {
         background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
-    }
-}
-
-// MARK: - Step 2 · 导入
-
-extension AnimationWorkspaceView {
-    var importPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            dropZone
-            if !model.animationImportIssues.isEmpty {
-                HStack {
-                    Text("需要手动指定 · \(model.animationImportIssues.count) 个文件")
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                    Spacer()
-                    Text("尚缺动画 \(model.pendingAnimationTasks.count) 条").font(.callout).foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 4)
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(Array(model.animationImportIssues.enumerated()), id: \.element.id) { index, issue in
-                            if index > 0 { Divider().padding(.leading, 46) }
-                            issueRow(issue)
-                        }
-                    }
-                    .cardBackground()
-                }
-            }
-        }
-        .padding(24)
-        .animation(.snappy(duration: 0.2), value: model.animationImportIssues.count)
-    }
-
-    private var dropZone: some View {
-        let compact = !model.animationImportIssues.isEmpty
-        let canImport = !model.activeAnimationTasks.isEmpty && !model.isBusy
-        return VStack(spacing: compact ? 6 : 12) {
-            Image(systemName: isDropTargeted ? "folder.fill.badge.plus" : "folder.badge.plus")
-                .font(.system(size: compact ? 26 : 40, weight: .light))
-                .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
-                .symbolRenderingMode(.hierarchical)
-            Text(model.activeAnimationTasks.isEmpty ? "先生成动画任务，再导入成品" : "把动画成品文件夹拖到这里")
-                .font(compact ? .callout.weight(.medium) : .title3.weight(.medium))
-            if !compact {
-                Text("按文案文件名模糊匹配，复制到项目 B-roll 目录并保留原件；已有绑定会跳过，多个候选可手动指定。\n尚缺动画 \(model.pendingAnimationTasks.count) 条。")
-                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: compact ? 96 : 300)
-        .background(isDropTargeted ? Color.accentColor.opacity(0.08) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.35),
-                              style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture { if canImport { model.chooseAnimationDirectory() } }
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            guard canImport else { return false }
-            FileURLDropLoader.loadURLs(from: providers) { urls in
-                guard let folder = urls.first(where: { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }) else { return }
-                model.importDroppedAnimationDirectory(folder)
-            }
-            return true
-        }
-        .animation(.easeOut(duration: 0.15), value: isDropTargeted)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("拖入文件夹，或按下以选择动画文件夹")
-    }
-
-    private func issueRow(_ issue: AnimationImportIssue) -> some View {
-        let pending = model.pendingAnimationTasks
-        // A manual choice wins; otherwise preselect the suggestion while it is still bindable.
-        let current = issueSelections[issue.id] ?? issue.suggestedTaskID ?? ""
-        let chosen = pending.contains(where: { $0.id == current }) ? current : ""
-        let selection = Binding(get: { chosen }, set: { issueSelections[issue.id] = $0 })
-        let ranked = pending
-            .map { ($0, AnimationWorkflow.score(file: issue.url, task: $0)) }
-            .sorted { $0.1 > $1.1 }
-            .map(\.0)
-        let canBind = !model.isBusy && !chosen.isEmpty
-        return HStack(spacing: 12) {
-            Image(systemName: "film")
-                .foregroundStyle(.orange)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(issue.url.lastPathComponent).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                if let suggested = issue.suggestedTaskID, suggested == chosen {
-                    Label("已按文件名相似度预选，请确认后绑定", systemImage: "wand.and.stars")
-                        .font(.caption).foregroundStyle(Color.accentColor)
-                } else {
-                    Text(issue.message).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 8)
-            Button { NSWorkspace.shared.open(issue.url) } label: { Image(systemName: "play.circle") }
-                .buttonStyle(.borderless)
-                .help("预览视频")
-            Picker("对应文案", selection: selection) {
-                Text("选择文案…").tag("")
-                ForEach(ranked) { task in
-                    Text(task.id == issue.suggestedTaskID ? "★ " + task.text : task.text).lineLimit(1).tag(task.id)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 230)
-            .accessibilityLabel("为 \(issue.url.lastPathComponent) 选择对应文案")
-            Button("绑定") { Task { await model.bindAnimationIssue(issue.id, to: chosen) } }
-                .disabled(!canBind)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
     }
 }
 

@@ -30,6 +30,7 @@ private enum ListPaneMetrics {
     static let headerHeight: CGFloat = WindowHeaderMetrics.height
     static let toolsHeight: CGFloat = 54
     static let anchorToolsHeight: CGFloat = toolsHeight
+    static let scriptTimelineHeight: CGFloat = 64
 }
 
 private enum WorkspacePaneMetrics {
@@ -156,8 +157,8 @@ struct ContentView: View {
     @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
     @State private var isSidebarVisible = true
     @State private var isSidebarMounted = true
-    @State private var isMaterialListVisible = true
-    @State private var isMediaPreviewVisible = true
+    @State private var isMaterialListVisible = false
+    @State private var isMediaPreviewVisible = false
     @State private var isWindowFullscreen = false
 
     private var theme: AppTheme {
@@ -1891,6 +1892,112 @@ private struct BrollStatisticsView: View {
     }
 }
 
+private struct ScriptDistributionTimeline: View {
+    let distribution: ScriptDistribution
+    let onSelectRow: (String) -> Void
+    @State private var hoveredRowID: String?
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var aRollColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.43, green: 0.45, blue: 0.47)
+            : Color(red: 0.73, green: 0.75, blue: 0.77)
+    }
+
+    private var bRollColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.40, green: 0.64, blue: 0.44)
+            : Color(red: 0.60, green: 0.77, blue: 0.62)
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 10) {
+                legend("A-roll", color: aRollColor)
+                legend("B-roll", color: bRollColor)
+                Spacer(minLength: 0)
+                Text("\(distribution.segments.count) 段")
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size: 9, weight: .medium))
+            .lineLimit(1)
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    ForEach(distribution.segments) { segment in
+                        let width = geometry.size.width * segment.fraction
+                        Button {
+                            onSelectRow(segment.id)
+                        } label: {
+                            Rectangle()
+                                .fill(segment.rollType == .aRoll ? aRollColor : bRollColor)
+                                .overlay(alignment: .trailing) {
+                                    if width >= 3, segment.id != distribution.segments.last?.id {
+                                        Color(nsColor: .windowBackgroundColor).opacity(0.7)
+                                            .frame(width: 0.5)
+                                    }
+                                }
+                                .overlay {
+                                    if hoveredRowID == segment.id {
+                                        Color.primary.opacity(0.15)
+                                    }
+                                }
+                                .frame(width: width, height: 14)
+                                .padding(.vertical, 3)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("第 \(segment.row.index) 条 · \(segment.rollType.title)\n\(segment.row.text)\n点击定位文案")
+                        .accessibilityLabel("第 \(segment.row.index) 条，\(segment.rollType.title)，\(segment.row.text)")
+                        .accessibilityHint("定位到这条文案")
+                        .onHover { isHovered in
+                            if isHovered {
+                                hoveredRowID = segment.id
+                            } else if hoveredRowID == segment.id {
+                                hoveredRowID = nil
+                            }
+                        }
+                        .pointerCursor()
+                        .offset(x: geometry.size.width * segment.startFraction)
+                    }
+                }
+                .frame(width: geometry.size.width, height: 20, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .overlay(alignment: .bottomLeading) {
+                    endpointLabel("开头").offset(y: 14)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    endpointLabel("结尾").offset(y: 14)
+                }
+            }
+            .frame(height: 20)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("文案分布")
+
+        }
+        .padding(.bottom, 14)
+    }
+
+    private func endpointLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 8))
+            .foregroundStyle(.tertiary)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+    }
+
+    private func legend(_ title: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(title)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
@@ -1912,6 +2019,7 @@ private struct AnchorListView: View {
 
     var body: some View {
         let pacingHints = model.aRollPacingHints
+        let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
         let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
         let filteredRows = model.filteredRows.filter { row in
             let rollType = model.rollType(for: row.id)
@@ -1957,6 +2065,7 @@ private struct AnchorListView: View {
                 Label("文案列表", systemImage: "text.badge.checkmark")
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
+                    .fixedSize()
                 WindowDragRegion()
                     .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
                 if !isMaterialListVisible {
@@ -1965,7 +2074,7 @@ private struct AnchorListView: View {
                             isMaterialListVisible = true
                         }
                     } label: {
-                        Image(systemName: "sidebar.left")
+                        Image(systemName: "sidebar.right")
                     }
                     .buttonStyle(IconActionButtonStyle(usesAnimation: false))
                     .hoverHelp("展开素材列表")
@@ -2049,6 +2158,13 @@ private struct AnchorListView: View {
             .frame(height: ListPaneMetrics.anchorToolsHeight)
             .overlay(alignment: .bottom) {
                 Divider()
+            }
+
+            if !distribution.segments.isEmpty {
+                ScriptDistributionTimeline(distribution: distribution, onSelectRow: revealTimelineRow)
+                    .padding(.horizontal, 16)
+                    .frame(height: ListPaneMetrics.scriptTimelineHeight)
+                    .overlay(alignment: .bottom) { Divider() }
             }
 
             if !model.hasScriptContent {
@@ -2237,6 +2353,18 @@ private struct AnchorListView: View {
         model.deleteInlineRow(at: row.index - 1)
     }
 
+    private func revealTimelineRow(_ rowID: String) {
+        finishEditing(session: editingSession)
+        guard model.rows.contains(where: { $0.id == rowID }) else { return }
+        model.anchorSearchText = ""
+        rollFilter = .all
+        selectedProductionMethods.removeAll()
+        preparationFilter = .all
+        resetBindingExits()
+        pendingScrollRowID = rowID
+        triggerPulse([rowID: .located])
+    }
+
     private func beginEditing(_ row: AnchorRow) {
         revealedDeleteRowID = nil
         if editingIndex != row.index - 1 {
@@ -2315,6 +2443,7 @@ struct AnchorRowPulse: Equatable {
         case splitSource
         case splitInserted
         case merged
+        case located
     }
 
     struct Target: Equatable {
@@ -2655,6 +2784,8 @@ private struct AnchorRowView: View {
                 pulseScale = 0.99
             case .merged:
                 pulseScale = 0.955
+            case .located:
+                break
             }
         }
         withAnimation(.spring(response: 0.38, dampingFraction: pulse.kind == .merged ? 0.52 : 0.7)) {

@@ -51,6 +51,22 @@ struct ARollPacingTests {
         expect(ARollPacingSettings(charactersPerMinute: 0, maximumContinuousSeconds: .nan) == ARollPacingSettings(),
                "Invalid stored values safely fall back to defaults")
 
+        let distribution = ScriptDistribution(rows: [row(1, 10), row(2, 30)]) {
+            $0 == "row-2" ? .bRoll : .aRoll
+        }
+        expect(distribution.segments[0].fraction == 0.25 && distribution.segments[1].fraction == 0.75,
+               "The overview represents text length instead of treating every sentence as equally long")
+        expect(distribution.segments[0].startFraction == 0 && distribution.segments[1].endFraction == 1
+               && distribution.segments[0].endFraction == distribution.segments[1].startFraction,
+               "The complete script spans the strip without gaps or overlap")
+        expect(distribution.segments.map(\.id) == ["row-1", "row-2"]
+               && distribution.segments[1].rollType == .bRoll,
+               "Segments preserve the original row identity, order and roll tag for navigation")
+        expect(ScriptDistribution(rows: []) { _ in .aRoll }.segments.isEmpty,
+               "An empty script does not produce invalid fractions")
+        expect(ScriptDistribution(rows: emptyRows) { _ in .aRoll }.segments.map(\.id) == ["row-1", "row-4"],
+               "Blank and punctuation-only rows do not inflate the overview")
+
         let suite = "com.keyknock.BrollNamer.PacingTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -58,6 +74,10 @@ struct ARollPacingTests {
                      + "\n第三条" + String(repeating: "丙", count: 12), forKey: "broll-namer-script")
         let model = AppModel(defaults: defaults)
         let ids = model.rows.map(\.id)
+        func modelDistribution() -> ScriptDistribution {
+            ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
+        }
+        let completeDistribution = modelDistribution()
         expect(model.pacingSettings == ARollPacingSettings(), "Existing users keep the original defaults")
         model.updatePacingSettings(custom)
         expect(model.aRollPacingHints[ids[1]] == nil && model.aRollPacingHints[ids[2]]?.cumulativeSeconds == 4.5,
@@ -72,13 +92,18 @@ struct ARollPacingTests {
         model.anchorSearchText = "第三条"
         expect(model.filteredRows.count == 1 && model.aRollPacingHints[ids[2]]?.cumulativeCharacterCount == 45,
                "Search visibility cannot change the script's actual continuity")
+        expect(modelDistribution() == completeDistribution,
+               "Search and reading-rate changes cannot alter the complete text distribution")
         model.undoManager.beginUndoGrouping()
         model.toggleRollType(for: ids[1])
         model.undoManager.endUndoGrouping()
         expect(model.aRollPacingHints.isEmpty, "Marking the middle row B-roll clears both short runs")
+        expect(modelDistribution().segments[1].rollType == .bRoll,
+               "Changing a roll tag immediately changes its overview segment")
         model.undo()
         expect(model.aRollPacingHints[ids[2]]?.cumulativeCharacterCount == 45,
                "Undo restores the original continuity and reminders")
+        expect(modelDistribution() == completeDistribution, "Undo restores the overview too")
         model.redo()
         expect(model.aRollPacingHints.isEmpty, "Redo updates the reminders again")
         model.undo()
@@ -88,6 +113,8 @@ struct ARollPacingTests {
         model.undoManager.endUndoGrouping()
         expect(model.aRollPacingHints[model.rows.last!.id]?.cumulativeCharacterCount == 45,
                "Splitting an A-roll row preserves cumulative timing")
-        print("PASS A-roll pacing: custom settings, persistence, defaults, boundaries, interruptions, search, undo/redo and split")
+        expect(abs(modelDistribution().segments.last!.startFraction - completeDistribution.segments.last!.startFraction) < 0.0001,
+               "Splitting a row preserves the later script positions")
+        print("PASS A-roll pacing and script distribution: settings, persistence, boundaries, proportions, search, undo/redo and split")
     }
 }

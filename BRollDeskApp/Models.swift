@@ -202,6 +202,40 @@ struct AnchorRow: Identifiable, Hashable {
     let text: String
 }
 
+/// A script overview, weighted by spoken text length rather than media timecodes.
+struct ScriptDistribution: Equatable {
+    struct Segment: Identifiable, Equatable {
+        let row: AnchorRow
+        let rollType: AnchorRollType
+        let startFraction: Double
+        let endFraction: Double
+
+        var id: String { row.id }
+        var fraction: Double { endFraction - startFraction }
+    }
+
+    let segments: [Segment]
+
+    init(rows: [AnchorRow], rollType: (String) -> AnchorRollType) {
+        let weightedRows = rows.compactMap { row -> (AnchorRow, Int)? in
+            let count = ARollPacing.spokenCharacterCount(in: row.text)
+            return count > 0 ? (row, count) : nil
+        }
+        let total = weightedRows.reduce(0) { $0 + $1.1 }
+        var offset = 0
+        segments = weightedRows.map { row, count in
+            let start = offset
+            offset += count
+            return Segment(
+                row: row,
+                rollType: rollType(row.id),
+                startFraction: Double(start) / Double(total),
+                endFraction: Double(offset) / Double(total)
+            )
+        }
+    }
+}
+
 struct ARollPacingSettings: Equatable {
     let charactersPerMinute: Int
     let maximumContinuousSeconds: Double
