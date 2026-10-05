@@ -367,6 +367,17 @@ final class AppModel {
         }
     }
 
+    func filterAttributes(for row: AnchorRow) -> ScriptRowFilter.Attributes {
+        ScriptRowFilter.Attributes(
+            rollType: rollType(for: row.id),
+            isBlank: row.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            shootingDeviceID: shootingDevice(for: row.id)?.id,
+            arollMethod: arollProductionMethod(for: row.id),
+            brollMethod: brollProductionMethod(for: row.id),
+            brollStatus: brollPreparationStatus(for: row.id)
+        )
+    }
+
     var filteredRows: [AnchorRow] {
         let query = anchorSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return rows }

@@ -199,6 +199,102 @@ enum BrollPreparationStatus: String, CaseIterable, Codable, Equatable, Identifia
     }
 }
 
+/// Tri-state choice for one filter option: ignore, show only, or hide.
+enum ScriptFilterState: Equatable {
+    case include
+    case exclude
+
+    /// Click cycle: off → include → exclude → off.
+    static func next(after state: ScriptFilterState?) -> ScriptFilterState? {
+        switch state {
+        case nil: return .include
+        case .include: return .exclude
+        case .exclude: return nil
+        }
+    }
+}
+
+/// One filter dimension. Included values are OR-ed; excluded values always hide.
+struct ScriptFilterFacet<Value: Hashable>: Equatable {
+    private(set) var states: [Value: ScriptFilterState] = [:]
+
+    var isActive: Bool { !states.isEmpty }
+
+    subscript(value: Value) -> ScriptFilterState? {
+        get { states[value] }
+        set { states[value] = newValue }
+    }
+
+    mutating func cycle(_ value: Value) {
+        states[value] = ScriptFilterState.next(after: states[value])
+    }
+
+    mutating func removeAll() { states.removeAll() }
+
+    mutating func retain(_ values: Set<Value>) {
+        states = states.filter { values.contains($0.key) }
+    }
+
+    func matches(_ value: Value) -> Bool {
+        switch states[value] {
+        case .exclude: return false
+        case .include: return true
+        case nil: return !states.values.contains(.include)
+        }
+    }
+}
+
+/// Script list filter. A-roll rows are judged only by A-roll conditions and B-roll rows only by
+/// B-roll conditions; the two results are then shown together.
+struct ScriptRowFilter: Equatable {
+    struct Attributes: Equatable {
+        let rollType: AnchorRollType
+        let isBlank: Bool
+        /// nil means no shooting device is set.
+        let shootingDeviceID: String?
+        let arollMethod: ArollProductionMethod
+        let brollMethod: BrollProductionMethod
+        let brollStatus: BrollPreparationStatus
+    }
+
+    var showsAroll = true
+    var showsBroll = true
+    var shootingDevices = ScriptFilterFacet<String?>()
+    var arollMethods = ScriptFilterFacet<ArollProductionMethod>()
+    var brollMethods = ScriptFilterFacet<BrollProductionMethod>()
+    var brollStatuses = ScriptFilterFacet<BrollPreparationStatus>()
+
+    var hasArollConditions: Bool { shootingDevices.isActive || arollMethods.isActive }
+    var hasBrollConditions: Bool { brollMethods.isActive || brollStatuses.isActive }
+
+    var isActive: Bool {
+        !showsAroll || !showsBroll || hasArollConditions || hasBrollConditions
+    }
+
+    var activeConditionCount: Int {
+        (showsAroll ? 0 : 1) + (showsBroll ? 0 : 1)
+            + shootingDevices.states.count + arollMethods.states.count
+            + brollMethods.states.count + brollStatuses.states.count
+    }
+
+    func matches(_ row: Attributes) -> Bool {
+        // Blank rows carry no content to filter by, so any active filter hides them.
+        if isActive && row.isBlank { return false }
+        switch row.rollType {
+        case .aRoll:
+            return showsAroll
+                && shootingDevices.matches(row.shootingDeviceID)
+                && arollMethods.matches(row.arollMethod)
+        case .bRoll:
+            return showsBroll
+                && brollMethods.matches(row.brollMethod)
+                && brollStatuses.matches(row.brollStatus)
+        }
+    }
+
+    mutating func reset() { self = ScriptRowFilter() }
+}
+
 enum BrollMode: String, Codable {
     case fs = "FS"
     // Kept only so older manifests can still be decoded and migrated.

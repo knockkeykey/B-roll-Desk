@@ -42,43 +42,6 @@ private enum WorkspacePaneMetrics {
     static let minimumDetailWidth = minimumSourceWidth + minimumPreviewWidth + dividerWidth
 }
 
-private enum AnchorPreparationFilter: Hashable {
-    case all
-    case pendingPreparation
-    case pendingBinding
-}
-
-private enum AnchorRollFilter: Hashable {
-    case all
-    case aRoll
-    case bRoll
-
-    var title: String {
-        switch self {
-        case .all: return "画面标签"
-        case .aRoll: return "A-roll"
-        case .bRoll: return "B-roll"
-        }
-    }
-
-    func includes(_ type: AnchorRollType) -> Bool {
-        switch self {
-        case .all: return true
-        case .aRoll: return type == .aRoll
-        case .bRoll: return type == .bRoll
-        }
-    }
-}
-
-private enum ProductionMethodFilterMode: Hashable {
-    case include
-    case exclude
-
-    var title: String {
-        self == .include ? "只显示" : "不显示"
-    }
-}
-
 private struct WorkflowHelpStep: Identifiable {
     let number: Int
     let title: String
@@ -2154,6 +2117,8 @@ private enum ScriptRowSelectionStyle {
 private struct ScriptDistributionTimeline: View {
     let distribution: ScriptDistribution
     let productionMethod: (String) -> BrollProductionMethod
+    /// Rows passing the current search and filter; nil when nothing narrows the list.
+    let matchedRowIDs: Set<String>?
     let visibility: ScriptVisibilityTracker
     let selectedRowID: String?
     let onSelectRow: (String) -> Void
@@ -2336,6 +2301,7 @@ private struct ScriptDistributionTimeline: View {
                     .frame(height: 2)
             }
             .frame(width: max(0, width))
+            .opacity(matchedRowIDs?.contains(segment.id) == false && !isSelected ? 0.25 : 1)
             .padding(.vertical, 3)
             .contentShape(Rectangle())
         }
@@ -2486,10 +2452,9 @@ private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
     @Binding var isMaterialListVisible: Bool
-    @State private var selectedProductionMethods: Set<BrollProductionMethod> = []
-    @State private var productionMethodFilterMode = ProductionMethodFilterMode.include
-    @State private var preparationFilter = AnchorPreparationFilter.all
-    @State private var rollFilter = AnchorRollFilter.all
+    @State private var rowFilter = ScriptRowFilter()
+    @State private var isSearchVisible = false
+    @FocusState private var isSearchFocused: Bool
     @State private var editingIndex: Int?
     @State private var editingText = ""
     @State private var editingCursor = 0
@@ -2507,31 +2472,13 @@ private struct AnchorListView: View {
         let pacingHints = model.aRollPacingHints
         let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
         let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
-        let filteredRows = model.filteredRows.filter { row in
-            let rollType = model.rollType(for: row.id)
-            guard rollFilter.includes(rollType) else { return false }
-            if !selectedProductionMethods.isEmpty {
-                let matchesSelection = rollType == .bRoll
-                    && selectedProductionMethods.contains(model.brollProductionMethod(for: row.id))
-                let shouldShow = productionMethodFilterMode == .include ? matchesSelection : !matchesSelection
-                guard shouldShow else {
-                    return false
-                }
-            }
-            switch preparationFilter {
-            case .all:
-                return true
-            case .pendingPreparation:
-                return rollType == .bRoll && (model.brollPreparationStatus(for: row.id) == .pending
-                    || bindingExitTokens[row.id] != nil)
-            case .pendingBinding:
-                return rollType == .bRoll && (model.brollPreparationStatus(for: row.id) != .bound
-                    || bindingExitTokens[row.id] != nil)
-            }
-        }
-        let hasActiveFilters = rollFilter != .all || !selectedProductionMethods.isEmpty || preparationFilter != .all
-        let isShowingPendingBroll = preparationFilter == .pendingPreparation && selectedProductionMethods.isEmpty && rollFilter != .aRoll
-        let isShowingUnboundBroll = preparationFilter == .pendingBinding && selectedProductionMethods.isEmpty && rollFilter != .aRoll
+        let rowAttributes = model.rows.map(model.filterAttributes(for:))
+        let filteredRows = model.filteredRows.filter { isListed($0, attributes: rowAttributes) }
+        let hasActiveFilters = rowFilter.isActive
+        let isNarrowingRows = hasActiveFilters || !model.anchorSearchText.isEmpty
+        let countableAttributes = rowAttributes.filter { !$0.isBlank }
+        let visibleCount = filteredRows.filter { !rowAttributes[$0.index - 1].isBlank }.count
+        let matchedRowIDs: Set<String>? = isNarrowingRows ? Set(filteredRows.map(\.id)) : nil
 
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -2586,70 +2533,14 @@ private struct AnchorListView: View {
             .frame(height: ListPaneMetrics.headerHeight)
             .overlay(alignment: .bottom) { Divider() }
 
-            GeometryReader { geometry in
-                let spacing: CGFloat = 4
-                let productionMethodFilterWidth = min(170, max(124, geometry.size.width * 0.22))
-                let preparationFilterWidth = min(180, max(150, geometry.size.width * 0.25))
-
-                let searchField = HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("搜索文案", text: $model.anchorSearchText)
-                        .font(.system(size: 13))
-                        .textFieldStyle(.plain)
-                        .lineLimit(1)
-                        .accessibilityLabel("搜索文案锚点")
-                    if !model.anchorSearchText.isEmpty {
-                        Button {
-                            model.anchorSearchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(IconActionButtonStyle())
-                        .hoverHelp("清除搜索")
-                        .accessibilityLabel("清除搜索")
-                        .pointerCursor()
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .frame(minWidth: 72, maxWidth: .infinity)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                HStack(spacing: spacing) {
-                    searchField
-                    AnchorRollFilterMenu(selection: $rollFilter)
-                        .frame(width: 96)
-                    BrollProductionMethodFilterMenu(
-                        selection: $selectedProductionMethods,
-                        mode: $productionMethodFilterMode
-                    )
-                        .frame(width: productionMethodFilterWidth)
-
-                    Picker("", selection: $preparationFilter) {
-                        Text("全部").tag(AnchorPreparationFilter.all)
-                        Text("待准备").tag(AnchorPreparationFilter.pendingPreparation)
-                        Text("待绑定").tag(AnchorPreparationFilter.pendingBinding)
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.large)
-                    .frame(width: preparationFilterWidth)
-                    .accessibilityLabel("筛选文案状态")
-                }
-
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: ListPaneMetrics.anchorToolsHeight)
-            .overlay(alignment: .bottom) {
-                Divider()
-            }
+            scriptToolbar(visibleCount: visibleCount, totalCount: countableAttributes.count,
+                          attributes: countableAttributes, isNarrowingRows: isNarrowingRows)
 
             if !distribution.segments.isEmpty {
                 ScriptDistributionTimeline(
                     distribution: distribution,
                     productionMethod: { model.brollProductionMethod(for: $0) },
+                    matchedRowIDs: matchedRowIDs,
                     visibility: scriptVisibility,
                     selectedRowID: selectedScriptRowID,
                     onSelectRow: revealTimelineRow
@@ -2744,26 +2635,10 @@ private struct AnchorListView: View {
                 .overlay {
                     if filteredRows.isEmpty {
                         ContentUnavailableView {
-                            Label(
-                                isShowingPendingBroll
-                                    ? "没有待准备的 B-roll"
-                                    : (isShowingUnboundBroll ? "没有待绑定的 B-roll" : "没有匹配的文案"),
-                                systemImage: isShowingPendingBroll || isShowingUnboundBroll ? "checkmark.circle" : "magnifyingglass"
-                            )
+                            Label(hasActiveFilters ? "没有符合筛选的文案" : "没有匹配的文案",
+                                  systemImage: hasActiveFilters ? "line.3.horizontal.decrease.circle" : "magnifyingglass")
                         } description: {
-                            if preparationFilter == .pendingPreparation || preparationFilter == .pendingBinding {
-                                if isShowingPendingBroll {
-                                    Text(model.anchorSearchText.isEmpty
-                                        ? "当前没有待准备的 B-roll。"
-                                        : "当前搜索结果中没有待准备的 B-roll。")
-                                } else if isShowingUnboundBroll {
-                                    Text(model.anchorSearchText.isEmpty
-                                        ? "当前没有待绑定的 B-roll。"
-                                        : "当前搜索结果中没有待绑定的 B-roll。")
-                                } else {
-                                    Text("当前搜索与筛选条件下没有符合条件的文案。")
-                                }
-                            } else if hasActiveFilters {
+                            if hasActiveFilters {
                                 Text(model.anchorSearchText.isEmpty
                                     ? "当前筛选条件下没有符合条件的文案。"
                                     : "当前搜索与筛选条件下没有符合条件的文案。")
@@ -2771,12 +2646,9 @@ private struct AnchorListView: View {
                                 Text("试试其他文案关键词。")
                             }
                         } actions: {
-                            Button(hasActiveFilters ? "重置筛选" : "清除搜索") {
+                            Button(hasActiveFilters ? "清除筛选" : "清除搜索") {
                                 if hasActiveFilters {
-                                    rollFilter = .all
-                                    selectedProductionMethods.removeAll()
-                                    productionMethodFilterMode = .include
-                                    preparationFilter = .all
+                                    rowFilter.reset()
                                 } else {
                                     model.anchorSearchText = ""
                                 }
@@ -2802,7 +2674,8 @@ private struct AnchorListView: View {
                 self.selectedScriptRowID = nil
             }
         }
-        .onChange(of: preparationFilter) { _, _ in resetBindingExits() }
+        .onChange(of: rowFilter) { _, _ in resetBindingExits() }
+        .onChange(of: model.shootingDevices.map(\.id)) { _, _ in pruneDeletedDeviceFilters() }
         .onChange(of: model.destinationDirectoryURL) { _, _ in
             resetBindingExits()
             selectedScriptRowID = nil
@@ -2820,7 +2693,14 @@ private struct AnchorListView: View {
     }
 
     private func retainRowForBinding(_ rowID: String) {
-        guard preparationFilter != .all else { return }
+        // Only retain rows that the filter will hide once they become bound B-roll.
+        guard let row = model.rows.first(where: { $0.id == rowID }) else { return }
+        let current = model.filterAttributes(for: row)
+        let bound = ScriptRowFilter.Attributes(
+            rollType: .bRoll, isBlank: current.isBlank, shootingDeviceID: current.shootingDeviceID,
+            arollMethod: current.arollMethod, brollMethod: current.brollMethod, brollStatus: .bound
+        )
+        guard !rowFilter.matches(bound) else { return }
         // Retain the row before the asynchronous copy updates the status filter.
         bindingExitTokens[rowID] = UUID()
         fadingBoundRowIDs.remove(rowID)
@@ -2870,12 +2750,188 @@ private struct AnchorListView: View {
         guard model.rows.indices.contains(index) else { return }
         let rowID = model.rows[index].id
         selectScriptRow(rowID)
-        model.anchorSearchText = ""
-        rollFilter = .all
-        selectedProductionMethods.removeAll()
-        preparationFilter = .all
-        resetBindingExits()
+        // Keep the current filter when the row is already listed; otherwise clear it to reveal the row.
+        let row = model.rows[index]
+        let query = model.anchorSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isListed = (query.isEmpty || row.text.localizedCaseInsensitiveContains(query))
+            && rowFilter.matches(model.filterAttributes(for: row))
+        if !isListed {
+            model.anchorSearchText = ""
+            rowFilter.reset()
+            resetBindingExits()
+        }
         pendingScrollRowID = rowID
+    }
+
+    private func isListed(_ row: AnchorRow, attributes: [ScriptRowFilter.Attributes]) -> Bool {
+        // Keep rows mid-edit or mid-binding-exit so they don't vanish under the cursor.
+        if editingIndex == row.index - 1 || bindingExitTokens[row.id] != nil { return true }
+        guard attributes.indices.contains(row.index - 1) else { return false }
+        return rowFilter.matches(attributes[row.index - 1])
+    }
+
+    /// Drops conditions for devices that were deleted in settings.
+    private func pruneDeletedDeviceFilters() {
+        var valid: Set<String?> = [nil]
+        for device in model.shootingDevices { valid.insert(device.id) }
+        rowFilter.shootingDevices.retain(valid)
+    }
+
+    private func scriptToolbar(visibleCount: Int, totalCount: Int,
+                               attributes: [ScriptRowFilter.Attributes], isNarrowingRows: Bool) -> some View {
+        HStack(spacing: 8) {
+            ScriptFilterButton(
+                filter: $rowFilter,
+                devices: deviceFilterOptions,
+                attributes: attributes
+            )
+
+            if rowFilter.isActive {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(filterChips) { chip in
+                            ScriptFilterChipView(chip: chip)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .scrollIndicators(.never)
+                Button("清除") {
+                    rowFilter.reset()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .hoverHelp("清除全部筛选条件")
+                .pointerCursor()
+            } else {
+                Text("显示全部文案")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+
+            if isNarrowingRows {
+                Text("\(visibleCount) / \(totalCount)")
+                    .font(.system(size: 12, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .help("当前显示的文案条数 / 全部文案条数")
+            }
+
+            scriptSearchControl
+        }
+        .padding(.horizontal, 12)
+        .frame(height: ListPaneMetrics.anchorToolsHeight)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+        .background {
+            Button("搜索文案") { showSearch() }
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var deviceFilterOptions: [ScriptFilterOption<String?>] {
+        model.shootingDevices.map { ScriptFilterOption(value: Optional($0.id), title: $0.name) }
+            + [ScriptFilterOption(value: nil, title: "未设置设备")]
+    }
+
+    private var filterChips: [ScriptFilterChip] {
+        var chips: [ScriptFilterChip] = []
+        if !rowFilter.showsAroll {
+            chips.append(ScriptFilterChip(id: "hide-a", scope: "A", title: "隐藏 A-roll", state: .exclude) {
+                rowFilter.showsAroll = true
+            })
+        }
+        if !rowFilter.showsBroll {
+            chips.append(ScriptFilterChip(id: "hide-b", scope: "B", title: "隐藏 B-roll", state: .exclude) {
+                rowFilter.showsBroll = true
+            })
+        }
+        for option in deviceFilterOptions {
+            guard let state = rowFilter.shootingDevices[option.value] else { continue }
+            chips.append(ScriptFilterChip(id: "device-\(option.value ?? "none")", scope: "A",
+                                          title: option.title, state: state) {
+                rowFilter.shootingDevices[option.value] = nil
+            })
+        }
+        for method in ArollProductionMethod.allCases {
+            guard let state = rowFilter.arollMethods[method] else { continue }
+            chips.append(ScriptFilterChip(id: "a-method-\(method.rawValue)", scope: "A",
+                                          title: method.title, state: state) {
+                rowFilter.arollMethods[method] = nil
+            })
+        }
+        for method in BrollProductionMethod.allCases {
+            guard let state = rowFilter.brollMethods[method] else { continue }
+            chips.append(ScriptFilterChip(id: "b-method-\(method.rawValue)", scope: "B",
+                                          title: method.title, state: state) {
+                rowFilter.brollMethods[method] = nil
+            })
+        }
+        for status in BrollPreparationStatus.allCases {
+            guard let state = rowFilter.brollStatuses[status] else { continue }
+            chips.append(ScriptFilterChip(id: "b-status-\(status.rawValue)", scope: "B",
+                                          title: status.title, state: state) {
+                rowFilter.brollStatuses[status] = nil
+            })
+        }
+        return chips
+    }
+
+    @ViewBuilder
+    private var scriptSearchControl: some View {
+        if isSearchVisible || !model.anchorSearchText.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("搜索文案", text: $model.anchorSearchText)
+                    .font(.system(size: 13))
+                    .textFieldStyle(.plain)
+                    .lineLimit(1)
+                    .focused($isSearchFocused)
+                    .onExitCommand { closeSearch() }
+                    .accessibilityLabel("搜索文案锚点")
+                Button(action: closeSearch) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(IconActionButtonStyle())
+                .hoverHelp("清除并收起搜索")
+                .accessibilityLabel("清除搜索")
+                .pointerCursor()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(width: 180)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .onChange(of: isSearchFocused) { _, isFocused in
+                if !isFocused && model.anchorSearchText.isEmpty { isSearchVisible = false }
+            }
+        } else {
+            Button(action: showSearch) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .buttonStyle(IconActionButtonStyle())
+            .hoverHelp("搜索文案（⌘F）")
+            .accessibilityLabel("搜索文案")
+            .pointerCursor()
+        }
+    }
+
+    private func showSearch() {
+        isSearchVisible = true
+        DispatchQueue.main.async { isSearchFocused = true }
+    }
+
+    private func closeSearch() {
+        model.anchorSearchText = ""
+        isSearchFocused = false
+        isSearchVisible = false
     }
 
     private func selectScriptRow(_ rowID: String) {
@@ -3674,156 +3730,284 @@ private struct AnchorNoteEditorView: View {
     }
 }
 
-private struct AnchorRollFilterMenu: View {
-    @Binding var selection: AnchorRollFilter
+private struct ScriptFilterOption<Value: Hashable>: Identifiable {
+    let value: Value
+    let title: String
+    var systemImage: String?
+
+    var id: Value { value }
+}
+
+private struct ScriptFilterChip: Identifiable {
+    let id: String
+    let scope: String
+    let title: String
+    let state: ScriptFilterState
+    let onRemove: () -> Void
+}
+
+private struct ScriptFilterChipView: View {
+    let chip: ScriptFilterChip
+
+    private var tint: Color { chip.state == .include ? .accentColor : .red }
 
     var body: some View {
-        Menu {
-            ForEach([AnchorRollFilter.all, .aRoll, .bRoll], id: \.self) { filter in
-                Button {
-                    selection = filter
-                } label: {
-                    let title = filter == .all ? "全部标签" : filter.title
-                    if selection == filter {
-                        Label(title, systemImage: "checkmark")
-                    } else {
-                        Text(title)
-                    }
-                }
+        HStack(spacing: 4) {
+            Text(chip.scope)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 14, height: 14)
+                .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+            Image(systemName: chip.state == .include ? "checkmark" : "minus")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(tint)
+            Text(chip.title)
+                .font(.system(size: 12, weight: .medium))
+                .strikethrough(chip.state == .exclude, color: tint)
+                .lineLimit(1)
+            Button(action: chip.onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
             }
-        } label: {
-            Text(selection.title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(selection == .all ? Color.primary : Color.accentColor)
-                .frame(maxWidth: .infinity, minHeight: 32)
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .buttonStyle(.plain)
+            .hoverHelp("移除这个条件")
+            .accessibilityLabel("移除条件")
+            .pointerCursor()
         }
-        .menuStyle(.borderlessButton)
-        .padding(.horizontal, 8)
-        .frame(minHeight: 32)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(selection == .all ? 0.06 : 0.15), lineWidth: 0.7)
-        }
-        .help("按 A-roll / B-roll 标签筛选，可与制作方式和文案状态叠加")
-        .accessibilityLabel("按画面标签筛选")
-        .accessibilityValue(selection == .all ? "全部标签" : selection.title)
-        .pointerCursor()
+        .padding(.leading, 4)
+        .padding(.trailing, 3)
+        .frame(height: 24)
+        .background(tint.opacity(0.08), in: Capsule())
+        .overlay { Capsule().strokeBorder(tint.opacity(0.25), lineWidth: 0.7) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(chip.scope)-roll \(chip.state == .include ? "只看" : "不看")\(chip.title)")
     }
 }
 
-private struct BrollProductionMethodFilterMenu: View {
-    @Binding var selection: Set<BrollProductionMethod>
-    @Binding var mode: ProductionMethodFilterMode
+/// Toolbar button that opens the combined A-roll / B-roll filter.
+private struct ScriptFilterButton: View {
+    @Binding var filter: ScriptRowFilter
+    let devices: [ScriptFilterOption<String?>]
+    let attributes: [ScriptRowFilter.Attributes]
     @State private var isPresented = false
-
-    private var selectionSummary: String {
-        BrollProductionMethod.allCases
-            .filter(selection.contains)
-            .map(\.title)
-            .joined(separator: "、")
-    }
-
-    private var filterSummary: String {
-        selection.isEmpty ? "全部制作方式" : "\(mode.title)：\(selectionSummary)"
-    }
 
     var body: some View {
         Button {
             isPresented.toggle()
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: !selection.isEmpty && mode == .exclude
+            HStack(spacing: 6) {
+                Image(systemName: filter.isActive
                     ? "line.3.horizontal.decrease.circle.fill"
                     : "line.3.horizontal.decrease.circle")
-                    .foregroundStyle(selection.isEmpty ? Color.secondary : Color.accentColor)
-                Text(selection.isEmpty ? "制作方式" : "\(mode.title)（\(selection.count)）")
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(filter.isActive ? Color.accentColor : Color.secondary)
+                Text("筛选")
+                if filter.isActive {
+                    Text("\(filter.activeConditionCount)")
+                        .font(.system(size: 10, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .background(Color.accentColor, in: Capsule())
+                }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             .font(.system(size: 13, weight: .medium))
             .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 32)
+            .frame(minHeight: 30)
             .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(selection.isEmpty ? 0.06 : 0.15), lineWidth: 0.7)
+                    .strokeBorder(Color.primary.opacity(filter.isActive ? 0.15 : 0.06), lineWidth: 0.7)
             }
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("制作方式")
-                        .font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    if !selection.isEmpty {
-                        Button("清除") {
-                            selection.removeAll()
-                        }
+            ScriptFilterPopover(filter: $filter, devices: devices, attributes: attributes)
+        }
+        .hoverHelp("按 A-roll / B-roll 的设备、制作方式和准备状态筛选")
+        .accessibilityLabel("筛选文案")
+        .accessibilityValue(filter.isActive ? "\(filter.activeConditionCount) 个条件" : "未筛选")
+        .pointerCursor()
+    }
+}
+
+private struct ScriptFilterPopover: View {
+    @Binding var filter: ScriptRowFilter
+    let devices: [ScriptFilterOption<String?>]
+    let attributes: [ScriptRowFilter.Attributes]
+
+    private var aRolls: [ScriptRowFilter.Attributes] { attributes.filter { $0.rollType == .aRoll } }
+    private var bRolls: [ScriptRowFilter.Attributes] { attributes.filter { $0.rollType == .bRoll } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("筛选文案")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if filter.isActive {
+                    Button("全部清除") { filter.reset() }
                         .font(.caption)
                         .buttonStyle(.plain)
                         .foregroundStyle(Color.accentColor)
                         .pointerCursor()
+                }
+            }
+            Text("点一下只看，再点一下不看，第三下取消。A-roll 和 B-roll 各自筛选后一起显示。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 16) {
+                column(title: "A-roll", count: aRolls.count, isShown: $filter.showsAroll) {
+                    section("拍摄设备", isActive: filter.shootingDevices.isActive,
+                            clear: { filter.shootingDevices.removeAll() }) {
+                        ForEach(devices) { device in
+                            optionRow(device.title, systemImage: device.value == nil ? "questionmark.circle" : "camera",
+                                      count: aRolls.filter { $0.shootingDeviceID == device.value }.count,
+                                      state: filter.shootingDevices[device.value]) {
+                                filter.shootingDevices.cycle(device.value)
+                            }
+                        }
+                    }
+                    section("制作方式", isActive: filter.arollMethods.isActive,
+                            clear: { filter.arollMethods.removeAll() }) {
+                        ForEach(ArollProductionMethod.allCases) { method in
+                            optionRow(method.title, systemImage: method.systemImage,
+                                      count: aRolls.filter { $0.arollMethod == method }.count,
+                                      state: filter.arollMethods[method]) {
+                                filter.arollMethods.cycle(method)
+                            }
+                        }
                     }
                 }
-
-                Picker("筛选模式", selection: $mode) {
-                    Text("只显示").tag(ProductionMethodFilterMode.include)
-                    Text("不显示").tag(ProductionMethodFilterMode.exclude)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityLabel("制作方式筛选模式")
-
-                Text(selection.isEmpty
-                    ? "未选择时显示全部文案"
-                    : "\(mode.title)勾选的制作方式")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 Divider()
 
-                ForEach(BrollProductionMethod.allCases) { method in
-                    let isSelected = selection.contains(method)
-                    Button {
-                        toggle(method)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                            Text(method.title)
-                                .foregroundStyle(.primary)
-                            Spacer(minLength: 0)
+                column(title: "B-roll", count: bRolls.count, isShown: $filter.showsBroll) {
+                    section("制作方式", isActive: filter.brollMethods.isActive,
+                            clear: { filter.brollMethods.removeAll() }) {
+                        ForEach(BrollProductionMethod.allCases) { method in
+                            optionRow(method.title, systemImage: method.systemImage,
+                                      count: bRolls.filter { $0.brollMethod == method }.count,
+                                      state: filter.brollMethods[method]) {
+                                filter.brollMethods.cycle(method)
+                            }
                         }
-                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(method.title)
-                    .accessibilityValue(isSelected ? "已选择" : "未选择")
-                    .pointerCursor()
+                    section("准备状态", isActive: filter.brollStatuses.isActive,
+                            clear: { filter.brollStatuses.removeAll() }) {
+                        ForEach(BrollPreparationStatus.allCases) { status in
+                            optionRow(status.title, systemImage: status.systemImage,
+                                      count: bRolls.filter { $0.brollStatus == status }.count,
+                                      state: filter.brollStatuses[status]) {
+                                filter.brollStatuses.cycle(status)
+                            }
+                        }
+                    }
                 }
             }
-            .padding(12)
-            .frame(width: 220)
         }
-        .help(selection.isEmpty ? "按制作方式显示或隐藏 B-roll" : filterSummary)
-        .accessibilityLabel("按制作方式筛选")
-        .accessibilityValue(filterSummary)
-        .pointerCursor()
+        .padding(14)
+        .frame(width: 480)
     }
 
-    private func toggle(_ method: BrollProductionMethod) {
-        if selection.contains(method) {
-            selection.remove(method)
-        } else {
-            selection.insert(method)
+    private func column<Content: View>(title: String, count: Int, isShown: Binding<Bool>,
+                                       @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: isShown) {
+                HStack(spacing: 4) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text("\(count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .accessibilityLabel("显示 \(title)")
+
+            VStack(alignment: .leading, spacing: 10) {
+                content()
+            }
+            .disabled(!isShown.wrappedValue)
+            .opacity(isShown.wrappedValue ? 1 : 0.4)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func section<Content: View>(_ title: String, isActive: Bool, clear: @escaping () -> Void,
+                                        @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if isActive {
+                    Button("清除", action: clear)
+                        .font(.system(size: 11))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .pointerCursor()
+                }
+            }
+            content()
+        }
+    }
+
+    private func optionRow(_ title: String, systemImage: String, count: Int,
+                           state: ScriptFilterState?, action: @escaping () -> Void) -> some View {
+        let tint: Color = switch state {
+        case .include: .accentColor
+        case .exclude: .red
+        case nil: .secondary
+        }
+        let stateDescription = switch state {
+        case .include: "只看"
+        case .exclude: "不看"
+        case nil: "不限"
+        }
+        let stateImage = switch state {
+        case .include: "checkmark.circle.fill"
+        case .exclude: "minus.circle.fill"
+        case nil: "circle"
+        }
+        return Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: stateImage)
+                    .foregroundStyle(tint)
+                .frame(width: 14)
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text(title)
+                    .foregroundStyle(state == .exclude ? Color.secondary : Color.primary)
+                    .strikethrough(state == .exclude, color: .red)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(count)")
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size: 12))
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue("\(stateDescription)，\(count) 条")
+        .accessibilityHint("点击在只看、不看、不限之间切换")
+        .pointerCursor()
     }
 }
 
@@ -5499,6 +5683,12 @@ private struct HoverTooltipPopoverHost: NSViewRepresentable {
             }
 
             guard !popover.isShown else { return }
+            // A transient tooltip would dismiss any popover that is already open (e.g. one the
+            // hovered button just presented), so stay hidden while another popover is visible.
+            let tooltipWindow = popover.contentViewController?.view.window
+            guard !NSApp.windows.contains(where: {
+                $0.isVisible && $0 !== tooltipWindow && String(describing: type(of: $0)).contains("Popover")
+            }) else { return }
 
             let mouseLocation = NSEvent.mouseLocation
             let windowPoint = window.convertPoint(fromScreen: mouseLocation)
