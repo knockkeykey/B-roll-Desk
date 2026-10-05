@@ -223,7 +223,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "B-roll配对台 Debug";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "为在现有 Finder 窗口中新建标签页并定位素材，B-roll配对台需要控制 Finder 和 System Events。";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -252,7 +251,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "B-roll配对台";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "为在现有 Finder 窗口中新建标签页并定位素材，B-roll配对台需要控制 Finder 和 System Events。";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

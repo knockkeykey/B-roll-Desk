@@ -287,17 +287,6 @@ struct ContentView: View {
             ManifestPreviewSheet(text: model.manifestPreviewText)
         }
         .alert(item: $model.alert) { alert in
-            if alert.action == .openAccessibilitySettings {
-                return Alert(
-                    title: Text(alert.title),
-                    message: Text(alert.message),
-                    primaryButton: .default(Text("打开辅助功能设置")) {
-                        model.openAccessibilitySettings()
-                    },
-                    secondaryButton: .cancel(Text("好"))
-                )
-            }
-
             return Alert(
                 title: Text(alert.title),
                 message: Text(alert.message),
@@ -2903,10 +2892,12 @@ private struct AnchorListView: View {
         }
         selectedScriptRowID = row.id
         model.anchorSearchText = ""
-        editingIndex = row.index - 1
         editingText = row.text
         editingCursor = (row.text as NSString).length
         editingSession = UUID()
+        withAnimation(rowEditAnimation) {
+            editingIndex = row.index - 1
+        }
     }
 
     private func beginEditingRow(_ rowID: String) {
@@ -3280,6 +3271,8 @@ private struct AnchorRowView: View {
     @State private var pulseGlow: Double = 0
     @State private var pulseScale: CGFloat = 1
     @State private var pulseOffset: CGFloat = 0
+    @State private var editEntryGlow: Double = 0
+    @State private var editEntryScale: CGFloat = 1
     @State private var isNoteEditorPresented = false
     @State private var isPacingDetailsPresented = false
     @State private var noteDraft = ""
@@ -3336,6 +3329,32 @@ private struct AnchorRowView: View {
         withAnimation(.easeOut(duration: 0.85).delay(0.18)) {
             pulseGlow = 0
         }
+    }
+
+    private func runEditingEntryMotion() {
+        guard !reduceMotion else { return }
+        var reset = Transaction()
+        reset.disablesAnimations = true
+        withTransaction(reset) {
+            editEntryScale = 0.988
+            editEntryGlow = 1
+        }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.68)) {
+            editEntryScale = 1
+        }
+        withAnimation(.easeOut(duration: 0.52)) {
+            editEntryGlow = 0
+        }
+    }
+
+    private var editingEntryHighlight: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(pulseTint.opacity(0.045 * editEntryGlow))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(pulseTint.opacity(0.24 * editEntryGlow), lineWidth: 1)
+            }
+            .allowsHitTesting(false)
     }
 
     var body: some View {
@@ -3429,17 +3448,20 @@ private struct AnchorRowView: View {
                             onMerge: mergeWithPrevious
                         )
                         .id(editingSession)
-                        .frame(minHeight: 26)
+                        .frame(minHeight: 22)
+                        .transition(.opacity)
                     } else {
                         Text(row.text.isEmpty ? "双击输入文案" : row.text)
                             .font(.system(size: 16))
                             .foregroundStyle(row.text.isEmpty ? .tertiary : .primary)
                             .lineSpacing(2)
+                            .frame(minHeight: 22, alignment: .topLeading)
                             .contentShape(Rectangle())
                             .background(ScriptRowVisibilityMarker(rowID: row.id, tracksTextEditing: true)
                                 .accessibilityHidden(true))
                             .onTapGesture(count: 2, perform: beginEditing)
                             .pointerCursor()
+                            .transition(.opacity)
                     }
                 }
             }
@@ -3499,10 +3521,14 @@ private struct AnchorRowView: View {
                 .strokeBorder(pulseTint.opacity(0.75 * pulseGlow), lineWidth: 1.5)
                 .allowsHitTesting(false)
         }
-        .scaleEffect(pulseScale)
+        .overlay { editingEntryHighlight }
+        .scaleEffect(pulseScale * editEntryScale)
         .offset(y: pulseOffset)
         .onAppear(perform: runPulse)
         .onChange(of: pulse) { _, _ in runPulse() }
+        .onChange(of: isEditing) { _, editing in
+            if editing { runEditingEntryMotion() }
+        }
         .onChange(of: pacingHint) { _, hint in
             if hint == nil { isPacingDetailsPresented = false }
         }
@@ -4130,7 +4156,7 @@ private struct InlineAnchorEditor: NSViewRepresentable {
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: NSFont.systemFont(ofSize: 16)]
         )
-        return CGSize(width: width, height: max(26, ceil(bounds.height) + 4))
+        return CGSize(width: width, height: max(22, ceil(bounds.height) + 2))
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -4229,20 +4255,15 @@ private struct AssetChip: View {
             Button {
                 model.jumpToSourceFile(for: asset)
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: mediaSymbol)
-                        .foregroundStyle(isSelected ? Color.orange : Color.secondary)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(asset.outputName)
-                            .font(.system(size: 13, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text("源文件：\(model.sourceOriginLabel(for: asset))")
-                            .font(.system(size: 12))
-                            .foregroundStyle(isSelected ? Color.orange : Color.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                        .font(.system(size: 12))
+                        .foregroundStyle(isSelected ? Color.orange : Color.primary.opacity(0.7))
+                    Text(asset.outputName)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -4250,9 +4271,29 @@ private struct AssetChip: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(model.sourceFile(for: asset) == nil)
-            .hoverHelp("归档名：\(asset.outputName)\n\n完整媒体文件名：\(asset.sourceName)")
+            .hoverHelp("归档名：\(asset.outputName)\n\n完整媒体文件名：\(asset.sourceName)\n\n源文件：\(model.sourceOriginLabel(for: asset))")
             .accessibilityLabel("定位源文件 \(asset.sourceName)")
             .pointerCursor(model.sourceFile(for: asset) == nil ? .arrow : .pointingHand)
+
+            Button {
+                model.reveal(asset)
+            } label: {
+                Image(systemName: "arrow.up.forward.app")
+            }
+            .buttonStyle(IconActionButtonStyle(usesAnimation: false))
+            .hoverHelp("在 Finder 中打开剪辑文件夹并选中归档副本")
+            .accessibilityLabel("在剪辑文件夹中显示 \(asset.outputName)")
+            .pointerCursor()
+
+            Button {
+                model.revealSource(asset)
+            } label: {
+                Image(systemName: "folder")
+            }
+            .buttonStyle(IconActionButtonStyle(usesAnimation: false))
+            .hoverHelp("在 Finder 中打开源文件所在目录并选中原始素材")
+            .accessibilityLabel("在源目录中显示 \(asset.sourceName)")
+            .pointerCursor()
 
             Button {
                 isUnbindConfirmationPresented = true
@@ -4279,7 +4320,7 @@ private struct AssetChip: View {
                 Text("归档副本将被删除，素材目录中的原始文件会保留。")
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 2)
         .padding(.horizontal, 8)
         .background(
             isSelected

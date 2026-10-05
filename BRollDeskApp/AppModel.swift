@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import CoreServices
 import Foundation
 import Observation
@@ -1436,35 +1435,12 @@ final class AppModel {
     @discardableResult
     func revealInFinder(_ url: URL) -> Bool {
         do {
-            try FinderTabOpener.reveal(url)
+            try FinderItemOpener.reveal(url)
             return true
-        } catch let error as FinderTabError {
-            showError(
-                title: "无法在 Finder 标签页中定位",
-                message: error.localizedDescription,
-                action: error.alertAction
-            )
-            return false
         } catch {
-            showError(title: "无法在 Finder 标签页中定位", message: error.localizedDescription)
+            showError(title: "无法在 Finder 中显示项目", message: error.localizedDescription)
             return false
         }
-    }
-
-    func openAccessibilitySettings() {
-        guard let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
-            return
-        }
-
-        guard NSWorkspace.shared.open(settingsURL) else {
-            showError(
-                title: "无法打开辅助功能设置",
-                message: "请手动前往“系统设置 > 隐私与安全性 > 辅助功能”，启用 B-roll配对台。"
-            )
-            return
-        }
-
-        statusMessage = "请在辅助功能中启用 B-roll配对台，然后返回重试"
     }
 
     func previewManifest() {
@@ -1564,6 +1540,17 @@ final class AppModel {
     func reveal(_ asset: BrollAsset) {
         guard let brollDirectoryURL else { return }
         let url = brollDirectoryURL.appendingPathComponent(asset.outputName)
+        revealInFinder(url)
+    }
+
+    func revealSource(_ asset: BrollAsset) {
+        guard let url = sourceURL(for: asset) else {
+            showError(
+                title: "无法定位源素材",
+                message: "请重新连接素材来源目录后再试。"
+            )
+            return
+        }
         revealInFinder(url)
     }
 
@@ -2819,9 +2806,9 @@ final class AppModel {
         }
     }
 
-    private func showError(title: String, message: String, action: AppAlertAction? = nil) {
+    private func showError(title: String, message: String) {
         statusMessage = message
-        alert = AppAlert(title: title, message: message, action: action)
+        alert = AppAlert(title: title, message: message)
     }
 
     private static func timeString() -> String {
@@ -2896,86 +2883,33 @@ private final class SourceDirectoryWatcher {
     }
 }
 
-private enum FinderTabOpener {
+@MainActor
+private enum FinderItemOpener {
     static func reveal(_ url: URL) throws {
-        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let options = [promptKey: true] as CFDictionary
-        guard AXIsProcessTrustedWithOptions(options) else {
-            throw FinderTabError.accessibilityPermissionRequired
-        }
-
         let targetURL = url.standardizedFileURL
         let isDirectory = (try? targetURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        let folderURL = isDirectory ? targetURL : targetURL.deletingLastPathComponent()
-        let shouldSelectTarget = !isDirectory && FileManager.default.fileExists(atPath: targetURL.path)
-        let folderPath = appleScriptString(folderURL.path)
-        let targetPath = appleScriptString(targetURL.path)
 
-        let selectionCommand = shouldSelectTarget
-            ? "set selection to {(POSIX file \"\(targetPath)\") as alias}"
-            : ""
-
-        let source = """
-        tell application "Finder"
-            activate
-            set existingWindowCount to count of Finder windows
-        end tell
-
-        if existingWindowCount > 0 then
-            tell application "System Events"
-                tell process "Finder"
-                    keystroke "t" using {command down}
-                end tell
-            end tell
-            delay 0.12
-        else
-            tell application "Finder"
-                make new Finder window
-            end tell
-        end if
-
-        tell application "Finder"
-            set target of front Finder window to (POSIX file "\(folderPath)" as alias)
-            \(selectionCommand)
-        end tell
-        """
-
-        var errorInfo: NSDictionary?
-        guard NSAppleScript(source: source)?.executeAndReturnError(&errorInfo) != nil else {
-            throw FinderTabError.automationFailed(errorInfo?.description ?? "Finder 自动化未完成。")
+        if isDirectory {
+            guard NSWorkspace.shared.open(targetURL) else {
+                throw FinderItemError.couldNotOpen
+            }
+        } else {
+            let parentURL = targetURL.deletingLastPathComponent()
+            guard NSWorkspace.shared.selectFile(
+                targetURL.path,
+                inFileViewerRootedAtPath: parentURL.path
+            ) else {
+                throw FinderItemError.couldNotOpen
+            }
         }
-    }
-
-    private static func appleScriptString(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\t", with: "\\t")
     }
 }
 
-private enum FinderTabError: LocalizedError {
-    case accessibilityPermissionRequired
-    case automationFailed(String)
+private enum FinderItemError: LocalizedError {
+    case couldNotOpen
 
     var errorDescription: String? {
-        switch self {
-        case .accessibilityPermissionRequired:
-            return "请在辅助功能设置中启用 B-roll配对台，然后返回这里再试一次。"
-        case .automationFailed(let details):
-            return "请允许 B-roll配对台控制 Finder 和 System Events，然后重试。\n\n\(details)"
-        }
-    }
-
-    var alertAction: AppAlertAction? {
-        switch self {
-        case .accessibilityPermissionRequired:
-            return .openAccessibilitySettings
-        case .automationFailed:
-            return nil
-        }
+        "系统未能打开 Finder 或定位目标，请确认该文件或文件夹仍然存在。"
     }
 }
 

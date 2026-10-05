@@ -938,20 +938,14 @@ struct SavedDirectory: Identifiable, Codable, Hashable {
     var bookmarkData: Data
 }
 
-enum AppAlertAction: Equatable {
-    case openAccessibilitySettings
-}
-
 struct AppAlert: Identifiable {
     let id = UUID()
     let title: String
     let message: String
-    let action: AppAlertAction?
 
-    init(title: String, message: String, action: AppAlertAction? = nil) {
+    init(title: String, message: String) {
         self.title = title
         self.message = message
-        self.action = action
     }
 }
 
