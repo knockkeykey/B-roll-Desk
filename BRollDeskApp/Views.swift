@@ -1984,9 +1984,27 @@ private struct ScriptRowVisibilityMarker: NSViewRepresentable {
 }
 
 private final class ScriptRowMarkerView: NSView {
+    /// Live markers, so scroll updates need not walk the whole list view hierarchy.
+    static let registry = NSHashTable<ScriptRowMarkerView>.weakObjects()
+
     var rowID = ""
     var tracksTextEditing = false
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { Self.registry.remove(self) } else { Self.registry.add(self) }
+    }
+
+    static func markers(in document: NSView) -> [ScriptRowMarkerView] {
+        registry.allObjects.filter { $0.window === document.window && $0.isDescendant(of: document) }
+    }
+}
+
+/// Holds scroll-driven visibility outside the list's view state so scrolling only refreshes the timeline.
+@Observable
+private final class ScriptVisibilityTracker {
+    var rows: [VisibleScriptRow] = []
 }
 
 private struct ScriptListVisibilityObserver: NSViewRepresentable {
@@ -2090,10 +2108,9 @@ private final class ScriptListVisibilityView: NSView {
             }
         }
         let clip = list.contentView
-        var pending = [document]
         var visible: [(CGFloat, VisibleScriptRow)] = []
-        while let view = pending.popLast() {
-            if let marker = view as? ScriptRowMarkerView, !marker.tracksTextEditing,
+        for marker in ScriptRowMarkerView.markers(in: document) {
+            if !marker.tracksTextEditing,
                !marker.isHiddenOrHasHiddenAncestor,
                marker.bounds.height > 0 {
                 let rect = marker.convert(marker.bounds, to: clip)
@@ -2107,7 +2124,6 @@ private final class ScriptListVisibilityView: NSView {
                                                            startFraction: Double(start), endFraction: Double(end))))
                 }
             }
-            pending.append(contentsOf: view.subviews)
         }
         // Quantize subpixel layout changes to avoid repeatedly updating SwiftUI during a scroll.
         let rows = visible.sorted { $0.0 < $1.0 }.map { _, row in
@@ -2122,16 +2138,14 @@ private final class ScriptListVisibilityView: NSView {
     private func handleRowClick(_ event: NSEvent) {
         guard event.window === window, let documentView, let clip = scrollView?.contentView,
               clip.convert(clip.bounds, to: nil).contains(event.locationInWindow) else { return }
-        var pending = [documentView]
         var clickedRowID: String?
         var clickedTextRowID: String?
-        while let view = pending.popLast() {
-            if let marker = view as? ScriptRowMarkerView, !marker.isHiddenOrHasHiddenAncestor,
+        for marker in ScriptRowMarkerView.markers(in: documentView) {
+            if !marker.isHiddenOrHasHiddenAncestor,
                marker.convert(marker.bounds, to: nil).contains(event.locationInWindow) {
                 if marker.tracksTextEditing { clickedTextRowID = marker.rowID }
                 else { clickedRowID = marker.rowID }
             }
-            pending.append(contentsOf: view.subviews)
         }
         let isDoubleClick = event.clickCount == 2
         // Let controls handle the event before committing the row selection or replacing its text.
@@ -2151,7 +2165,7 @@ private enum ScriptRowSelectionStyle {
 private struct ScriptDistributionTimeline: View {
     let distribution: ScriptDistribution
     let productionMethod: (String) -> BrollProductionMethod
-    let visibleRows: [VisibleScriptRow]
+    let visibility: ScriptVisibilityTracker
     let selectedRowID: String?
     let onSelectRow: (String) -> Void
     @State private var hoveredRowID: String?
@@ -2174,6 +2188,9 @@ private struct ScriptDistributionTimeline: View {
     }
 
     var body: some View {
+        let visibleSegments = self.visibleSegments
+        let rangeDescription = "第 \(visibleSegments.first?.row.index ?? 1) 至 \(visibleSegments.last?.row.index ?? 1) 条"
+        let lastSegmentID = distribution.segments.last?.id
         VStack(spacing: 4) {
             HStack(spacing: 10) {
                 legend("A-roll", color: aRollColor)
@@ -2215,7 +2232,8 @@ private struct ScriptDistributionTimeline: View {
                     ForEach(visibleSegments) { segment in
                         let start = max(segment.startFraction, viewport.start)
                         let end = min(segment.endFraction, viewport.end)
-                        segmentButton(segment, width: geometry.size.width * (end - start) / viewport.span)
+                        segmentButton(segment, width: geometry.size.width * (end - start) / viewport.span,
+                                      isLast: segment.id == lastSegmentID)
                             .offset(x: geometry.size.width * (start - viewport.start) / viewport.span)
                     }
                 }
@@ -2233,12 +2251,14 @@ private struct ScriptDistributionTimeline: View {
             }
             ScriptTimelineNavigator(distribution: distribution, viewport: viewport,
                                     aRollColor: aRollColor, bRollColor: bRollColor,
+                                    selectedRowID: selectedRowID,
                                     onChange: manuallySetRange)
                 .frame(height: 16)
         }
         .onAppear { updateFollowRange() }
-        .onChange(of: visibleRows) { _, _ in
-            if followsScript { updateFollowRange() }
+        .onChange(of: visibility.rows) { _, _ in
+            // Scroll updates arrive continuously; restarting an animation for each one causes stutter.
+            if followsScript { updateFollowRange(animated: false) }
         }
         .onChange(of: distribution) { _, _ in updateFollowRange() }
         .onChange(of: selectedRowID) { _, rowID in
@@ -2256,23 +2276,20 @@ private struct ScriptDistributionTimeline: View {
         distribution.segments.filter { $0.endFraction > viewport.start && $0.startFraction < viewport.end }
     }
 
-    private var rangeDescription: String {
-        "第 \(visibleSegments.first?.row.index ?? 1) 至 \(visibleSegments.last?.row.index ?? 1) 条"
-    }
-
     private var rememberedSpan: Double {
         storedVisibleFraction.isFinite
             ? min(1, max(ScriptTimelineViewport.minimumSpan, storedVisibleFraction))
             : 0.1
     }
 
-    private func updateFollowRange() {
+    private func updateFollowRange(animated: Bool = true) {
         let next = followsScript
-            ? (ScriptTimelineViewport.following(visibleRows, in: distribution, preservingSpan: rememberedSpan)
+            ? (ScriptTimelineViewport.following(visibility.rows, in: distribution, preservingSpan: rememberedSpan)
                ?? ScriptTimelineViewport(start: viewport.center - rememberedSpan / 2,
                                          end: viewport.center + rememberedSpan / 2))
             : .full
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) { viewport = next }
+        guard next != viewport else { return }
+        withAnimation(animated && !reduceMotion ? .easeOut(duration: 0.14) : nil) { viewport = next }
     }
 
     private func manuallySetRange(_ range: ScriptTimelineViewport) {
@@ -2299,7 +2316,7 @@ private struct ScriptDistributionTimeline: View {
         .pointerCursor()
     }
 
-    private func segmentButton(_ segment: ScriptDistribution.Segment, width: CGFloat) -> some View {
+    private func segmentButton(_ segment: ScriptDistribution.Segment, width: CGFloat, isLast: Bool) -> some View {
         let method = productionMethod(segment.id)
         let methodDescription = segment.rollType == .bRoll ? "，制作方式：\(method.title)" : ""
         let isSelected = selectedRowID == segment.id
@@ -2311,7 +2328,7 @@ private struct ScriptDistributionTimeline: View {
                     .fill(isSelected ? ScriptRowSelectionStyle.fill
                                      : (segment.rollType == .aRoll ? aRollColor : bRollColor))
                     .overlay(alignment: .trailing) {
-                        if width >= 3, segment.id != distribution.segments.last?.id {
+                        if width >= 3, !isLast {
                             Color(nsColor: .windowBackgroundColor).opacity(0.7).frame(width: 0.5)
                         }
                     }
@@ -2369,23 +2386,43 @@ private struct ScriptTimelineNavigator: View {
     let viewport: ScriptTimelineViewport
     let aRollColor: Color
     let bRollColor: Color
+    let selectedRowID: String?
     let onChange: (ScriptTimelineViewport) -> Void
     @State private var dragOrigin: ScriptTimelineViewport?
+    private static let coordinateSpace = "ScriptTimelineNavigator"
 
     var body: some View {
         GeometryReader { geometry in
             let width = max(1, geometry.size.width)
             let selectionWidth = width * viewport.span
             ZStack(alignment: .leading) {
-                ZStack(alignment: .leading) {
-                    Color.primary.opacity(0.06)
-                    ForEach(distribution.segments) { segment in
-                        Rectangle()
-                            .fill(segment.rollType == .aRoll ? aRollColor.opacity(0.45) : bRollColor.opacity(0.65))
-                            .frame(width: width * segment.fraction, height: 8)
-                            .offset(x: width * segment.startFraction)
+                // One Canvas draw instead of a view per segment, so dragging/following the range stays cheap.
+                Canvas { context, size in
+                    let barHeight: CGFloat = 8
+                    let y = (size.height - barHeight) / 2
+                    let aRoll = GraphicsContext.Shading.color(aRollColor.opacity(0.45))
+                    let bRoll = GraphicsContext.Shading.color(bRollColor.opacity(0.65))
+                    for segment in distribution.segments {
+                        let rect = CGRect(x: size.width * segment.startFraction, y: y,
+                                          width: size.width * segment.fraction, height: barHeight)
+                        context.fill(Path(rect), with: segment.rollType == .aRoll ? aRoll : bRoll)
+                    }
+                    // 选中块画在最上层，并保证最小宽度，缩小到全局总览时也能在范围框里看到
+                    if let selected = distribution.segments.first(where: { $0.id == selectedRowID }) {
+                        let minWidth: CGFloat = 4
+                        let rawWidth = size.width * selected.fraction
+                        let width = max(minWidth, rawWidth)
+                        let x = min(size.width - width,
+                                    max(0, size.width * selected.startFraction - (width - rawWidth) / 2))
+                        let rect = CGRect(x: x, y: y - 1, width: width, height: barHeight + 2)
+                        let path = Path(roundedRect: rect, cornerRadius: 1.5)
+                        context.fill(path, with: .color(Color(nsColor: .windowBackgroundColor)))
+                        context.fill(path, with: .color(ScriptRowSelectionStyle.fill))
+                        context.stroke(path, with: .color(ScriptRowSelectionStyle.border),
+                                       lineWidth: min(ScriptRowSelectionStyle.borderWidth, width / 2))
                     }
                 }
+                .background(Color.primary.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0).onChanged { value in
@@ -2399,13 +2436,19 @@ private struct ScriptTimelineNavigator: View {
                     .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(.yellow, lineWidth: 2) }
                     .frame(width: selectionWidth, height: 16)
                     .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 2)
+                    // 使用固定坐标空间：范围框本身随拖动移动，局部坐标会让位移来回抵消导致闪烁
+                    .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.coordinateSpace))
                         .onChanged { value in
                             if dragOrigin == nil { dragOrigin = viewport }
+                            NSCursor.closedHand.set()
                             guard let origin = dragOrigin else { return }
                             onChange(origin.moved(by: Double(value.translation.width / width)))
                         }
-                        .onEnded { _ in dragOrigin = nil })
+                        .onEnded { _ in
+                            dragOrigin = nil
+                            NSCursor.openHand.set()
+                        })
+                    .pointerCursor(.openHand)
                     .offset(x: width * viewport.start)
                     .help("拖动范围框平移时间线；拖动两端调整并记住缩放比例。滚动文案时只跟随移动，保持缩放比例")
                     .accessibilityLabel("时间线可视范围")
@@ -2418,6 +2461,7 @@ private struct ScriptTimelineNavigator: View {
                 rangeHandle(isStart: false, width: width)
                     .offset(x: width * viewport.end - 6)
             }
+            .coordinateSpace(name: Self.coordinateSpace)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("时间线缩放导航条")
@@ -2429,7 +2473,7 @@ private struct ScriptTimelineNavigator: View {
             .overlay { Capsule().fill(Color.black.opacity(0.45)).frame(width: 2, height: 8) }
             .frame(width: 10, height: 16)
             .contentShape(Rectangle())
-            .highPriorityGesture(DragGesture(minimumDistance: 1)
+            .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.coordinateSpace))
                 .onChanged { value in
                     if dragOrigin == nil { dragOrigin = viewport }
                     guard let origin = dragOrigin else { return }
@@ -2438,6 +2482,7 @@ private struct ScriptTimelineNavigator: View {
                                      : origin.resizingEnd(to: origin.end + offset))
                 }
                 .onEnded { _ in dragOrigin = nil })
+            .pointerCursor(.resizeLeftRight)
             .help(isStart ? "拖动左端调整时间线范围起点" : "拖动右端调整时间线范围终点")
             .accessibilityLabel(isStart ? "时间线范围起点" : "时间线范围终点")
             .accessibilityAdjustableAction { direction in
@@ -2465,7 +2510,7 @@ private struct AnchorListView: View {
     @State private var rowPulse: AnchorRowPulse?
     @State private var bindingExitTokens: [String: UUID] = [:]
     @State private var fadingBoundRowIDs: Set<String> = []
-    @State private var visibleScriptRows: [VisibleScriptRow] = []
+    @State private var scriptVisibility = ScriptVisibilityTracker()
     @State private var selectedScriptRowID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -2616,7 +2661,7 @@ private struct AnchorListView: View {
                 ScriptDistributionTimeline(
                     distribution: distribution,
                     productionMethod: { model.brollProductionMethod(for: $0) },
-                    visibleRows: visibleScriptRows,
+                    visibility: scriptVisibility,
                     selectedRowID: selectedScriptRowID,
                     onSelectRow: revealTimelineRow
                 )
@@ -2686,7 +2731,7 @@ private struct AnchorListView: View {
                         AnchorListDropOutline(feedback: model.dropFeedback)
                     }
                     .background {
-                        ScriptListVisibilityObserver(onChange: { visibleScriptRows = $0 },
+                        ScriptListVisibilityObserver(onChange: { [scriptVisibility] in scriptVisibility.rows = $0 },
                                                      onSelectRow: selectScriptRow,
                                                      onDoubleClickRow: beginEditingRow)
                             .accessibilityHidden(true)
