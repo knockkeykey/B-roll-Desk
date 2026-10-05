@@ -132,7 +132,7 @@ enum BrollProductionMethod: String, RollProductionMethod, Codable, Hashable {
         case .animation: return "动画"
         case .aiVideo: return "AI 生成视频"
         case .imageMotion: return "图片＋动效"
-        case .stockFootage: return "搜索现成素材"
+        case .stockFootage: return "搜索素材"
         case .screenRecording: return "屏幕录制"
         case .other: return "其他"
         }

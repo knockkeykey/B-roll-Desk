@@ -1711,6 +1711,7 @@ private struct SidebarStatisticsSection: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
 
+                ArollStatisticsView(model: model)
                 BrollStatisticsView(model: model)
             }
         }
@@ -1764,6 +1765,149 @@ private struct SidebarRollRatioView: View {
         .font(.system(size: 10, weight: .medium).monospacedDigit())
         .lineLimit(1)
         .minimumScaleFactor(0.8)
+    }
+}
+
+private extension ArollProductionMethod {
+    var color: Color {
+        switch self {
+        case .none: return .gray
+        case .text: return .blue
+        case .searchMaterial: return .orange
+        }
+    }
+}
+
+private enum ArollStatisticsPalette {
+    static let unassignedDeviceColor: Color = .gray
+
+    @MainActor static func devices(in model: AppModel) -> [ShootingDevice] {
+        var result = model.shootingDevices
+        let selectedDevices = model.rows
+            .filter {
+                !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && model.rollType(for: $0.id) == .aRoll
+            }
+            .compactMap { model.shootingDevice(for: $0.id) }
+        for device in selectedDevices where !result.contains(where: { $0.id == device.id }) {
+            result.append(device)
+        }
+        return result
+    }
+
+    static func color(for deviceID: String?, in devices: [ShootingDevice]) -> Color {
+        guard let deviceID, let index = devices.firstIndex(where: { $0.id == deviceID }) else {
+            return unassignedDeviceColor
+        }
+        let hue = (0.57 + Double(index) * 0.61803398875).truncatingRemainder(dividingBy: 1)
+        return Color(hue: hue, saturation: 0.68, brightness: 0.86)
+    }
+}
+
+private struct ColoredCategoryStat: Identifiable {
+    let id: String
+    let title: String
+    let count: Int
+    let color: Color
+}
+
+private struct ArollStatisticsView: View {
+    let model: AppModel
+
+    var body: some View {
+        let total = model.aRollAnchorCount
+        let methodStats = ArollProductionMethod.allCases.map {
+            ColoredCategoryStat(id: $0.id, title: $0.title,
+                                count: model.arollProductionMethodCount($0), color: $0.color)
+        }
+        let devices = ArollStatisticsPalette.devices(in: model)
+        let deviceStats = devices.map { device in
+            ColoredCategoryStat(id: "device-\(device.id)", title: device.name,
+                                count: model.arollShootingDeviceCount(device.id),
+                                color: ArollStatisticsPalette.color(for: device.id, in: devices))
+        } + [ColoredCategoryStat(id: "device-none", title: "未设置",
+                                count: model.arollShootingDeviceCount(nil),
+                                color: ArollStatisticsPalette.unassignedDeviceColor)]
+
+        VStack(alignment: .leading, spacing: 8) {
+            Label("A-roll 统计", systemImage: "person.crop.rectangle")
+                .font(.caption.weight(.semibold))
+
+            ArollCategoryDonutView(title: "制作方式占比", statistics: methodStats, total: total)
+            ArollCategoryDonutView(title: "拍摄设备占比", statistics: deviceStats, total: total)
+
+            Text("占比以全部 A-roll 文案为基数")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+private struct ArollCategoryDonutView: View {
+    let title: String
+    let statistics: [ColoredCategoryStat]
+    let total: Int
+
+    private let legendColumns = [GridItem(.flexible()), GridItem(.flexible())]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: "chart.pie.fill")
+                .font(.system(size: 11, weight: .medium))
+
+            Chart {
+                ForEach(statistics.filter { $0.count > 0 }) { statistic in
+                    SectorMark(
+                        angle: .value("文案数", statistic.count),
+                        innerRadius: .ratio(0.48),
+                        angularInset: 1.2
+                    )
+                    .foregroundStyle(statistic.color)
+                    .annotation(position: .overlay, alignment: .center) {
+                        Text(BrollProductionMethodStat.percentageText(for: statistic.count, of: total))
+                            .font(.system(size: 9, weight: .bold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.55)
+                            .shadow(color: .black.opacity(0.55), radius: 1)
+                    }
+                }
+            }
+            .chartLegend(.hidden)
+            .frame(height: 148)
+            .overlay {
+                VStack(spacing: 1) {
+                    Text(total, format: .number)
+                        .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                    Text("条 A-roll")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .allowsHitTesting(false)
+            }
+
+            LazyVGrid(columns: legendColumns, alignment: .leading, spacing: 5) {
+                ForEach(statistics) { statistic in
+                    HStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(statistic.color)
+                            .frame(width: 4, height: 14)
+                        Text(statistic.title)
+                            .font(.system(size: 10, weight: .medium))
+                            .lineLimit(1)
+                        Spacer(minLength: 2)
+                        Text(statistic.count, format: .number)
+                            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 25, alignment: .leading)
+                    .padding(.horizontal, 7)
+                    .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
     }
 }
 
@@ -2116,7 +2260,10 @@ private enum ScriptRowSelectionStyle {
 
 private struct ScriptDistributionTimeline: View {
     let distribution: ScriptDistribution
-    let productionMethod: (String) -> BrollProductionMethod
+    let aRollProductionMethod: (String) -> ArollProductionMethod
+    let bRollProductionMethod: (String) -> BrollProductionMethod
+    let shootingDevice: (String) -> ShootingDevice?
+    let aRollDevices: [ShootingDevice]
     /// Rows passing the current search and filter; nil when nothing narrows the list.
     let matchedRowIDs: Set<String>?
     let visibility: ScriptVisibilityTracker
@@ -2191,10 +2338,10 @@ private struct ScriptDistributionTimeline: View {
                             .offset(x: geometry.size.width * (start - viewport.start) / viewport.span)
                     }
                 }
-                .frame(width: geometry.size.width, height: 24, alignment: .leading)
+                .frame(width: geometry.size.width, height: 30, alignment: .leading)
                 .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
             }
-            .frame(height: 24)
+            .frame(height: 30)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("文案分布，\(rangeDescription)")
 
@@ -2271,13 +2418,26 @@ private struct ScriptDistributionTimeline: View {
     }
 
     private func segmentButton(_ segment: ScriptDistribution.Segment, width: CGFloat, isLast: Bool) -> some View {
-        let method = productionMethod(segment.id)
-        let methodDescription = segment.rollType == .bRoll ? "，制作方式：\(method.title)" : ""
+        let aRollMethod = aRollProductionMethod(segment.id)
+        let bRollMethod = bRollProductionMethod(segment.id)
+        let device = shootingDevice(segment.id)
+        let detailDescription: String
+        let methodColor: Color
+        let deviceColor: Color
+        if segment.rollType == .aRoll {
+            detailDescription = "，制作方式：\(aRollMethod.title)，拍摄设备：\(device?.name ?? "未设置")"
+            methodColor = aRollMethod.color
+            deviceColor = ArollStatisticsPalette.color(for: device?.id, in: aRollDevices)
+        } else {
+            detailDescription = "，制作方式：\(bRollMethod.title)"
+            methodColor = bRollMethod.color
+            deviceColor = .clear
+        }
         let isSelected = selectedRowID == segment.id
         return Button {
             onSelectRow(segment.id)
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: 1) {
                 Rectangle()
                     .fill(isSelected ? ScriptRowSelectionStyle.fill
                                      : (segment.rollType == .aRoll ? aRollColor : bRollColor))
@@ -2297,8 +2457,11 @@ private struct ScriptDistributionTimeline: View {
                     }
                     .frame(height: 14)
                 Rectangle()
-                    .fill(segment.rollType == .bRoll ? method.color : .clear)
-                    .frame(height: 2)
+                    .fill(methodColor)
+                    .frame(height: 4)
+                Rectangle()
+                    .fill(deviceColor)
+                    .frame(height: 4)
             }
             .frame(width: max(0, width))
             .opacity(matchedRowIDs?.contains(segment.id) == false && !isSelected ? 0.25 : 1)
@@ -2306,8 +2469,8 @@ private struct ScriptDistributionTimeline: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("第 \(segment.row.index) 条 · \(segment.rollType.title)\(methodDescription)\n\(segment.row.text)\n点击定位文案")
-        .accessibilityLabel("第 \(segment.row.index) 条，\(segment.rollType.title)\(methodDescription)，\(segment.row.text)")
+        .help("第 \(segment.row.index) 条 · \(segment.rollType.title)\(detailDescription)\n\(segment.row.text)\n点击定位文案")
+        .accessibilityLabel("第 \(segment.row.index) 条，\(segment.rollType.title)\(detailDescription)，\(segment.row.text)")
         .accessibilityHint("定位到这条文案")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .onHover { isHovered in
@@ -2539,7 +2702,10 @@ private struct AnchorListView: View {
             if !distribution.segments.isEmpty {
                 ScriptDistributionTimeline(
                     distribution: distribution,
-                    productionMethod: { model.brollProductionMethod(for: $0) },
+                    aRollProductionMethod: { model.arollProductionMethod(for: $0) },
+                    bRollProductionMethod: { model.brollProductionMethod(for: $0) },
+                    shootingDevice: { model.shootingDevice(for: $0) },
+                    aRollDevices: ArollStatisticsPalette.devices(in: model),
                     matchedRowIDs: matchedRowIDs,
                     visibility: scriptVisibility,
                     selectedRowID: selectedScriptRowID,
