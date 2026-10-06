@@ -8,6 +8,7 @@ private func close(_ lhs: Double, _ rhs: Double) -> Bool { abs(lhs - rhs) < 0.00
 
 @main
 struct ScriptTimelineTests {
+    @MainActor
     static func main() {
         let middle = ScriptTimelineViewport(start: 0.3, end: 0.5)
         let zoomed = middle.zoomed(by: 2)
@@ -75,6 +76,69 @@ struct ScriptTimelineTests {
                 expect(close(followed.span, span), "Scrolling through the whole script never changes zoom")
             }
         }
-        print("Script timeline: 18 checks and 400 fixed-zoom scroll positions passed")
+
+        let earlier = middle.panned(byScrollDelta: 1, precise: false, viewportWidth: 1000)
+        let later = middle.panned(byScrollDelta: -1, precise: false, viewportWidth: 1000)
+        expect(earlier.start < middle.start && close(earlier.span, middle.span),
+               "Scrolling up in the main timeline moves earlier without changing zoom")
+        expect(later.start > middle.start && close(later.span, middle.span),
+               "Scrolling down in the main timeline moves later without changing zoom")
+        expect(close(earlier.panned(byScrollDelta: -1, precise: false, viewportWidth: 1000).start, middle.start),
+               "Opposite pan steps restore the original position")
+        expect(close(middle.panned(byScrollDelta: 100, precise: true, viewportWidth: 1000).start, 0.28),
+               "Trackpad panning scales pixels to the visible range")
+        expect(middle.panned(byScrollDelta: .infinity, precise: false, viewportWidth: 1000) == middle
+               && middle.panned(byScrollDelta: 1, precise: true, viewportWidth: 0) == middle,
+               "Invalid pan input leaves the range unchanged")
+        let head = ScriptTimelineViewport(start: 0, end: 0.2)
+        let tail = ScriptTimelineViewport(start: 0.8, end: 1)
+        expect(head.panned(byScrollDelta: 1, precise: false, viewportWidth: 1000) == head
+               && tail.panned(byScrollDelta: -1, precise: false, viewportWidth: 1000) == tail,
+               "Wheel panning stops at both script boundaries")
+        expect(ScriptTimelineViewport.full.panned(byScrollDelta: -1, precise: false, viewportWidth: 1000) == .full,
+               "A full-script range cannot pan beyond its boundaries")
+
+        let suite = "broll-timeline-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let embedded = ScriptTimelineState(defaults: defaults)
+        let detached = embedded
+        embedded.visibleRows = [visible("row-20")]
+        embedded.initializeIfNeeded(in: distribution)
+        let panned = ScriptTimelineViewport(start: 0.6, end: 0.8)
+        embedded.setRange(panned)
+        detached.initializeIfNeeded(in: distribution)
+        expect(detached.viewport == panned, "Opening or reopening the window preserves manual pan and zoom")
+        detached.setRange(detached.viewport.zoomed(by: 1.5))
+        expect(embedded.viewport == detached.viewport && embedded.viewport.span < panned.span,
+               "A zoom button from either window updates the same live viewport")
+        let remembered = embedded.viewport.span
+        let beforePan = detached.viewport
+        detached.setRange(detached.viewport.panned(byScrollDelta: -1, precise: false, viewportWidth: 1000))
+        expect(embedded.viewport.start > beforePan.start && close(embedded.viewport.span, remembered),
+               "Main timeline wheel panning updates both windows while preserving zoom")
+        detached.toggleFollowMode(in: distribution)
+        expect(embedded.viewport == .full && !embedded.followsScript,
+               "Global overview is shared between both windows")
+        embedded.visibleRows = [visible("row-80")]
+        embedded.updateFollowRange(in: distribution)
+        expect(detached.viewport == .full, "List scrolling does not leave global overview")
+        detached.toggleFollowMode(in: distribution)
+        expect(close(embedded.viewport.span, remembered) && close(embedded.viewport.center, 0.795),
+               "Adaptive mode restores zoom and follows the main list from either window")
+        embedded.selectedRowID = "row-40"
+        detached.followSelection(in: distribution)
+        expect(detached.selectedRowID == "row-40" && close(embedded.viewport.center, 0.395),
+               "Script selection is shared and can move both viewports together")
+        detached.requestReveal("row-80")
+        let firstRequest = embedded.revealRequest
+        detached.requestReveal("row-80")
+        expect(embedded.revealRequest?.rowID == "row-80" && embedded.revealRequest != firstRequest,
+               "Repeated clicks on the same detached segment can each reveal the main list row")
+        let relaunched = ScriptTimelineState(defaults: defaults)
+        relaunched.visibleRows = [visible("row-50")]
+        relaunched.initializeIfNeeded(in: distribution)
+        expect(close(relaunched.viewport.span, remembered), "Shared zoom persists across app launches")
+        print("Script timeline: 34 checks and 400 fixed-zoom scroll positions passed")
     }
 }

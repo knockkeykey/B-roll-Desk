@@ -2097,12 +2097,6 @@ private final class ScriptRowMarkerView: NSView {
     }
 }
 
-/// Holds scroll-driven visibility outside the list's view state so scrolling only refreshes the timeline.
-@Observable
-private final class ScriptVisibilityTracker {
-    var rows: [VisibleScriptRow] = []
-}
-
 private struct ScriptListVisibilityObserver: NSViewRepresentable {
     let onChange: ([VisibleScriptRow]) -> Void
     let onSelectRow: (String) -> Void
@@ -2265,15 +2259,20 @@ private struct ScriptDistributionTimeline: View {
     let shootingDevice: (String) -> ShootingDevice?
     /// Rows passing the current search and filter; nil when nothing narrows the list.
     let matchedRowIDs: Set<String>?
-    let visibility: ScriptVisibilityTracker
+    let state: ScriptTimelineState
     let selectedRowID: String?
     let onSelectRow: (String) -> Void
+    var expanded = false
+    var barHeight: CGFloat = 30
+    var onOpenWindow: (() -> Void)? = nil
     @State private var hoveredRowID: String?
-    @State private var viewport = ScriptTimelineViewport.full
-    @State private var followsScript = true
-    @AppStorage("broll-namer-timeline-visible-fraction") private var storedVisibleFraction = 0.1
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var viewport: ScriptTimelineViewport { state.viewport }
+    private var followsScript: Bool { state.followsScript }
+    private var controlHeight: CGFloat { expanded ? 28 : 18 }
+    private var navigatorHeight: CGFloat { expanded ? 28 : 16 }
 
     private var aRollColor: Color {
         colorScheme == .dark
@@ -2311,7 +2310,7 @@ private struct ScriptDistributionTimeline: View {
         let visibleSegments = self.visibleSegments
         let rangeDescription = "第 \(visibleSegments.first?.row.index ?? 1) 至 \(visibleSegments.last?.row.index ?? 1) 条"
         let lastSegmentID = distribution.segments.last?.id
-        VStack(spacing: 4) {
+        VStack(spacing: expanded ? 10 : 4) {
             HStack(spacing: 10) {
                 legend("A-roll", color: aRollColor)
                     .help("拍摄设备：索尼浅灰，大疆深灰")
@@ -2325,18 +2324,18 @@ private struct ScriptDistributionTimeline: View {
                     Text("\((1 / viewport.span).formatted(.number.precision(.fractionLength(1))))×")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
-                        .frame(width: 34)
+                        .frame(width: expanded ? 48 : 34)
                     zoomButton("plus", label: "放大时间线", factor: 1.5,
                                disabled: viewport.span <= ScriptTimelineViewport.minimumSpan + 0.0001)
                 }
                 Button {
-                    followsScript.toggle()
-                    updateFollowRange()
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                        state.toggleFollowMode(in: distribution)
+                    }
                 } label: {
                     Label(followsScript ? "自适应" : "全局总览",
                           systemImage: followsScript ? "arrow.left.and.right.righttriangle.left.righttriangle.right" : "rectangle.expand.vertical")
-                        .frame(width: 76)
-                        .padding(.vertical, 3)
+                        .frame(width: expanded ? 104 : 76, height: controlHeight)
                         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 4))
                 }
                 .buttonStyle(.plain)
@@ -2344,8 +2343,20 @@ private struct ScriptDistributionTimeline: View {
                 .accessibilityLabel("时间线模式：\(followsScript ? "自适应" : "全局总览")")
                 .accessibilityHint("切换自适应与全局总览")
                 .pointerCursor()
+
+                if let onOpenWindow {
+                    Button(action: onOpenWindow) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .frame(width: 22, height: controlHeight)
+                            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHelp("在独立窗口放大展示时间线，可拖到另一块屏幕")
+                    .accessibilityLabel("打开独立时间线窗口")
+                    .pointerCursor()
+                }
             }
-            .font(.system(size: 9, weight: .medium))
+            .font(.system(size: expanded ? 13 : 9, weight: .medium))
             .lineLimit(1)
 
             GeometryReader { geometry in
@@ -2358,12 +2369,17 @@ private struct ScriptDistributionTimeline: View {
                             .offset(x: geometry.size.width * (start - viewport.start) / viewport.span)
                     }
                 }
-                .frame(width: geometry.size.width, height: 30, alignment: .leading)
+                .frame(width: geometry.size.width, height: barHeight, alignment: .leading)
                 .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
             }
-            .frame(height: 30)
+            .frame(height: barHeight)
+            .background {
+                ScriptTimelineScrollRegion(viewport: viewport, onChange: manuallySetRange)
+                    .accessibilityHidden(true)
+            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("文案分布，\(rangeDescription)")
+            .accessibilityHint("滚轮向上查看前面的文案，向下查看后面的文案，保持缩放倍数")
 
             HStack {
                 endpointLabel(viewport.start <= 0.0001 ? "开头" : "第 \(visibleSegments.first?.row.index ?? 1) 条")
@@ -2373,22 +2389,19 @@ private struct ScriptDistributionTimeline: View {
             ScriptTimelineNavigator(distribution: distribution, viewport: viewport,
                                     segmentColor: segmentColor,
                                     selectedRowID: selectedRowID,
+                                    height: navigatorHeight,
                                     onChange: manuallySetRange)
-                .frame(height: 16)
+                .frame(height: navigatorHeight)
         }
-        .onAppear { updateFollowRange() }
-        .onChange(of: visibility.rows) { _, _ in
+        .onAppear { state.initializeIfNeeded(in: distribution) }
+        .onChange(of: state.visibleRows) { _, _ in
             // Scroll updates arrive continuously; restarting an animation for each one causes stutter.
             if followsScript { updateFollowRange(animated: false) }
         }
         .onChange(of: distribution) { _, _ in updateFollowRange() }
-        .onChange(of: selectedRowID) { _, rowID in
-            guard followsScript, let segment = distribution.segments.first(where: { $0.id == rowID }),
-                  segment.startFraction < viewport.start || segment.endFraction > viewport.end else { return }
-            let center = (segment.startFraction + segment.endFraction) / 2
+        .onChange(of: selectedRowID) { _, _ in
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
-                viewport = ScriptTimelineViewport(start: center - viewport.span / 2,
-                                                  end: center + viewport.span / 2)
+                state.followSelection(in: distribution)
             }
         }
     }
@@ -2397,28 +2410,14 @@ private struct ScriptDistributionTimeline: View {
         distribution.segments.filter { $0.endFraction > viewport.start && $0.startFraction < viewport.end }
     }
 
-    private var rememberedSpan: Double {
-        storedVisibleFraction.isFinite
-            ? min(1, max(ScriptTimelineViewport.minimumSpan, storedVisibleFraction))
-            : 0.1
-    }
-
     private func updateFollowRange(animated: Bool = true) {
-        let next = followsScript
-            ? (ScriptTimelineViewport.following(visibility.rows, in: distribution, preservingSpan: rememberedSpan)
-               ?? ScriptTimelineViewport(start: viewport.center - rememberedSpan / 2,
-                                         end: viewport.center + rememberedSpan / 2))
-            : .full
-        guard next != viewport else { return }
-        withAnimation(animated && !reduceMotion ? .easeOut(duration: 0.14) : nil) { viewport = next }
+        withAnimation(animated && !reduceMotion ? .easeOut(duration: 0.14) : nil) {
+            state.updateFollowRange(in: distribution)
+        }
     }
 
     private func manuallySetRange(_ range: ScriptTimelineViewport) {
-        followsScript = true
-        if abs(storedVisibleFraction - range.span) > 0.000000001 || !storedVisibleFraction.isFinite {
-            storedVisibleFraction = range.span
-        }
-        viewport = range
+        state.setRange(range)
     }
 
     private func zoomButton(_ symbol: String, label: String, factor: Double, disabled: Bool) -> some View {
@@ -2426,8 +2425,8 @@ private struct ScriptDistributionTimeline: View {
             manuallySetRange(viewport.zoomed(by: factor))
         } label: {
             Image(systemName: symbol)
-                .font(.system(size: 9, weight: .semibold))
-                .frame(width: 20, height: 18)
+                .font(.system(size: expanded ? 13 : 9, weight: .semibold))
+                .frame(width: expanded ? 28 : 20, height: controlHeight)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
@@ -2472,10 +2471,19 @@ private struct ScriptDistributionTimeline: View {
                             Color.blue.opacity(0.08)
                         }
                     }
-                    .frame(height: 19)
+                    .overlay {
+                        if expanded, width >= 48 {
+                            Text(String(segment.row.index))
+                                .font(.system(size: 18, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.primary.opacity(0.75))
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .frame(height: barHeight - (expanded ? 15 : 11))
                 Rectangle()
                     .fill(methodColor)
-                    .frame(height: 4)
+                    .frame(height: expanded ? 8 : 4)
             }
             .frame(width: max(0, width))
             .opacity(matchedRowIDs?.contains(segment.id) == false && !isSelected ? 0.25 : 1)
@@ -2496,7 +2504,7 @@ private struct ScriptDistributionTimeline: View {
 
     private func endpointLabel(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 8))
+            .font(.system(size: expanded ? 11 : 8))
             .foregroundStyle(.tertiary)
             .accessibilityHidden(true)
             .allowsHitTesting(false)
@@ -2506,10 +2514,189 @@ private struct ScriptDistributionTimeline: View {
         HStack(spacing: 4) {
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(color)
-                .frame(width: 6, height: 6)
+                .frame(width: expanded ? 9 : 6, height: expanded ? 9 : 6)
             Text(title)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+struct ScriptTimelineWindowView: View {
+    @Bindable var model: AppModel
+    @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
+    @AppStorage("broll-namer-script-timeline-always-on-top") private var isPinned = false
+
+    private var preferredColorScheme: ColorScheme? {
+        switch AppTheme(rawValue: themeRawValue) ?? .system {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    var body: some View {
+        let state = model.scriptTimeline
+        let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
+        GeometryReader { geometry in
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Label("剪辑时间线", systemImage: "rectangle.split.3x1")
+                        .font(.system(size: 18, weight: .semibold))
+                    Spacer()
+                    Text(model.destinationDirectoryURL?.lastPathComponent ?? "当前文案")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Button {
+                        isPinned.toggle()
+                    } label: {
+                        Image(systemName: isPinned ? "pin.fill" : "pin")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(isPinned ? Color.accentColor : Color.secondary)
+                            .frame(width: 28, height: 28)
+                            .background(isPinned ? Color.accentColor.opacity(0.12) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHelp(isPinned ? "取消窗口置顶" : "保持窗口置顶")
+                    .accessibilityLabel("时间线窗口置顶")
+                    .accessibilityValue(isPinned ? "已置顶" : "未置顶")
+                    .accessibilityHint("将时间线窗口保持在其他普通窗口上方")
+                    .pointerCursor()
+                }
+
+                if distribution.segments.isEmpty {
+                    ContentUnavailableView("暂无时间线", systemImage: "rectangle.split.3x1",
+                                           description: Text("在主窗口导入文案后，时间线会同步显示在这里。"))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScriptDistributionTimeline(
+                        distribution: distribution,
+                        aRollProductionMethod: { model.arollProductionMethod(for: $0) },
+                        bRollProductionMethod: { model.brollProductionMethod(for: $0) },
+                        shootingDevice: { model.shootingDevice(for: $0) },
+                        matchedRowIDs: state.matchedRowIDs,
+                        state: state,
+                        selectedRowID: state.selectedRowID,
+                        onSelectRow: state.requestReveal,
+                        expanded: true,
+                        barHeight: max(60, geometry.size.height - 275)
+                    )
+                    Divider()
+                    if let row = model.rows.first(where: { $0.id == state.selectedRowID }) {
+                        Text("第 \(row.index) 条 · \(row.text)")
+                            .font(.system(size: 14))
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text("点击色块定位文案。大时间线内滚轮前后移动，加减按钮或拖动黄色范围框两端调整倍数。")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .background(.windowBackground)
+        .background {
+            ScriptTimelineWindowLevelController(isFloating: isPinned)
+                .frame(width: 0, height: 0)
+        }
+        .preferredColorScheme(preferredColorScheme)
+    }
+}
+
+private struct ScriptTimelineWindowLevelController: NSViewRepresentable {
+    let isFloating: Bool
+
+    func makeNSView(context: Context) -> ScriptTimelineWindowLevelView {
+        let view = ScriptTimelineWindowLevelView()
+        view.isFloating = isFloating
+        return view
+    }
+
+    func updateNSView(_ view: ScriptTimelineWindowLevelView, context: Context) {
+        view.isFloating = isFloating
+    }
+}
+
+private final class ScriptTimelineWindowLevelView: NSView {
+    var isFloating = false {
+        didSet { updateWindowLevel() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateWindowLevel()
+    }
+
+    private func updateWindowLevel() {
+        window?.level = isFloating ? .floating : .normal
+    }
+}
+
+/// Listen for scroll events without taking hit tests away from segment clicks or range dragging.
+private struct ScriptTimelineScrollRegion: NSViewRepresentable {
+    let viewport: ScriptTimelineViewport
+    let onChange: (ScriptTimelineViewport) -> Void
+
+    func makeNSView(context: Context) -> ScriptTimelineScrollView {
+        let view = ScriptTimelineScrollView()
+        view.viewport = viewport
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: ScriptTimelineScrollView, context: Context) {
+        view.viewport = viewport
+        view.onChange = onChange
+    }
+
+    static func dismantleNSView(_ view: ScriptTimelineScrollView, coordinator: ()) {
+        view.stopMonitoring()
+    }
+}
+
+private final class ScriptTimelineScrollView: NSView {
+    var viewport = ScriptTimelineViewport.full
+    var onChange: ((ScriptTimelineViewport) -> Void)?
+    private var eventMonitor: Any?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopMonitoring()
+        guard window != nil else { return }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  !self.isHiddenOrHasHiddenAncestor else { return event }
+            let point = self.convert(event.locationInWindow, from: nil)
+            guard self.visibleRect.contains(point) else { return event }
+            let rawDelta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+                ? event.scrollingDeltaX : event.scrollingDeltaY
+            guard rawDelta.isFinite, rawDelta != 0 else { return event }
+            // Consume momentum so navigation stops when the user's fingers stop.
+            guard event.momentumPhase.isEmpty else { return nil }
+            let delta = event.isDirectionInvertedFromDevice ? -rawDelta : rawDelta
+            let next = self.viewport.panned(byScrollDelta: delta, precise: event.hasPreciseScrollingDeltas,
+                                           viewportWidth: self.bounds.width)
+            guard next != self.viewport else { return nil }
+            // Update immediately: multiple wheel events can precede SwiftUI's next render.
+            self.viewport = next
+            self.onChange?(next)
+            return nil
+        }
+    }
+
+    func stopMonitoring() {
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+        eventMonitor = nil
+    }
+
+    deinit {
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
     }
 }
 
@@ -2518,6 +2705,7 @@ private struct ScriptTimelineNavigator: View {
     let viewport: ScriptTimelineViewport
     let segmentColor: (ScriptDistribution.Segment) -> Color
     let selectedRowID: String?
+    let height: CGFloat
     let onChange: (ScriptTimelineViewport) -> Void
     @State private var dragOrigin: ScriptTimelineViewport?
     private static let coordinateSpace = "ScriptTimelineNavigator"
@@ -2529,7 +2717,7 @@ private struct ScriptTimelineNavigator: View {
             ZStack(alignment: .leading) {
                 // One Canvas draw instead of a view per segment, so dragging/following the range stays cheap.
                 Canvas { context, size in
-                    let barHeight: CGFloat = 8
+                    let barHeight = size.height / 2
                     let y = (size.height - barHeight) / 2
                     for segment in distribution.segments {
                         let rect = CGRect(x: size.width * segment.startFraction, y: y,
@@ -2563,7 +2751,7 @@ private struct ScriptTimelineNavigator: View {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color.yellow.opacity(0.16))
                     .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(.yellow, lineWidth: 2) }
-                    .frame(width: selectionWidth, height: 16)
+                    .frame(width: selectionWidth, height: height)
                     .contentShape(Rectangle())
                     // 使用固定坐标空间：范围框本身随拖动移动，局部坐标会让位移来回抵消导致闪烁
                     .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.coordinateSpace))
@@ -2579,7 +2767,7 @@ private struct ScriptTimelineNavigator: View {
                         })
                     .pointerCursor(.openHand)
                     .offset(x: width * viewport.start)
-                    .help("拖动范围框平移时间线；拖动两端调整并记住缩放比例。滚动文案时只跟随移动，保持缩放比例")
+                    .help("拖动范围框平移时间线，拖动两端调整范围；在上方时间线内滚轮前后移动。滚动文案时保持缩放比例")
                     .accessibilityLabel("时间线可视范围")
                     .accessibilityAdjustableAction { direction in
                         onChange(viewport.moved(by: direction == .increment ? 0.05 : -0.05))
@@ -2600,7 +2788,7 @@ private struct ScriptTimelineNavigator: View {
         RoundedRectangle(cornerRadius: 3)
             .fill(.yellow)
             .overlay { Capsule().fill(Color.black.opacity(0.45)).frame(width: 2, height: 8) }
-            .frame(width: 10, height: 16)
+            .frame(width: 10, height: height)
             .contentShape(Rectangle())
             .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.coordinateSpace))
                 .onChanged { value in
@@ -2638,11 +2826,16 @@ private struct AnchorListView: View {
     @State private var rowPulse: AnchorRowPulse?
     @State private var bindingExitTokens: [String: UUID] = [:]
     @State private var fadingBoundRowIDs: Set<String> = []
-    @State private var scriptVisibility = ScriptVisibilityTracker()
-    @State private var selectedScriptRowID: String?
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var selectedScriptRowID: String? {
+        get { model.scriptTimeline.selectedRowID }
+        nonmutating set { model.scriptTimeline.selectedRowID = newValue }
+    }
+
     var body: some View {
+        @Bindable var timeline = model.scriptTimeline
         let pacingHints = model.aRollPacingHints
         let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
         let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
@@ -2717,9 +2910,10 @@ private struct AnchorListView: View {
                     bRollProductionMethod: { model.brollProductionMethod(for: $0) },
                     shootingDevice: { model.shootingDevice(for: $0) },
                     matchedRowIDs: matchedRowIDs,
-                    visibility: scriptVisibility,
+                    state: timeline,
                     selectedRowID: selectedScriptRowID,
-                    onSelectRow: revealTimelineRow
+                    onSelectRow: revealTimelineRow,
+                    onOpenWindow: { openWindow(id: "script-timeline") }
                 )
                     .padding(.horizontal, 16)
                     .frame(height: ListPaneMetrics.scriptTimelineHeight)
@@ -2742,7 +2936,7 @@ private struct AnchorListView: View {
                 .modifier(ScriptFileDropTargetModifier { model.importScript(from: $0) })
             } else {
                 ScrollViewReader { proxy in
-                    List(selection: $selectedScriptRowID) {
+                    List(selection: $timeline.selectedRowID) {
                         ForEach(filteredRows) { row in
                             SwipeToDeleteAnchorRow(
                                 rowID: row.id,
@@ -2787,7 +2981,7 @@ private struct AnchorListView: View {
                         AnchorListDropOutline(feedback: model.dropFeedback)
                     }
                     .background {
-                        ScriptListVisibilityObserver(onChange: { [scriptVisibility] in scriptVisibility.rows = $0 },
+                        ScriptListVisibilityObserver(onChange: { [timeline] in timeline.visibleRows = $0 },
                                                      onSelectRow: selectScriptRow,
                                                      onDoubleClickRow: beginEditingRow)
                             .accessibilityHidden(true)
@@ -2845,6 +3039,12 @@ private struct AnchorListView: View {
             revealedDeleteRowID = nil
         }
         .onChange(of: selectedScriptRowID) { _, _ in revealedDeleteRowID = nil }
+        .onChange(of: matchedRowIDs, initial: true) { _, rowIDs in
+            timeline.matchedRowIDs = rowIDs
+        }
+        .onChange(of: timeline.revealRequest) { _, request in
+            if let request { revealTimelineRow(request.rowID) }
+        }
         .onChange(of: model.rows.map(\.id)) { _, rowIDs in
             if let selectedScriptRowID, !rowIDs.contains(selectedScriptRowID) {
                 self.selectedScriptRowID = nil
@@ -2855,6 +3055,7 @@ private struct AnchorListView: View {
         .onChange(of: model.destinationDirectoryURL) { _, _ in
             resetBindingExits()
             selectedScriptRowID = nil
+            timeline.visibleRows = []
         }
         .onChange(of: boundRowIDs) { oldIDs, newIDs in
             for rowID in oldIDs.subtracting(newIDs) {

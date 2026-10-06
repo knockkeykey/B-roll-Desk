@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import UniformTypeIdentifiers
 
 enum AppTheme: String, CaseIterable, Codable, Identifiable {
@@ -427,6 +428,13 @@ struct ScriptTimelineViewport: Equatable {
         return Self(start: lower, end: lower + span)
     }
 
+    func panned(byScrollDelta delta: Double, precise: Bool, viewportWidth: Double) -> Self {
+        guard delta.isFinite, viewportWidth.isFinite, viewportWidth > 0 else { return self }
+        let step = delta * (precise ? 1 / viewportWidth : 0.08)
+        // Move relative to the visible range so navigation stays controllable at any zoom.
+        return moved(by: -span * min(0.5, max(-0.5, step)))
+    }
+
     func resizingStart(to value: Double) -> Self {
         guard value.isFinite else { return self }
         return Self(start: min(end - Self.minimumSpan, max(0, value)), end: end)
@@ -448,6 +456,77 @@ struct ScriptTimelineViewport: Equatable {
         guard let lower = ranges.map(\.0).min(), let upper = ranges.map(\.1).max() else { return nil }
         let center = (lower + upper) / 2
         return Self(start: center - span / 2, end: center + span / 2)
+    }
+}
+
+/// One live viewport and selection for the embedded timeline and its separate window.
+@Observable
+@MainActor
+final class ScriptTimelineState {
+    struct RevealRequest: Equatable {
+        let rowID: String
+        let token = UUID()
+    }
+
+    private(set) var viewport = ScriptTimelineViewport.full
+    private(set) var followsScript = true
+    var visibleRows: [VisibleScriptRow] = []
+    var matchedRowIDs: Set<String>?
+    var selectedRowID: String?
+    private(set) var revealRequest: RevealRequest?
+
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var hasInitialized = false
+    private static let zoomKey = "broll-namer-timeline-visible-fraction"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    private var rememberedSpan: Double {
+        let saved = defaults.object(forKey: Self.zoomKey) as? Double ?? 0.1
+        return saved.isFinite ? min(1, max(ScriptTimelineViewport.minimumSpan, saved)) : 0.1
+    }
+
+    func initializeIfNeeded(in distribution: ScriptDistribution) {
+        guard !hasInitialized else { return }
+        hasInitialized = true
+        updateFollowRange(in: distribution)
+    }
+
+    func updateFollowRange(in distribution: ScriptDistribution) {
+        let span = rememberedSpan
+        let next = followsScript
+            ? (ScriptTimelineViewport.following(visibleRows, in: distribution, preservingSpan: span)
+               ?? ScriptTimelineViewport(start: viewport.center - span / 2, end: viewport.center + span / 2))
+            : .full
+        if next != viewport { viewport = next }
+    }
+
+    func followSelection(in distribution: ScriptDistribution) {
+        guard followsScript, let segment = distribution.segments.first(where: { $0.id == selectedRowID }),
+              segment.startFraction < viewport.start || segment.endFraction > viewport.end else { return }
+        let center = (segment.startFraction + segment.endFraction) / 2
+        let next = ScriptTimelineViewport(start: center - viewport.span / 2, end: center + viewport.span / 2)
+        if next != viewport { viewport = next }
+    }
+
+    func toggleFollowMode(in distribution: ScriptDistribution) {
+        followsScript.toggle()
+        updateFollowRange(in: distribution)
+    }
+
+    func setRange(_ range: ScriptTimelineViewport) {
+        hasInitialized = true
+        followsScript = true
+        if defaults.object(forKey: Self.zoomKey) as? Double != range.span {
+            defaults.set(range.span, forKey: Self.zoomKey)
+        }
+        viewport = range
+    }
+
+    func requestReveal(_ rowID: String) {
+        revealRequest = RevealRequest(rowID: rowID)
     }
 }
 

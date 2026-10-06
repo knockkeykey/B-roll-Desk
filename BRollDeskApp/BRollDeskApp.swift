@@ -47,6 +47,12 @@ struct BRollDeskApp: App {
                 }
             }
         }
+
+        Window("剪辑时间线", id: "script-timeline") {
+            ScriptTimelineWindowView(model: model)
+                .frame(minWidth: 720, minHeight: 360)
+        }
+        .defaultSize(width: 1200, height: 420)
     }
 }
 

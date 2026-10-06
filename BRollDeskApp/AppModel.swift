@@ -47,6 +47,7 @@ final class AppModel {
     private(set) var pacingSettings: ARollPacingSettings
     private(set) var shootingDevices: [ShootingDevice] = ShootingDevice.defaults
     var anchorSearchText = ""
+    let scriptTimeline = ScriptTimelineState()
     let dropFeedback = DropFeedbackModel()
     var selectedSourceFileURL: URL?
     var sourceFileJumpID: UUID?
