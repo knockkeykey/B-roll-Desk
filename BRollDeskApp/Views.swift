@@ -2673,7 +2673,8 @@ private final class ScriptTimelineScrollView: NSView {
             guard let self, let window = self.window, event.window === window,
                   !self.isHiddenOrHasHiddenAncestor else { return event }
             let point = self.convert(event.locationInWindow, from: nil)
-            guard self.visibleRect.contains(point) else { return event }
+            guard self.bounds.contains(point), self.visibleRect.contains(point),
+                  !Self.isOverNativeScrollView(in: window, at: event.locationInWindow) else { return event }
             let rawDelta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
                 ? event.scrollingDeltaX : event.scrollingDeltaY
             guard rawDelta.isFinite, rawDelta != 0 else { return event }
@@ -2688,6 +2689,18 @@ private final class ScriptTimelineScrollView: NSView {
             self.onChange?(next)
             return nil
         }
+    }
+
+    /// Native scroll views and the list's custom thumb retain wheel-event ownership,
+    /// even if a SwiftUI background/overlay gives this view a larger frame than the timeline bar.
+    private static func isOverNativeScrollView(in window: NSWindow, at windowPoint: NSPoint) -> Bool {
+        guard let contentView = window.contentView else { return false }
+        var hitView = contentView.hitTest(contentView.convert(windowPoint, from: nil))
+        while let view = hitView {
+            if view is NSScrollView || view is ListScrollbar { return true }
+            hitView = view.superview
+        }
+        return false
     }
 
     func stopMonitoring() {
