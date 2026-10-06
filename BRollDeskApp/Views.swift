@@ -2263,7 +2263,6 @@ private struct ScriptDistributionTimeline: View {
     let aRollProductionMethod: (String) -> ArollProductionMethod
     let bRollProductionMethod: (String) -> BrollProductionMethod
     let shootingDevice: (String) -> ShootingDevice?
-    let aRollDevices: [ShootingDevice]
     /// Rows passing the current search and filter; nil when nothing narrows the list.
     let matchedRowIDs: Set<String>?
     let visibility: ScriptVisibilityTracker
@@ -2288,6 +2287,26 @@ private struct ScriptDistributionTimeline: View {
             : Color(red: 0.60, green: 0.77, blue: 0.62)
     }
 
+    private func aRollColor(for device: ShootingDevice?) -> Color {
+        // Use stable device IDs so renaming or reordering devices preserves their shades.
+        switch device?.id {
+        case "sony":
+            return colorScheme == .dark
+                ? Color(red: 0.50, green: 0.52, blue: 0.54)
+                : Color(red: 0.78, green: 0.80, blue: 0.82)
+        case "dji":
+            return colorScheme == .dark
+                ? Color(red: 0.30, green: 0.32, blue: 0.34)
+                : Color(red: 0.53, green: 0.55, blue: 0.57)
+        default:
+            return aRollColor
+        }
+    }
+
+    private func segmentColor(_ segment: ScriptDistribution.Segment) -> Color {
+        segment.rollType == .aRoll ? aRollColor(for: shootingDevice(segment.id)) : bRollColor
+    }
+
     var body: some View {
         let visibleSegments = self.visibleSegments
         let rangeDescription = "第 \(visibleSegments.first?.row.index ?? 1) 至 \(visibleSegments.last?.row.index ?? 1) 条"
@@ -2295,6 +2314,7 @@ private struct ScriptDistributionTimeline: View {
         VStack(spacing: 4) {
             HStack(spacing: 10) {
                 legend("A-roll", color: aRollColor)
+                    .help("拍摄设备：索尼浅灰，大疆深灰")
                 legend("B-roll", color: bRollColor)
                 Spacer(minLength: 0)
                 Text("\(distribution.segments.count) 段")
@@ -2351,7 +2371,7 @@ private struct ScriptDistributionTimeline: View {
                 endpointLabel(viewport.end >= 0.9999 ? "结尾" : "第 \(visibleSegments.last?.row.index ?? 1) 条")
             }
             ScriptTimelineNavigator(distribution: distribution, viewport: viewport,
-                                    aRollColor: aRollColor, bRollColor: bRollColor,
+                                    segmentColor: segmentColor,
                                     selectedRowID: selectedRowID,
                                     onChange: manuallySetRange)
                 .frame(height: 16)
@@ -2423,15 +2443,12 @@ private struct ScriptDistributionTimeline: View {
         let device = shootingDevice(segment.id)
         let detailDescription: String
         let methodColor: Color
-        let deviceColor: Color
         if segment.rollType == .aRoll {
             detailDescription = "，制作方式：\(aRollMethod.title)，拍摄设备：\(device?.name ?? "未设置")"
             methodColor = aRollMethod.color
-            deviceColor = ArollStatisticsPalette.color(for: device?.id, in: aRollDevices)
         } else {
             detailDescription = "，制作方式：\(bRollMethod.title)"
             methodColor = bRollMethod.color
-            deviceColor = .clear
         }
         let isSelected = selectedRowID == segment.id
         return Button {
@@ -2439,8 +2456,7 @@ private struct ScriptDistributionTimeline: View {
         } label: {
             VStack(spacing: 1) {
                 Rectangle()
-                    .fill(isSelected ? ScriptRowSelectionStyle.fill
-                                     : (segment.rollType == .aRoll ? aRollColor : bRollColor))
+                    .fill(segmentColor(segment))
                     .overlay(alignment: .trailing) {
                         if width >= 3, !isLast {
                             Color(nsColor: .windowBackgroundColor).opacity(0.7).frame(width: 0.5)
@@ -2448,6 +2464,7 @@ private struct ScriptDistributionTimeline: View {
                     }
                     .overlay {
                         if isSelected {
+                            ScriptRowSelectionStyle.fill
                             RoundedRectangle(cornerRadius: 2)
                                 .strokeBorder(ScriptRowSelectionStyle.border,
                                               lineWidth: min(ScriptRowSelectionStyle.borderWidth, width))
@@ -2455,12 +2472,9 @@ private struct ScriptDistributionTimeline: View {
                             Color.blue.opacity(0.08)
                         }
                     }
-                    .frame(height: 14)
+                    .frame(height: 19)
                 Rectangle()
                     .fill(methodColor)
-                    .frame(height: 4)
-                Rectangle()
-                    .fill(deviceColor)
                     .frame(height: 4)
             }
             .frame(width: max(0, width))
@@ -2502,8 +2516,7 @@ private struct ScriptDistributionTimeline: View {
 private struct ScriptTimelineNavigator: View {
     let distribution: ScriptDistribution
     let viewport: ScriptTimelineViewport
-    let aRollColor: Color
-    let bRollColor: Color
+    let segmentColor: (ScriptDistribution.Segment) -> Color
     let selectedRowID: String?
     let onChange: (ScriptTimelineViewport) -> Void
     @State private var dragOrigin: ScriptTimelineViewport?
@@ -2518,12 +2531,10 @@ private struct ScriptTimelineNavigator: View {
                 Canvas { context, size in
                     let barHeight: CGFloat = 8
                     let y = (size.height - barHeight) / 2
-                    let aRoll = GraphicsContext.Shading.color(aRollColor.opacity(0.45))
-                    let bRoll = GraphicsContext.Shading.color(bRollColor.opacity(0.65))
                     for segment in distribution.segments {
                         let rect = CGRect(x: size.width * segment.startFraction, y: y,
                                           width: size.width * segment.fraction, height: barHeight)
-                        context.fill(Path(rect), with: segment.rollType == .aRoll ? aRoll : bRoll)
+                        context.fill(Path(rect), with: .color(segmentColor(segment).opacity(0.65)))
                     }
                     // 选中块画在最上层，并保证最小宽度，缩小到全局总览时也能在范围框里看到
                     if let selected = distribution.segments.first(where: { $0.id == selectedRowID }) {
@@ -2534,7 +2545,7 @@ private struct ScriptTimelineNavigator: View {
                                     max(0, size.width * selected.startFraction - (width - rawWidth) / 2))
                         let rect = CGRect(x: x, y: y - 1, width: width, height: barHeight + 2)
                         let path = Path(roundedRect: rect, cornerRadius: 1.5)
-                        context.fill(path, with: .color(Color(nsColor: .windowBackgroundColor)))
+                        context.fill(path, with: .color(segmentColor(selected)))
                         context.fill(path, with: .color(ScriptRowSelectionStyle.fill))
                         context.stroke(path, with: .color(ScriptRowSelectionStyle.border),
                                        lineWidth: min(ScriptRowSelectionStyle.borderWidth, width / 2))
@@ -2705,7 +2716,6 @@ private struct AnchorListView: View {
                     aRollProductionMethod: { model.arollProductionMethod(for: $0) },
                     bRollProductionMethod: { model.brollProductionMethod(for: $0) },
                     shootingDevice: { model.shootingDevice(for: $0) },
-                    aRollDevices: ArollStatisticsPalette.devices(in: model),
                     matchedRowIDs: matchedRowIDs,
                     visibility: scriptVisibility,
                     selectedRowID: selectedScriptRowID,
