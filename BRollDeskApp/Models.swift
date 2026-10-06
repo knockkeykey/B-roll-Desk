@@ -366,13 +366,13 @@ struct ScriptDistribution: Equatable {
 
     let segments: [Segment]
 
-    init(rows: [AnchorRow], rollType: (String) -> AnchorRollType) {
-        let weightedRows = rows.compactMap { row -> (AnchorRow, Int)? in
-            let count = ARollPacing.spokenCharacterCount(in: row.text)
+    init(rows: [AnchorRow], duration: ((AnchorRow) -> Double)? = nil, rollType: (String) -> AnchorRollType) {
+        let weightedRows = rows.compactMap { row -> (AnchorRow, Double)? in
+            let count = duration?(row) ?? Double(ARollPacing.spokenCharacterCount(in: row.text))
             return count > 0 ? (row, count) : nil
         }
         let total = weightedRows.reduce(0) { $0 + $1.1 }
-        var offset = 0
+        var offset = 0.0
         segments = weightedRows.map { row, count in
             let start = offset
             offset += count
@@ -768,6 +768,7 @@ struct BrollProjectSettings: Codable {
     var brollPreparationStatuses: [String: BrollPreparationStatus]
     var assignments: [String: [BrollAsset]]
     var animationTasks: [AnimationTask]
+    var preflight: ShootingPreflightState
 
     init(
         projectID: String = UUID().uuidString.lowercased(),
@@ -784,7 +785,8 @@ struct BrollProjectSettings: Codable {
         brollProductionMethods: [String: BrollProductionMethod] = [:],
         brollPreparationStatuses: [String: BrollPreparationStatus] = [:],
         assignments: [String: [BrollAsset]] = [:],
-        animationTasks: [AnimationTask] = []
+        animationTasks: [AnimationTask] = [],
+        preflight: ShootingPreflightState = .init()
     ) {
         self.formatVersion = animationTasks.isEmpty ? 3 : 4
         self.projectID = projectID
@@ -802,6 +804,7 @@ struct BrollProjectSettings: Codable {
         self.brollPreparationStatuses = brollPreparationStatuses
         self.assignments = assignments
         self.animationTasks = animationTasks
+        self.preflight = preflight
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -822,6 +825,7 @@ struct BrollProjectSettings: Codable {
         case brollPreparationStatuses
         case assignments
         case animationTasks
+        case preflight
     }
 
     init(from decoder: Decoder) throws {
@@ -860,6 +864,7 @@ struct BrollProjectSettings: Codable {
         ) ?? [:]
         assignments = try container.decodeIfPresent([String: [BrollAsset]].self, forKey: .assignments) ?? [:]
         animationTasks = try container.decodeIfPresent([AnimationTask].self, forKey: .animationTasks) ?? []
+        preflight = try container.decodeIfPresent(ShootingPreflightState.self, forKey: .preflight) ?? .init()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -880,6 +885,7 @@ struct BrollProjectSettings: Codable {
         try container.encode(brollPreparationStatuses, forKey: .brollPreparationStatuses)
         try container.encode(assignments, forKey: .assignments)
         try container.encode(animationTasks, forKey: .animationTasks)
+        try container.encode(preflight, forKey: .preflight)
     }
 }
 
@@ -1150,4 +1156,179 @@ enum MediaFormatting {
         }
         return String(format: "%.1f GB", bytes / (1024 * 1024 * 1024))
     }
+}
+
+
+// MARK: - Shooting preflight
+struct SpokenSegment: Codable, Equatable {
+    var text: String
+    var start: Double
+    var end: Double
+    var confidence: Double = 1
+}
+
+struct SpokenRange: Equatable {
+    let start: Double
+    let end: Double
+    var duration: Double { end - start }
+}
+
+struct ContentGapCandidate: Codable, Equatable, Identifiable {
+    let sourceRowIDs: [String]
+    let text: String
+    let reason: String
+    let visualHint: String
+    var id: String { sourceRowIDs.joined(separator: "|") + text }
+    var location: AnimationCandidate { .init(sourceRowIDs: sourceRowIDs, text: text, reason: reason) }
+    enum CodingKeys: String, CodingKey {
+        case sourceRowIDs = "source_row_ids", text, reason
+        case visualHint = "visual_hint"
+    }
+}
+
+struct ShootingPreflightState: Codable, Equatable {
+    var mainDeviceID = "sony"
+    var auxiliaryDeviceID = "dji"
+    var sameDeviceEnabled = true
+    var sameDeviceSeconds = 5.0
+    var continuousEnabled = true
+    var continuousSeconds = 5.0
+    var usesProjectPacing = false
+    var sourceRevision = UUID().uuidString
+    var sourceSignature = ""
+    var segments: [SpokenSegment] = []
+    var candidates: [ContentGapCandidate] = []
+    var contentSnapshot = ""
+    var checkedSnapshot = ""
+    var retained: Set<String> = []
+    var capturedAuxiliary: Set<String> = []
+    var auxiliaryClips: [String: AuxiliarySpokenClip] = [:]
+    var confirmedTiming: Set<String> = []
+    var shootingTasksAtCheck: [String: String] = [:]
+}
+
+struct PreflightRhythmIssue: Identifiable {
+    let rowIDs: [String]
+    let rules: [String]
+    let seconds: Double
+    let estimated: Bool
+    var details: [String] = []
+    var id: String { rowIDs.joined(separator: "|") + rules.joined() }
+}
+
+enum SpeechTiming {
+    static func normalized(_ text: String) -> String {
+        String(text.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }).lowercased()
+    }
+
+    /// Only word boundaries with exact unique text are accepted. Never infer times from script length.
+    static func align(rows: [AnchorRow], segments: [SpokenSegment]) -> [String: SpokenRange] {
+        let valid = segments.filter { $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start }
+        let strings = valid.map { normalized($0.text) }
+        let transcript = strings.joined() as NSString
+        var offset = 0
+        let bounds = strings.map { text -> NSRange in
+            defer { offset += (text as NSString).length }
+            return NSRange(location: offset, length: (text as NSString).length)
+        }
+        var result: [String: SpokenRange] = [:]
+        var lastEnd = 0
+        for row in rows {
+            let query = normalized(row.text)
+            guard !query.isEmpty else { continue }
+            let match = transcript.range(of: query, options: .literal)
+            guard match.location != NSNotFound, match.location >= lastEnd else { continue }
+            let rest = NSRange(location: match.location + 1, length: transcript.length - match.location - 1)
+            guard transcript.range(of: query, options: .literal, range: rest).location == NSNotFound,
+                  let first = bounds.firstIndex(where: { $0.location == match.location && $0.length > 0 }),
+                  let last = bounds.lastIndex(where: { NSMaxRange($0) == NSMaxRange(match) && $0.length > 0 }),
+                  first <= last,
+                  valid[first...last].allSatisfy({ $0.confidence >= 0.5 }),
+                  zip(valid[first...last], valid[first...last].dropFirst()).allSatisfy({ $0.start <= $1.start && $0.end <= $1.end }) else { continue }
+            result[row.id] = SpokenRange(start: valid[first].start, end: valid[last].end)
+            lastEnd = NSMaxRange(match)
+        }
+        // Include pauses until the next identified line so continuous picture time isn't understated.
+        for pair in zip(rows, rows.dropFirst()) {
+            if let current = result[pair.0.id], let next = result[pair.1.id], next.start >= current.end {
+                result[pair.0.id] = .init(start: current.start, end: next.start)
+            }
+        }
+        return result
+    }
+
+    static func parseSRT(_ text: String) throws -> [SpokenSegment] {
+        func seconds(_ value: Substring) -> Double? {
+            let pieces = value.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".").split(separator: ":")
+            guard pieces.count == 3, let h = Double(pieces[0]), let m = Double(pieces[1]), let s = Double(pieces[2]), h >= 0, m >= 0, m < 60, s >= 0, s < 60 else { return nil }
+            return h * 3600 + m * 60 + s
+        }
+        let lines = text.replacingOccurrences(of: "\r", with: "").components(separatedBy: "\n")
+        var output: [SpokenSegment] = []
+        for i in lines.indices where lines[i].contains("-->") {
+            let times = lines[i].components(separatedBy: "-->")
+            guard times.count == 2, let start = seconds(Substring(times[0])), let end = seconds(Substring(times[1])), start >= 0, end > start else {
+                throw AnimationWorkflowError.invalid("字幕时间格式不正确。")
+            }
+            var j = i + 1
+            var content: [String] = []
+            while j < lines.count && !lines[j].trimmingCharacters(in: .whitespaces).isEmpty { content.append(lines[j]); j += 1 }
+            output.append(.init(text: content.joined(), start: start, end: end))
+        }
+        guard !output.isEmpty, zip(output, output.dropFirst()).allSatisfy({ $0.end <= $1.start }) else {
+            throw AnimationWorkflowError.invalid("字幕为空或时间重叠；未采用这些时间。")
+        }
+        return output
+    }
+}
+
+enum PreflightRhythm {
+    static func issues(rows: [AnchorRow], timings: [String: SpokenRange], rate: Int,
+                       sameEnabled: Bool, sameSeconds: Double, continuousEnabled: Bool, continuousSeconds: Double,
+                       roll: (String) -> AnchorRollType, device: (String) -> String?) -> [PreflightRhythmIssue] {
+        var found: [PreflightRhythmIssue] = []
+        func scan(sameDevice: Bool, threshold: Double) {
+            var run: [AnchorRow] = []
+            func flush() {
+                guard !run.isEmpty else { return }
+                let duration = run.reduce(0.0) { $0 + (timings[$1.id]?.duration ?? ARollPacing.seconds(for: ARollPacing.spokenCharacterCount(in: $1.text), charactersPerMinute: Double(rate))) }
+                if duration > threshold {
+                    let estimated = run.contains { timings[$0.id] == nil }
+                    let rule = sameDevice ? "同一设备连续出镜" : "连续 A-roll"
+                    let label = String(format: "%@ · 第 %d～%d 条 · %@ %.1f 秒", rule, run.first!.index, run.last!.index, estimated ? "估算" : "实际", duration)
+                    found.append(.init(rowIDs: run.map(\.id), rules: [rule], seconds: duration, estimated: estimated, details: [label]))
+                }
+                run = []
+            }
+            for row in rows where ARollPacing.spokenCharacterCount(in: row.text) > 0 {
+                if roll(row.id) == .bRoll { flush(); continue }
+                if sameDevice, let previous = run.last, device(previous.id) != device(row.id) { flush() }
+                run.append(row)
+            }
+            flush()
+        }
+        if sameEnabled { scan(sameDevice: true, threshold: sameSeconds) }
+        if continuousEnabled { scan(sameDevice: false, threshold: continuousSeconds) }
+        var grouped: [PreflightRhythmIssue] = []
+        for issue in found {
+            let overlapping = grouped.indices.filter { !Set(grouped[$0].rowIDs).isDisjoint(with: issue.rowIDs) }
+            let merged = overlapping.map { grouped[$0] } + [issue]
+            let covered = Set(merged.flatMap(\.rowIDs))
+            var rules: [String] = []
+            for rule in merged.flatMap(\.rules) where !rules.contains(rule) { rules.append(rule) }
+            for index in overlapping.reversed() { grouped.remove(at: index) }
+            grouped.append(.init(rowIDs: rows.filter { covered.contains($0.id) }.map(\.id), rules: rules,
+                                 seconds: merged.map(\.seconds).max() ?? 0, estimated: merged.contains { $0.estimated },
+                                 details: merged.flatMap(\.details)))
+        }
+        grouped.sort { left, right in (rows.firstIndex { $0.id == left.rowIDs.first } ?? 0) < (rows.firstIndex { $0.id == right.rowIDs.first } ?? 0) }
+        return grouped
+    }
+}
+
+
+struct AuxiliarySpokenClip: Codable, Equatable {
+    let relativePath: String
+    let duration: Double
+    let text: String
 }

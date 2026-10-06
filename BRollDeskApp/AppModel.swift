@@ -1,4 +1,6 @@
 import AppKit
+import AVFoundation
+import Speech
 import CoreServices
 import Foundation
 import Observation
@@ -20,6 +22,8 @@ final class AppModel {
         let brollProductionMethods: [String: BrollProductionMethod]
         let brollPreparationStatuses: [String: BrollPreparationStatus]
         let animationTasks: [AnimationTask]
+        let preflight: ShootingPreflightState
+        let pacingSettings: ARollPacingSettings
 
         var archivedNames: Set<String> {
             Set(assignments.values.flatMap { $0.map(\.outputName) })
@@ -56,6 +60,14 @@ final class AppModel {
     private(set) var selectedSourceDirectoryID: String? {
         didSet { rebuildVisibleSourceFiles() }
     }
+    var preflightPlaybackRowID: String?
+    var isPreflightPresented = false
+    private(set) var preflight = ShootingPreflightState()
+    private(set) var isCheckingContent = false
+    private(set) var isAligningSpeech = false
+    var preflightFeedback = ""
+    @ObservationIgnored private var contentRequest: Task<Void, Never>?
+    @ObservationIgnored private var speechRequest: Task<Void, Never>?
     var isAnimationPanelPresented = false
     var deepSeekKeyDraft = ""
     var animationRules = AnimationWorkflow.defaultRules
@@ -167,6 +179,7 @@ final class AppModel {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        if let data = defaults.data(forKey: "broll-namer-preflight"), let saved = try? JSONDecoder().decode(ShootingPreflightState.self, from: data) { preflight = saved }
         if let data = defaults.data(forKey: shootingDevicesKey),
            let saved = try? JSONDecoder().decode([ShootingDevice].self, from: data),
            let validated = ShootingDevice.validated(saved) {
@@ -402,9 +415,18 @@ final class AppModel {
 
     func updatePacingSettings(_ settings: ARollPacingSettings) {
         pacingSettings = settings
-        defaults.set(settings.charactersPerMinute, forKey: pacingRateKey)
-        defaults.set(settings.maximumContinuousSeconds, forKey: pacingThresholdKey)
-        defaults.set(settings.remindersEnabled, forKey: pacingEnabledKey)
+        if preflight.usesProjectPacing {
+            preflight.continuousEnabled = settings.remindersEnabled
+            preflight.continuousSeconds = settings.maximumContinuousSeconds
+        }
+        savePacingPreferences()
+        persistPreferences()
+    }
+
+    private func savePacingPreferences() {
+        defaults.set(pacingSettings.charactersPerMinute, forKey: pacingRateKey)
+        defaults.set(pacingSettings.maximumContinuousSeconds, forKey: pacingThresholdKey)
+        defaults.set(pacingSettings.remindersEnabled, forKey: pacingEnabledKey)
     }
 
     private func rebuildVisibleSourceFiles() {
@@ -587,6 +609,7 @@ final class AppModel {
     }
 
     func persistPreferences() {
+        defaults.set(try? JSONEncoder().encode(preflight), forKey: "broll-namer-preflight")
         defaults.set(scriptText, forKey: scriptKey)
         defaults.set(splitMode.rawValue, forKey: splitModeKey)
         defaults.set(preservesEmptyAnchors, forKey: preservesEmptyAnchorsKey)
@@ -734,6 +757,8 @@ final class AppModel {
 
     private func applyInlineRows(_ texts: [String], sourceIndices: [[Int]]) {
         let previousRows = rows
+        let previousAuxiliary = preflight.capturedAuxiliary
+        let previousAuxiliaryClips = preflight.auxiliaryClips
         let previousAssignments = assignments
         let previousNotes = anchorNotes
         let previousRollTypeOverrides = rollTypeOverrides
@@ -747,6 +772,16 @@ final class AppModel {
         preservesEmptyAnchors = !texts.isEmpty
         scriptText = texts.joined(separator: "\n")
         parseScript(persist: false)
+        preflight.capturedAuxiliary = Set(rows.enumerated().compactMap { offset, row in
+            sourceIndices[offset].contains(where: { previousRows.indices.contains($0) && previousAuxiliary.contains(previousRows[$0].id) && previousRows[$0].text == row.text }) ? row.id : nil
+        })
+        preflight.auxiliaryClips = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
+            let clip = sourceIndices[offset].compactMap { index -> AuxiliarySpokenClip? in
+                guard previousRows.indices.contains(index), let clip = previousAuxiliaryClips[previousRows[index].id], clip.text == row.text else { return nil }
+                return clip
+            }.first
+            return clip.map { (row.id, $0) }
+        })
         assignments = AnchorAssignmentMigration.migrate(
             previousAssignments,
             from: previousRows,
@@ -1005,6 +1040,8 @@ final class AppModel {
         animationTasks = []
         animationFeedback = ""
         isAnimationPanelPresented = false
+        preflight = .init()
+        cancelPreflightRequests()
         discardUndoActions()
 
         scriptText = ""
@@ -1177,6 +1214,7 @@ final class AppModel {
             }
         }
 
+        invalidateSpokenSource()
         if failures.isEmpty {
             lastSaved = "已移出 A-roll \(Self.timeString())"
             statusMessage = "已将项目 A-roll 文件移入废纸篓。"
@@ -1211,6 +1249,7 @@ final class AppModel {
                 try fileManager.trashItem(at: existingURL, resultingItemURL: nil)
             }
             try fileManager.moveItem(at: stagingURL, to: targetURL)
+            invalidateSpokenSource()
             lastSaved = "已保存 A-roll \(Self.timeString())"
             statusMessage = "已保存到 A-roll/\(targetURL.lastPathComponent)；原视频文件保留"
         } catch {
@@ -1880,7 +1919,9 @@ final class AppModel {
             arollShootingDevices: arollShootingDevices,
             brollProductionMethods: brollProductionMethods,
             brollPreparationStatuses: brollPreparationStatuses,
-            animationTasks: animationTasks
+            animationTasks: animationTasks,
+            preflight: preflight,
+            pacingSettings: pacingSettings
         )
     }
 
@@ -1913,6 +1954,9 @@ final class AppModel {
         brollProductionMethods = snapshot.brollProductionMethods
         brollPreparationStatuses = snapshot.brollPreparationStatuses
         animationTasks = snapshot.animationTasks
+        preflight = snapshot.preflight
+        pacingSettings = snapshot.pacingSettings
+        savePacingPreferences()
         rebuildAssignmentIndexes()
         persistPreferences()
         if destinationDirectoryURL != nil {
@@ -2598,6 +2642,13 @@ final class AppModel {
         cancelAnimationAnalysis()
         animationFeedback = ""
         animationTasks = settings.animationTasks
+        preflight = settings.preflight
+        cancelPreflightRequests()
+        if preflight.usesProjectPacing {
+            pacingSettings = .init(charactersPerMinute: pacingSettings.charactersPerMinute,
+                                   maximumContinuousSeconds: preflight.continuousSeconds, remindersEnabled: preflight.continuousEnabled)
+            savePacingPreferences()
+        }
         brollPreparationStatuses = settings.brollPreparationStatuses.filter { $0.value != .bound }
         for rowID in capturedBrollRowIDs where brollPreparationStatuses[rowID] == nil {
             brollPreparationStatuses[rowID] = .ready
@@ -2768,6 +2819,10 @@ final class AppModel {
     private func saveProjectSettings() {
         guard let projectSettingsURL else { return }
 
+        var savedPreflight = preflight
+        savedPreflight.continuousSeconds = preflightContinuousSeconds
+        savedPreflight.continuousEnabled = preflightContinuousEnabled
+        savedPreflight.usesProjectPacing = true
         let settings = BrollProjectSettings(
             projectID: projectID,
             prefix: prefix,
@@ -2785,7 +2840,8 @@ final class AppModel {
             brollProductionMethods: brollProductionMethods,
             brollPreparationStatuses: brollPreparationStatuses,
             assignments: assignments,
-            animationTasks: animationTasks
+            animationTasks: animationTasks,
+            preflight: savedPreflight
         )
 
         do {
@@ -3270,5 +3326,424 @@ extension AppModel {
         let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath, outputDirectory: animationOutputDirectoryPath), forType: .string)
         animationFeedback = didCopy ? "已复制 \(tasks.count) 条完整制作提示词，可直接粘贴给制作动画的 AI。" : "复制失败，请重试。"
         return didCopy
+    }
+}
+
+
+extension AppModel {
+    var preflightSourceURL: URL? {
+        guard let aRollDirectoryURL else { return nil }
+        return try? existingARollVideos(in: aRollDirectoryURL).first
+    }
+
+    private var spokenSourceSignature: String {
+        guard let url = preflightSourceURL,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) else { return "" }
+        return url.path + "|" + String(describing: attrs[.size]) + "|" + String(describing: attrs[.modificationDate])
+    }
+
+    var spokenTimings: [String: SpokenRange] {
+        guard !preflight.sourceSignature.isEmpty, preflight.sourceSignature == spokenSourceSignature else { return [:] }
+        return SpeechTiming.align(rows: rows, segments: preflight.segments)
+    }
+
+    func auxiliarySpokenClip(_ rowID: String) -> AuxiliarySpokenClip? {
+        guard rollType(for: rowID) == .aRoll, shootingDevice(for: rowID)?.id == preflight.auxiliaryDeviceID,
+              let clip = preflight.auxiliaryClips[rowID], clip.duration.isFinite, clip.duration > 0,
+              rows.first(where: { $0.id == rowID })?.text == clip.text,
+              let project = destinationDirectoryURL,
+              FileManager.default.fileExists(atPath: project.appendingPathComponent(clip.relativePath).path) else { return nil }
+        return clip
+    }
+
+    private var planningTimings: [String: SpokenRange] {
+        var timings = spokenTimings
+        for row in rows {
+            if let clip = auxiliarySpokenClip(row.id) { timings[row.id] = .init(start: 0, end: clip.duration) }
+        }
+        return timings
+    }
+
+    var preflightDistribution: ScriptDistribution {
+        let timings = planningTimings
+        return ScriptDistribution(rows: rows, duration: { row in
+            timings[row.id]?.duration ?? ARollPacing.seconds(for: ARollPacing.spokenCharacterCount(in: row.text), charactersPerMinute: Double(self.pacingSettings.charactersPerMinute))
+        }, rollType: { rollType(for: $0) })
+    }
+
+    func preflightDuration(_ row: AnchorRow) -> Double {
+        if let clip = auxiliarySpokenClip(row.id) { return clip.duration }
+        return spokenTimings[row.id]?.duration ?? ARollPacing.seconds(for: ARollPacing.spokenCharacterCount(in: row.text), charactersPerMinute: Double(pacingSettings.charactersPerMinute))
+    }
+
+    func spokenTimingLabel(_ row: AnchorRow) -> String {
+        let auxiliary = rollType(for: row.id) == .aRoll && shootingDevice(for: row.id)?.id == preflight.auxiliaryDeviceID
+        if let clip = auxiliarySpokenClip(row.id) { return String(format: "辅设备实录 %.1f 秒", clip.duration) }
+        let suffix = auxiliary ? " · 辅设备口播时长待定" : ""
+        if let range = spokenTimings[row.id] { return String(format: "实际 %.1f 秒", range.duration) + suffix }
+        return String(format: "估算 %.1f 秒", preflightDuration(row)) + (preflightSourceURL == nil ? "" : " · 需确认") + suffix
+    }
+
+    var preflightContinuousEnabled: Bool { preflight.usesProjectPacing ? preflight.continuousEnabled : pacingSettings.remindersEnabled }
+    var preflightContinuousSeconds: Double { preflight.usesProjectPacing ? preflight.continuousSeconds : pacingSettings.maximumContinuousSeconds }
+
+    /// Stable across device renames and task completion; changes in arrangement invalidate conclusions.
+    var preflightSnapshot: String {
+        let data: [String: Any] = [
+            "rows": rows.map { ["id": $0.id, "text": $0.text, "roll": rollType(for: $0.id).rawValue,
+                                  "device": shootingDevice(for: $0.id)?.id ?? "", "method": brollProductionMethods[$0.id]?.rawValue ?? ""] },
+            "main": preflight.mainDeviceID, "aux": preflight.auxiliaryDeviceID,
+            "source": spokenSourceSignature, "revision": preflight.sourceRevision,
+            "same": preflight.sameDeviceEnabled, "sameSeconds": preflight.sameDeviceSeconds,
+            "continuous": preflightContinuousEnabled, "continuousSeconds": preflightContinuousSeconds,
+            "rate": pacingSettings.charactersPerMinute,
+            "auxiliaryClips": rows.compactMap { row -> String? in auxiliarySpokenClip(row.id).map { row.id + "|" + $0.relativePath + "|" + String($0.duration) } }
+        ]
+        return String(data: (try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys])) ?? Data(), encoding: .utf8) ?? ""
+    }
+
+    private func conclusionKey(_ id: String, rowIDs: [String], rhythm: Bool = true) -> String {
+        var data: [String: Any] = [
+            "id": id,
+            "rows": rows.filter { rowIDs.contains($0.id) }.map {
+                ["id": $0.id, "text": $0.text, "roll": rollType(for: $0.id).rawValue,
+                 "device": shootingDevice(for: $0.id)?.id ?? "", "method": brollProductionMethods[$0.id]?.rawValue ?? ""]
+            },
+            "main": preflight.mainDeviceID, "aux": preflight.auxiliaryDeviceID,
+            "source": spokenSourceSignature, "revision": preflight.sourceRevision,
+            "auxiliaryClips": rows.filter { rowIDs.contains($0.id) }.compactMap { row -> String? in auxiliarySpokenClip(row.id).map { row.id + "|" + $0.relativePath + "|" + String($0.duration) } }
+        ]
+        if rhythm {
+            data["same"] = preflight.sameDeviceEnabled; data["sameSeconds"] = preflight.sameDeviceSeconds
+            data["continuous"] = preflightContinuousEnabled; data["continuousSeconds"] = preflightContinuousSeconds
+            data["rate"] = pacingSettings.charactersPerMinute
+        }
+        return String(data: (try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys])) ?? Data(), encoding: .utf8) ?? ""
+    }
+
+    private var allRhythmIssues: [PreflightRhythmIssue] {
+        PreflightRhythm.issues(rows: rows, timings: planningTimings, rate: pacingSettings.charactersPerMinute,
+                              sameEnabled: preflight.sameDeviceEnabled, sameSeconds: preflight.sameDeviceSeconds,
+                              continuousEnabled: preflightContinuousEnabled, continuousSeconds: preflightContinuousSeconds,
+                              roll: { rollType(for: $0) }, device: { shootingDevice(for: $0)?.id })
+    }
+
+    var rhythmIssues: [PreflightRhythmIssue] {
+        allRhythmIssues.filter { !preflight.retained.contains(conclusionKey($0.id, rowIDs: $0.rowIDs)) }
+    }
+
+    var contentGapCandidates: [ContentGapCandidate] {
+        guard preflight.contentSnapshot == preflightSnapshot else { return [] }
+        return preflight.candidates.filter { !preflight.retained.contains(conclusionKey($0.id, rowIDs: $0.sourceRowIDs, rhythm: false)) }
+    }
+
+    var unconfirmedTimingRows: [AnchorRow] {
+        guard preflightSourceURL != nil else { return [] }
+        let timings = spokenTimings
+        return rows.filter { !SpeechTiming.normalized($0.text).isEmpty && timings[$0.id] == nil && !preflight.confirmedTiming.contains(conclusionKey($0.id, rowIDs: [$0.id])) }
+    }
+
+    var undecidedBrollRows: [AnchorRow] {
+        rows.filter { rollType(for: $0.id) == .bRoll && brollProductionMethod(for: $0.id) == .undecided }
+    }
+
+    var preflightDevicesValid: Bool {
+        preflight.mainDeviceID != preflight.auxiliaryDeviceID &&
+        shootingDevices.contains { $0.id == preflight.mainDeviceID } && shootingDevices.contains { $0.id == preflight.auxiliaryDeviceID }
+    }
+    var preflightPendingCount: Int { rhythmIssues.count + contentGapCandidates.count + unconfirmedTimingRows.count + undecidedBrollRows.count + (preflightDevicesValid ? 0 : 1) }
+    var preflightStatus: String {
+        guard preflight.checkedSnapshot == preflightSnapshot else { return "待检查" }
+        return preflightPendingCount == 0 ? "检查完成" : "有待确认项"
+    }
+
+    /// Explicit physical production only. A-roll sound is rerecorded together with the picture.
+    var physicalShootingRows: [AnchorRow] {
+        rows.filter {
+            !SpeechTiming.normalized($0.text).isEmpty &&
+            ((rollType(for: $0.id) == .bRoll && brollProductionMethod(for: $0.id) == .liveAction) ||
+             (rollType(for: $0.id) == .aRoll && shootingDevice(for: $0.id)?.id == preflight.auxiliaryDeviceID))
+        }
+    }
+    func isPhysicalTaskCompleted(_ row: AnchorRow) -> Bool {
+        rollType(for: row.id) == .bRoll ? brollPreparationStatus(for: row.id) != .pending : preflight.capturedAuxiliary.contains(row.id)
+    }
+    var shootingTaskChanges: String {
+        guard !preflight.shootingTasksAtCheck.isEmpty else { return "" }
+        let current = Dictionary(uniqueKeysWithValues: physicalShootingRows.map { ($0.id + rollType(for: $0.id).rawValue, $0.text) })
+        let added = current.filter { preflight.shootingTasksAtCheck[$0.key] != $0.value }.count
+        let removed = preflight.shootingTasksAtCheck.filter { current[$0.key] != $0.value }.count
+        return added + removed > 0 ? "拍摄清单变化：新增 \(added) 项，减少 \(removed) 项；已有完成记录保留。" : ""
+    }
+
+    func updatePreflightDevices(main: String, auxiliary: String) {
+        guard main != auxiliary, shootingDevices.contains(where: { $0.id == main }), shootingDevices.contains(where: { $0.id == auxiliary }), !isBusy else { return }
+        let before = makeUndoSnapshot()
+        preflight.mainDeviceID = main; preflight.auxiliaryDeviceID = auxiliary
+        persistPreferences(); registerUndo(named: "更改项目主辅设备", restoring: before)
+    }
+    func updatePreflightRhythm(sameEnabled: Bool, sameSeconds: Double, continuousEnabled: Bool, continuousSeconds: Double) {
+        guard sameSeconds.isFinite, sameSeconds > 0, continuousSeconds.isFinite, continuousSeconds > 0 else { return }
+        let before = makeUndoSnapshot()
+        preflight.sameDeviceEnabled = sameEnabled; preflight.sameDeviceSeconds = sameSeconds
+        preflight.continuousEnabled = continuousEnabled; preflight.continuousSeconds = continuousSeconds
+        preflight.usesProjectPacing = true
+        pacingSettings = .init(charactersPerMinute: pacingSettings.charactersPerMinute, maximumContinuousSeconds: continuousSeconds, remindersEnabled: continuousEnabled)
+        savePacingPreferences()
+        persistPreferences(); registerUndo(named: "更改拍前节奏设置", restoring: before)
+    }
+    func retainPreflightIssue(_ id: String) {
+        let before = makeUndoSnapshot()
+        if let candidate = preflight.candidates.first(where: { $0.id == id }) {
+            preflight.retained.insert(conclusionKey(id, rowIDs: candidate.sourceRowIDs, rhythm: false))
+        } else if let issue = allRhythmIssues.first(where: { $0.id == id }) {
+            preflight.retained.insert(conclusionKey(id, rowIDs: issue.rowIDs))
+        }
+        persistPreferences(); registerUndo(named: "确认保留画面安排", restoring: before)
+    }
+    func confirmEstimatedTiming(_ row: AnchorRow) {
+        let before = makeUndoSnapshot()
+        preflight.confirmedTiming.insert(conclusionKey(row.id, rowIDs: [row.id]))
+        persistPreferences(); registerUndo(named: "确认使用估算时间", restoring: before)
+    }
+    func togglePhysicalTask(_ row: AnchorRow) {
+        guard !isBusy else { return }
+        if rollType(for: row.id) == .bRoll { setBrollPreparationStatus(brollPreparationStatus(for: row.id) == .pending ? .ready : .pending, for: row.id); return }
+        let before = makeUndoSnapshot()
+        if !preflight.capturedAuxiliary.insert(row.id).inserted { preflight.capturedAuxiliary.remove(row.id) }
+        persistPreferences(); registerUndo(named: "更改辅设备拍摄状态", restoring: before)
+    }
+    func importAuxiliarySpokenClip(for row: AnchorRow) {
+        guard !isBusy, let project = destinationDirectoryURL,
+              rollType(for: row.id) == .aRoll, shootingDevice(for: row.id)?.id == preflight.auxiliaryDeviceID else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.movie]
+        panel.message = "选择只包含这句口播的辅设备实录片段；它将同时替换画面和声音，并以整个片段时长重新计算。"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        isBusy = true
+        let expectedProject = projectID
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isBusy = false }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let duration = try await AVURLAsset(url: url).load(.duration).seconds
+                guard duration.isFinite, duration > 0, self.projectID == expectedProject,
+                      self.rows.contains(where: { $0.id == row.id && $0.text == row.text }) else {
+                    throw AnimationWorkflowError.invalid("片段时长无效或项目已变化，未采用这段素材。")
+                }
+                let relativePath = "A-roll/辅助口播/" + UUID().uuidString + "." + url.pathExtension
+                let target = project.appendingPathComponent(relativePath)
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try await self.copyFile(from: url, to: target)
+                self.recordAuxiliarySpokenClip(.init(relativePath: relativePath, duration: duration, text: row.text), for: row.id)
+                self.preflightFeedback = "辅设备片段已保存，已按实录时长重新计算；画面与声音一起替换。"
+            } catch { self.preflightFeedback = error.localizedDescription }
+        }
+    }
+
+    func recordAuxiliarySpokenClip(_ clip: AuxiliarySpokenClip, for rowID: String) {
+        guard clip.duration.isFinite, clip.duration > 0, rows.first(where: { $0.id == rowID })?.text == clip.text else { return }
+        let before = makeUndoSnapshot()
+        preflight.auxiliaryClips[rowID] = clip
+        preflight.capturedAuxiliary.insert(rowID)
+        persistPreferences(); registerUndo(named: "导入辅设备实录片段", restoring: before)
+    }
+
+    func invalidateSpokenSource() {
+        preflight.segments = []; preflight.sourceSignature = ""; preflight.sourceRevision = UUID().uuidString
+        cancelPreflightRequests(); persistPreferences()
+    }
+    func cancelPreflightRequests() {
+        contentRequest?.cancel(); speechRequest?.cancel()
+    }
+
+    func setSpokenSegments(_ segments: [SpokenSegment]) throws {
+        guard preflightSourceURL != nil else { throw AnimationWorkflowError.invalid("请先导入清理后的主设备口播视频。") }
+        guard !segments.isEmpty, segments.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start }),
+              zip(segments, segments.dropFirst()).allSatisfy({ $0.start <= $1.start && $0.end <= $1.end }) else {
+            throw AnimationWorkflowError.invalid("口播时间无效，未修改已有定位。")
+        }
+        let before = makeUndoSnapshot()
+        preflight.segments = segments; preflight.sourceSignature = spokenSourceSignature
+        preflight.sourceRevision = UUID().uuidString
+        persistPreferences(); registerUndo(named: "更新口播实际时间", restoring: before)
+    }
+
+    func importSpokenSubtitles() {
+        guard preflightSourceURL != nil, !isAligningSpeech else { preflightFeedback = "请先导入口播视频。"; return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
+        panel.message = "选择当前清理后口播对应的 SRT；字幕只用于定位，不改写文案。"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let segments = try SpeechTiming.parseSRT(String(contentsOf: url, encoding: .utf8))
+            guard let video = preflightSourceURL else { return }
+            let signature = spokenSourceSignature; let expectedProject = projectID
+            isAligningSpeech = true
+            speechRequest = Task { [weak self] in
+                guard let self else { return }
+                defer { self.isAligningSpeech = false; self.speechRequest = nil }
+                do {
+                    let duration = try await AVURLAsset(url: video).load(.duration).seconds
+                    try Task.checkCancellation()
+                    guard duration.isFinite, segments.allSatisfy({ $0.end <= duration + 0.15 }),
+                          self.projectID == expectedProject, self.spokenSourceSignature == signature else {
+                        throw AnimationWorkflowError.invalid("字幕时间超出口播范围或口播源已变化，未采用这些时间。")
+                    }
+                    try self.setSpokenSegments(segments)
+                    self.preflightFeedback = "已读取字幕时间；无法唯一对应的句子需确认。"
+                } catch { self.preflightFeedback = error.localizedDescription }
+            }
+        } catch { preflightFeedback = error.localizedDescription }
+    }
+
+    func alignSpokenVideo() {
+        guard !isAligningSpeech, !isBusy, let url = preflightSourceURL else { preflightFeedback = "请先上传清理后的主设备 A-roll。"; return }
+        let signature = spokenSourceSignature; let expectedProject = projectID
+        isAligningSpeech = true; preflightFeedback = "正在本机识别口播，仅使用转录时间定位，不修改文案。"
+        speechRequest = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isAligningSpeech = false; self.speechRequest = nil }
+            do {
+                let segments = try await PreflightSpeechTranscriber().transcribe(url)
+                try Task.checkCancellation()
+                guard self.projectID == expectedProject, self.spokenSourceSignature == signature else {
+                    self.preflightFeedback = "口播源或项目已变化，请重新定位。"; return
+                }
+                try self.setSpokenSegments(segments)
+                self.preflightFeedback = "已定位 \(self.spokenTimings.count) 行；其余需确认，可导入对应 SRT。"
+            } catch { self.preflightFeedback = Task.isCancelled ? "已取消口播定位。" : error.localizedDescription }
+        }
+    }
+
+    func startContentGapCheck() {
+        guard !isCheckingContent, !isBusy, !rows.isEmpty else { return }
+        if preflight.contentSnapshot == preflightSnapshot {
+            preflight.checkedSnapshot = preflightSnapshot
+            persistPreferences(); preflightFeedback = "已复用本次内容检查；节奏按当前安排重新计算。"; return
+        }
+        if deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do { deepSeekKeyDraft = try DeepSeekKeychain.read() }
+            catch { preflightFeedback = error.localizedDescription; return }
+        }
+        guard !deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            preflightFeedback = "请在 AI 动画助手中配置 DeepSeek 连接，然后检查画面。"; return
+        }
+        let snapshot = preflightSnapshot; let sourceRows = rows; let expectedProject = projectID
+        let arrangements = rows.map { ["roll": rollType(for: $0.id).rawValue, "method": brollProductionMethod(for: $0.id).title] }
+        let client = DeepSeekClient(apiKey: deepSeekKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+        isCheckingContent = true; preflightFeedback = "正在检查画面：发送文案和安排信息，不发送视频。"
+        contentRequest = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isCheckingContent = false; self.contentRequest = nil }
+            do {
+                let candidates = try await client.analyzeContentGaps(rows: sourceRows, arrangements: arrangements)
+                try Task.checkCancellation()
+                guard self.projectID == expectedProject, self.preflightSnapshot == snapshot else {
+                    self.preflightFeedback = "分析期间安排已变化，结果已过期，请重新检查。"; return
+                }
+                try self.stageContentGapCandidates(candidates)
+                self.preflight.checkedSnapshot = snapshot
+                self.preflight.shootingTasksAtCheck = Dictionary(uniqueKeysWithValues: self.physicalShootingRows.map { ($0.id + self.rollType(for: $0.id).rawValue, $0.text) })
+                self.persistPreferences()
+                self.preflightFeedback = "内容检查完成；AI 未观看实际素材，请确认各项安排。"
+            } catch { self.preflightFeedback = Task.isCancelled ? "已取消检查。" : error.localizedDescription }
+        }
+    }
+
+    func stageContentGapCandidates(_ candidates: [ContentGapCandidate]) throws {
+        guard candidates.allSatisfy({ !$0.visualHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            throw AnimationWorkflowError.invalid("画面建议缺少内容，未修改文案。")
+        }
+        // Reject the complete ambiguous response rather than applying a partial unsafe range.
+        _ = try AnimationWorkflow.split(rows: rows, candidates: candidates.map(\.location))
+        preflight.candidates = candidates.filter { candidate in
+            candidate.sourceRowIDs.contains { rollType(for: $0) != .bRoll } && !preflight.retained.contains(conclusionKey(candidate.id, rowIDs: candidate.sourceRowIDs, rhythm: false))
+        }
+        preflight.contentSnapshot = preflightSnapshot
+    }
+
+    func applyContentGapCandidate(_ candidate: ContentGapCandidate, method: BrollProductionMethod? = nil) throws {
+        guard !isBusy, preflight.contentSnapshot == preflightSnapshot, contentGapCandidates.contains(candidate) else {
+            throw AnimationWorkflowError.invalid("候选已过期，请重新检查；文案未修改。")
+        }
+        try arrangePreflightBroll(candidate.location, method: method)
+    }
+
+    func arrangePreflightBroll(_ candidate: AnimationCandidate, method: BrollProductionMethod? = nil) throws {
+        guard !isBusy else { throw AnimationWorkflowError.invalid("正在处理项目，请稍后。") }
+        let pieces = try AnimationWorkflow.split(rows: rows, candidates: [candidate])
+        let before = makeUndoSnapshot()
+        let explicitMethods = brollProductionMethods
+        let oldRows = rows
+        applyInlineRows(pieces.map(\.text), sourceIndices: pieces.map(\.sourceIndices))
+        for index in pieces.indices where pieces[index].candidate != nil {
+            let id = rows[index].id
+            rollTypeOverrides[id] = .bRoll
+            brollProductionMethods[id] = method ?? pieces[index].sourceIndices.compactMap { explicitMethods[oldRows[$0].id] }.first ?? .undecided
+        }
+        persistPreferences(); registerUndo(named: "拍前安排 B-roll", restoring: before)
+        preflightFeedback = "已拆分并安排 B-roll，可一次撤销；安排变化后请重新检查。"
+    }
+}
+
+@MainActor
+private final class PreflightSpeechTranscriber {
+    private var recognition: SFSpeechRecognitionTask?
+    private var continuation: CheckedContinuation<[SpokenSegment], Error>?
+    private var timeout: Task<Void, Never>?
+
+    private func finish(_ result: Result<[SpokenSegment], Error>) {
+        guard let pending = continuation else { return }
+        continuation = nil; timeout?.cancel(); recognition?.cancel(); recognition = nil
+        pending.resume(with: result)
+    }
+
+    func transcribe(_ url: URL) async throws -> [SpokenSegment] {
+        let authorization = await withCheckedContinuation { pending in
+            SFSpeechRecognizer.requestAuthorization { pending.resume(returning: $0) }
+        }
+        try Task.checkCancellation()
+        guard authorization == .authorized,
+              let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")), recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else {
+            throw AnimationWorkflowError.invalid("本机中文语音识别不可用或未获授权。可导入当前口播对应的 SRT 建立时间关系。")
+        }
+        let audioURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        guard let exporter = AVAssetExportSession(asset: AVURLAsset(url: url), presetName: AVAssetExportPresetAppleM4A) else {
+            throw AnimationWorkflowError.invalid("无法读取视频音轨，请导入对应 SRT。")
+        }
+        if #available(macOS 15.0, *) {
+            try await exporter.export(to: audioURL, as: .m4a)
+        } else {
+            exporter.outputURL = audioURL; exporter.outputFileType = .m4a
+            await exporter.export()
+            guard exporter.status == .completed else { throw exporter.error ?? AnimationWorkflowError.invalid("无法提取口播音轨。") }
+        }
+        try Task.checkCancellation()
+        let request = SFSpeechURLRecognitionRequest(url: audioURL)
+        request.requiresOnDeviceRecognition = true; request.shouldReportPartialResults = false
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { pending in
+                continuation = pending
+                recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
+                    let segments = result?.isFinal == true ? result?.bestTranscription.segments.map {
+                        SpokenSegment(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration, confidence: Double($0.confidence))
+                    } : nil
+                    Task { @MainActor [weak self] in
+                        if let segments { self?.finish(.success(segments)) }
+                        else if let error { self?.finish(.failure(error)) }
+                    }
+                }
+                timeout = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(600)) } catch { return }
+                    self?.finish(.failure(AnimationWorkflowError.invalid("本机识别超时，请导入当前口播的 SRT。")))
+                }
+                if Task.isCancelled { finish(.failure(CancellationError())) }
+            }
+        } onCancel: { Task { @MainActor [weak self] in self?.finish(.failure(CancellationError())) } }
     }
 }

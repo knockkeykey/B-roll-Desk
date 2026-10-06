@@ -31,6 +31,9 @@ struct BRollDeskApp: App {
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
 
+                Button("拍前检查 / 拍摄清单") { model.isPreflightPresented = true }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+
                 Button("刷新素材目录") {
                     model.refreshSourceFiles()
                 }

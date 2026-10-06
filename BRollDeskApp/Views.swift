@@ -243,6 +243,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.isScriptEditorPresented) {
             ScriptEditorSheet(model: model)
         }
+        .sheet(isPresented: $model.isPreflightPresented) {
+            ShootingPreflightView(model: model)
+        }
         .sheet(isPresented: $model.isAnimationPanelPresented) {
             AnimationWorkspaceView(model: model)
         }
@@ -2633,7 +2636,7 @@ private struct AnchorListView: View {
 
     var body: some View {
         let pacingHints = model.aRollPacingHints
-        let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
+        let distribution = model.preflightDistribution
         let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
         let rowAttributes = model.rows.map(model.filterAttributes(for:))
         let filteredRows = model.filteredRows.filter { isListed($0, attributes: rowAttributes) }
@@ -2684,6 +2687,11 @@ private struct AnchorListView: View {
                 .hoverHelp("编辑或导入视频文案")
                 .accessibilityLabel("编辑或导入视频文案")
                 .pointerCursor()
+                Button { model.isPreflightPresented = true } label: {
+                    Label("拍前检查", systemImage: "checklist")
+                }
+                .buttonStyle(.borderless)
+                .help("检查口播时间、节奏和画面安排；查看统一拍摄清单")
                 Button { model.openAnimationPanel() } label: {
                     Image(systemName: "sparkles")
                 }
@@ -3595,7 +3603,15 @@ private struct AnchorRowView: View {
                         Text("\(String(format: "%02d", row.index))  BR\(String(format: "%03d", row.index))")
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(isDropTarget ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
-                        if let pacingHint, !isBroll, !isEditing {
+                        Button {
+                            model.preflightPlaybackRowID = row.id
+                            model.isPreflightPresented = true
+                        } label: {
+                            Text(model.spokenTimingLabel(row)).font(.caption2.monospacedDigit())
+                        }
+                        .buttonStyle(.borderless)
+                        .help("播放对应口播；查看拍前检查")
+                        if let pacingHint, !isBroll, !isEditing, model.preflightSourceURL == nil {
                             ARollPacingReminder(hint: pacingHint, isExpanded: $isPacingDetailsPresented)
                             .padding(.leading, 7)
                         }
@@ -6265,5 +6281,282 @@ private struct ScriptEditorSheet: View {
         .onChange(of: model.scriptText) { _, _ in
             model.parseScript()
         }
+    }
+}
+
+
+private struct ShootingPreflightView: View {
+    @Bindable var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedTab = 0
+    @State private var showCompleted = false
+    @State private var choices: [String: BrollProductionMethod] = [:]
+    @State private var player = AVPlayer()
+    @State private var playbackLabel = "选择一项播放对应主设备口播"
+    @State private var sameSeconds = ""
+    @State private var continuousSeconds = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("拍前检查").font(.title2.bold())
+                    Text("\(model.preflightStatus) · \(model.preflightPendingCount) 个待确认项")
+                        .foregroundStyle(model.preflightStatus == "检查完成" ? Color.green : Color.orange)
+                }
+                Spacer()
+                Button("撤销") { model.undo() }.disabled(!model.canUndo)
+                Button("重做") { model.redo() }.disabled(!model.canRedo)
+                Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            Text("先导入清理后的主设备口播，再检查画面安排。任何检查状态都可以拍摄。")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("上传清理后口播") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { model.chooseARollVideo() }
+                }.disabled(model.isBusy || model.destinationDirectoryURL == nil)
+                Button(model.isAligningSpeech ? "正在定位…" : "定位实际口播时间") { model.alignSpokenVideo() }
+                    .disabled(model.preflightSourceURL == nil || model.isAligningSpeech || model.isBusy)
+                Button("导入对应 SRT") { model.importSpokenSubtitles() }.disabled(model.isAligningSpeech || model.preflightSourceURL == nil)
+                Spacer()
+                Button(model.isCheckingContent ? "正在检查…" : "检查画面") { model.startContentGapCheck() }
+                    .disabled(model.rows.isEmpty || model.isCheckingContent || model.isBusy)
+                if model.isAligningSpeech || model.isCheckingContent {
+                    Button("取消") { model.cancelPreflightRequests() }
+                }
+            }
+            if !model.preflightFeedback.isEmpty {
+                Text(model.preflightFeedback).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    VideoPlayer(player: player).frame(width: 320, height: 180)
+                    Text(playbackLabel).font(.caption).foregroundStyle(.secondary)
+                }
+                settings
+            }
+            Picker("工作区", selection: $selectedTab) {
+                Text("疑点与画面安排").tag(0)
+                Text("统一拍摄清单").tag(1)
+            }.pickerStyle(.segmented)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if selectedTab == 0 { review } else { shooting }
+                }.padding(2)
+            }
+        }
+        .padding(22).frame(minWidth: 950, idealWidth: 1000, minHeight: 760)
+        .onAppear {
+            sameSeconds = String(model.preflight.sameDeviceSeconds)
+            continuousSeconds = String(model.preflightContinuousSeconds)
+            if let id = model.preflightPlaybackRowID { play([id]); model.preflightPlaybackRowID = nil }
+        }
+        .onDisappear { stopPlayback() }
+        .onChange(of: model.preflight.sameDeviceSeconds) { _, value in sameSeconds = String(value) }
+        .onChange(of: model.preflightContinuousSeconds) { _, value in continuousSeconds = String(value) }
+        .onChange(of: model.preflight.sourceRevision) { _, _ in stopPlayback() }
+        .onChange(of: model.preflightSourceURL) { _, _ in stopPlayback() }
+    }
+
+    private var settings: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("项目设备与提醒").font(.headline)
+            HStack {
+                Picker("主设备", selection: Binding(get: { model.preflight.mainDeviceID }, set: { model.updatePreflightDevices(main: $0, auxiliary: model.preflight.auxiliaryDeviceID) })) {
+                    ForEach(model.shootingDevices) { device in
+                        Text(device.name).tag(device.id).disabled(device.id == model.preflight.auxiliaryDeviceID)
+                    }
+                }
+                Picker("辅设备", selection: Binding(get: { model.preflight.auxiliaryDeviceID }, set: { model.updatePreflightDevices(main: model.preflight.mainDeviceID, auxiliary: $0) })) {
+                    ForEach(model.shootingDevices) { device in
+                        Text(device.name).tag(device.id).disabled(device.id == model.preflight.mainDeviceID)
+                    }
+                }
+            }
+            HStack {
+                Button("交换主辅设备") {
+                    model.updatePreflightDevices(main: model.preflight.auxiliaryDeviceID, auxiliary: model.preflight.mainDeviceID)
+                }
+                if !model.preflightDevicesValid { Text("请重新选择两个不同且有效的设备。可在设置中添加设备。").foregroundStyle(.orange).font(.caption) }
+            }
+            HStack {
+                Toggle("同一设备连续出镜", isOn: Binding(get: { model.preflight.sameDeviceEnabled }, set: { updateRhythm(sameEnabled: $0) }))
+                TextField("秒", text: $sameSeconds).frame(width: 54).onSubmit { updateRhythm() }
+                Text("秒").foregroundStyle(.secondary)
+            }
+            HStack {
+                Toggle("连续 A-roll", isOn: Binding(get: { model.preflightContinuousEnabled }, set: { updateRhythm(continuousEnabled: $0) }))
+                TextField("秒", text: $continuousSeconds).frame(width: 54).onSubmit { updateRhythm() }
+                Text("秒").foregroundStyle(.secondary)
+                Button("应用秒数") { updateRhythm() }
+            }
+            Text("辅设备任务需重说原句，画面和声音一起替换；当前时长参考主设备口播。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.textFieldStyle(.roundedBorder)
+    }
+
+    private func updateRhythm(sameEnabled: Bool? = nil, continuousEnabled: Bool? = nil) {
+        guard let same = Double(sameSeconds), let continuous = Double(continuousSeconds), same > 0, continuous > 0 else {
+            model.preflightFeedback = "请输入大于 0 的秒数。"; return
+        }
+        model.updatePreflightRhythm(sameEnabled: sameEnabled ?? model.preflight.sameDeviceEnabled, sameSeconds: same,
+                                    continuousEnabled: continuousEnabled ?? model.preflightContinuousEnabled, continuousSeconds: continuous)
+    }
+
+    @ViewBuilder private var review: some View {
+        if model.preflightStatus == "待检查" {
+            Text("当前安排尚未完成检查。点击“检查画面”运行内容检查并汇总节奏疑点。")
+                .foregroundStyle(.secondary)
+        }
+        ForEach(model.rhythmIssues) { issue in
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(issue.rules.joined(separator: " · ")).font(.headline)
+                    Text(String(format: "%@ %.1f 秒", issue.estimated ? "估算" : "实际", issue.seconds)).foregroundStyle(.orange)
+                    Spacer()
+                    Button("播放这一段") { play(issue.rowIDs) }
+                    Button("确认保留") { model.retainPreflightIssue(issue.id) }
+                }
+                Text(issue.details.joined(separator: "\n")).font(.caption).foregroundStyle(.secondary)
+                ForEach(model.rows.filter { issue.rowIDs.contains($0.id) }) { row in
+                    HStack(alignment: .top) {
+                        Text(row.text).textSelection(.enabled)
+                        Spacer()
+                        Button("安排 B-roll") { arrange(row) }
+                        if issue.rules.contains("同一设备连续出镜"), let auxiliary = model.shootingDevices.first(where: { $0.id == model.preflight.auxiliaryDeviceID }) {
+                            Button("改用辅设备") { model.setShootingDevice(auxiliary, for: row.id) }
+                        }
+                    }
+                }
+                Text("B-roll 可参考 2～4 秒；不设强制时长。改用辅设备仍计入连续 A-roll。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.preflightCard()
+        }
+        ForEach(model.contentGapCandidates) { candidate in
+            VStack(alignment: .leading, spacing: 8) {
+                Text(candidate.text).font(.headline).textSelection(.enabled)
+                Text(candidate.reason).foregroundStyle(.secondary)
+                Text("候选画面：" + candidate.visualHint)
+                Text("修改预览：只将上面的原文范围拆成 B-roll，其余部分保留原安排。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("播放对应口播") { play(candidate.sourceRowIDs) }
+                    methodPicker(candidate.id)
+                    Spacer()
+                    Button("保留口播") { model.retainPreflightIssue(candidate.id) }
+                    Button("安排 B-roll") {
+                        do { try model.applyContentGapCandidate(candidate, method: choices[candidate.id]) }
+                        catch { model.preflightFeedback = error.localizedDescription }
+                    }.buttonStyle(.borderedProminent)
+                }
+            }.preflightCard()
+        }
+        ForEach(model.undecidedBrollRows) { row in
+            HStack {
+                VStack(alignment: .leading) {
+                    Text("制作方式未确定").font(.headline)
+                    Text(row.text)
+                }
+                Spacer()
+                Picker("制作方式", selection: Binding(get: { model.brollProductionMethod(for: row.id) }, set: { model.setBrollProductionMethod($0, for: row.id) })) {
+                    ForEach(BrollProductionMethod.allCases) { Text($0.title).tag($0) }
+                }.frame(width: 220)
+            }.preflightCard()
+        }
+        ForEach(model.unconfirmedTimingRows) { row in
+            HStack {
+                VStack(alignment: .leading) {
+                    Text("时间定位需确认").font(.headline)
+                    Text(row.text)
+                    Text(model.spokenTimingLabel(row)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("保留估算时间") { model.confirmEstimatedTiming(row) }
+            }.preflightCard()
+        }
+        if model.preflightStatus == "检查完成" {
+            Label("所有疑点已有结论，可以按清单拍摄。", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            Text("AI 只检查文本，没有观看素材；检查完成以你确认的安排为准。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        if model.rows.contains(where: { model.rollType(for: $0.id) == .bRoll }) {
+            DisclosureGroup("已有 B-roll 安排") {
+                ForEach(model.rows.filter { model.rollType(for: $0.id) == .bRoll }) { row in
+                    HStack { Text(row.text); Spacer(); Text(model.brollProductionMethod(for: row.id).title).foregroundStyle(.secondary) }
+                }
+            }
+        }
+    }
+
+    private func methodPicker(_ id: String) -> some View {
+        Picker("制作方式", selection: Binding(get: { choices[id] ?? .undecided }, set: { choices[id] = $0 })) {
+            ForEach(BrollProductionMethod.allCases) { Text($0.title).tag($0) }
+        }.frame(width: 240)
+    }
+
+    private func arrange(_ row: AnchorRow) {
+        do { try model.arrangePreflightBroll(.init(sourceRowIDs: [row.id], text: row.text, reason: "调整连续画面节奏")) }
+        catch { model.preflightFeedback = error.localizedDescription }
+    }
+
+    @ViewBuilder private var shooting: some View {
+        HStack {
+            Text("实拍 B-roll 与辅设备 A-roll").font(.headline)
+            Spacer()
+            Toggle("显示已完成", isOn: $showCompleted).toggleStyle(.checkbox)
+        }
+        if !model.shootingTaskChanges.isEmpty { Text(model.shootingTaskChanges).foregroundStyle(.orange) }
+        let tasks = model.physicalShootingRows.filter { showCompleted || !model.isPhysicalTaskCompleted($0) }
+        if tasks.isEmpty { Text("当前没有待拍实体任务。").foregroundStyle(.secondary) }
+        ForEach(tasks) { row in
+            HStack(alignment: .top, spacing: 12) {
+                Button { model.togglePhysicalTask(row) } label: {
+                    Image(systemName: model.isPhysicalTaskCompleted(row) ? "checkmark.circle.fill" : "circle")
+                        .font(.title2).foregroundStyle(model.isPhysicalTaskCompleted(row) ? Color.green : Color.secondary)
+                }.buttonStyle(.plain).accessibilityLabel(model.isPhysicalTaskCompleted(row) ? "标记未完成" : "标记拍摄完成")
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.rollType(for: row.id) == .bRoll ? "实拍 B-roll" : "辅设备 A-roll · 重说原句，替换画面与声音")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(row.text).textSelection(.enabled)
+                    Text(model.spokenTimingLabel(row)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 6) {
+                    Button("播放主设备原句") { play([row.id]) }
+                    if model.rollType(for: row.id) == .aRoll {
+                        Button("导入这句辅设备口播") { model.importAuxiliarySpokenClip(for: row) }.disabled(model.isBusy || model.destinationDirectoryURL == nil)
+                    }
+                }
+            }.preflightCard()
+        }
+        Text("动画、AI 视频、搜索素材、录屏等准备任务继续在文案列表按制作方式筛选。")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    private func stopPlayback() {
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+    }
+    private func play(_ ids: [String]) {
+        stopPlayback()
+        let ranges = ids.compactMap { model.spokenTimings[$0] }
+        guard ranges.count == ids.count, let start = ranges.first?.start, let end = ranges.last?.end,
+              let url = model.preflightSourceURL else {
+            playbackLabel = "这段时间需确认，请先定位口播或导入对应 SRT。"; return
+        }
+        let item = AVPlayerItem(url: url)
+        item.forwardPlaybackEndTime = CMTime(seconds: end, preferredTimescale: 600)
+        player.replaceCurrentItem(with: item)
+        player.seek(to: CMTime(seconds: start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        player.play()
+        playbackLabel = String(format: "主设备口播 %.2f～%.2f 秒", start, end)
+    }
+}
+
+private extension View {
+    func preflightCard() -> some View {
+        padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
     }
 }
