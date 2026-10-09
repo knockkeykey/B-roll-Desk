@@ -10,8 +10,7 @@ B-roll配对台是一款免费、以 GPLv3 开源的原生 macOS 辅助工具。
 
 - **把文案变成拍摄计划**：导入或粘贴文案，按句整理；逐条标记 A-roll / B-roll，选择制作方式、拍摄设备并添加备注，也可拆分和合并条目。
 - **交互式全文时间线**：按文案长度排列片段，用颜色查看 A-roll / B-roll 分布、制作方式和拍摄设备。时间线可跟随文案列表或切到全文总览，支持缩放、平移；点击片段会定位文案，选中状态双向联动。
-- **查看 A-roll 统计**：在侧栏按拍摄设备查看 A-roll 文案数量与占比。
-- **跟踪准备进度**：用统一筛选器按 A-roll 拍摄设备、制作方式，以及 B-roll 制作方式、准备状态只看或排除条目，完成后标为“素材就绪”。
+- **跟踪准备进度**：设置主机位和辅机位，为辅机位 A-roll 绑定素材并跟踪准备状态；用统一筛选器按拍摄设备、制作方式和准备状态只看或排除条目。
 - **拖拽配对并整理素材**：从访达或素材来源目录拖入图片、视频；一条文案可绑定多个素材。App 将副本归档到项目中，生成文案与文件名对照表，来源原件保持不动。
 - **AI 动画助手**：用 DeepSeek 分析全文并推荐适合动画呈现的段落；确认后再应用，可撤销。统一管理风格、角色参考图和可复用提示词模板，并复制单条或整批制作提示词。
 - **交给 ChatCut AI 做粗剪**：导出正确文案、B-roll 素材映射和剪辑提示词，交给具备 ChatCut 剪辑能力的 AI 生成可继续编辑的时间线。B-roll 配对台负责整理项目资料，实际剪辑由 ChatCut 完成。
@@ -19,7 +18,7 @@ B-roll配对台是一款免费、以 GPLv3 开源的原生 macOS 辅助工具。
 
 ## 下载
 
-适用于 macOS 14 或更新版本。Apple Silicon 用户可下载 [B-roll 配对台 1.0.8（arm64 DMG）](https://github.com/knockkeykey/B-roll-Desk/releases/latest/download/B-roll-Desk-1.0.8-arm64.dmg)，打开后将 App 拖入“Applications”。
+适用于 macOS 14 或更新版本。Apple Silicon 用户可下载 [B-roll 配对台 1.0.9（arm64 DMG）](https://github.com/knockkeykey/B-roll-Desk/releases/latest/download/B-roll-Desk-1.0.9-arm64.dmg)，打开后将 App 拖入“Applications”。
 
 ![B-roll 配对台全文时间线与文案联动示例](docs/images/timeline-overview.png)
 
