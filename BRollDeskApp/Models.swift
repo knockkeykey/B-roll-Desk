@@ -1,4 +1,5 @@
 import Foundation
+import os.signpost
 import Observation
 import UniformTypeIdentifiers
 
@@ -638,6 +639,14 @@ struct BrollAsset: Identifiable, Codable, Hashable {
     var sourceFileBookmark: Data? = nil
 
     var archiveRelativePath: String { "\(archiveDirectory.rawValue)/\(outputName)" }
+
+    func reanchored(to row: AnchorRow) -> Self {
+        guard anchorKey != row.id || anchorIndex != row.index || anchorText != row.text else { return self }
+        return Self(id: id, anchorKey: row.id, anchorIndex: row.index, anchorText: row.text,
+                    sourceName: sourceName, sourceDirectoryID: sourceDirectoryID, sourceRelativePath: sourceRelativePath,
+                    outputName: outputName, mode: mode, targetTrack: targetTrack, audio: audio, copiedAt: copiedAt,
+                    archiveDirectory: archiveDirectory, sourceFilePath: sourceFilePath, sourceFileBookmark: sourceFileBookmark)
+    }
 
     func relocated(to directory: AssetArchiveDirectory, named name: String) -> Self {
         Self(id: id, anchorKey: anchorKey, anchorIndex: anchorIndex, anchorText: anchorText,
@@ -1318,5 +1327,67 @@ enum MediaFormatting {
             return String(format: "%.1f MB", bytes / (1024 * 1024))
         }
         return String(format: "%.1f GB", bytes / (1024 * 1024 * 1024))
+    }
+}
+
+/// Local, opt-in timing only: no script text, paths or asset names enter the log.
+struct InlinePerformanceSpan {
+    static let log = OSLog(subsystem: "com.keyknock.BrollNamer", category: .pointsOfInterest)
+    let name: StaticString
+    let id: OSSignpostID
+    init(_ name: StaticString) {
+        self.name = name
+        id = OSSignpostID(log: Self.log)
+        os_signpost(.begin, log: Self.log, name: name, signpostID: id)
+    }
+    func end() { os_signpost(.end, log: Self.log, name: name, signpostID: id) }
+}
+
+@MainActor enum InlineEditPerformance {
+    private struct Sample {
+        let token: UUID
+        let kind: String
+        let start: TimeInterval
+        let span: InlinePerformanceSpan
+        var modelMS: Double = 0
+        var displayMS: Double = 0
+    }
+    private static var sample: Sample?
+    private static let output = ProcessInfo.processInfo.environment["BROLL_DESK_INLINE_METRICS"]
+    private static let writer = DispatchQueue(label: "com.keyknock.broll.inline-metrics")
+    static var token: UUID? { sample?.token }
+
+    static func begin(_ kind: String) {
+        sample?.span.end()
+        sample = Sample(token: UUID(), kind: kind, start: ProcessInfo.processInfo.systemUptime,
+                        span: InlinePerformanceSpan("InlineKeyToFocus"))
+    }
+    static func modelFinished(since start: TimeInterval) {
+        sample?.modelMS = (ProcessInfo.processInfo.systemUptime - start) * 1000
+    }
+    static func displayed(_ token: UUID?) {
+        guard let token, let start = sample?.start, sample?.token == token else { return }
+        sample?.displayMS = (ProcessInfo.processInfo.systemUptime - start) * 1000
+    }
+    static func ready(_ token: UUID?) {
+        guard let token, let value = sample, value.token == token else { return }
+        let inputMS = (ProcessInfo.processInfo.systemUptime - value.start) * 1000
+        value.span.end()
+        sample = nil
+        guard let output else { return }
+        let record: [String: Any] = ["kind": value.kind, "modelMS": value.modelMS,
+                                     "displayMS": value.displayMS, "inputMS": inputMS]
+        guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
+        data.append(0x0a)
+        let bytes = data
+        writer.async {
+            if !FileManager.default.fileExists(atPath: output) {
+                FileManager.default.createFile(atPath: output, contents: nil)
+            }
+            guard let handle = FileHandle(forWritingAtPath: output) else { return }
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: bytes)
+        }
     }
 }

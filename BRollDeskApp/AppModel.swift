@@ -47,12 +47,12 @@ final class AppModel {
         "jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "tif", "tiff", "bmp"
     ]
 
-    var scriptText: String
+    var scriptText: String { didSet { invalidateScriptAnalysis() } }
     var splitMode: SplitMode
     private var preservesEmptyAnchors: Bool
     var prefix: String
-    private(set) var shootingDevices: [ShootingDevice] = ShootingDevice.defaults
-    private(set) var shootingDeviceRoles = ShootingDeviceRoles.defaults
+    private(set) var shootingDevices: [ShootingDevice] = ShootingDevice.defaults { didSet { invalidateScriptAnalysis() } }
+    private(set) var shootingDeviceRoles = ShootingDeviceRoles.defaults { didSet { invalidateScriptAnalysis() } }
     private(set) var pendingShootingDeviceChange: ShootingDeviceChange?
     private(set) var inlineEditingResetID = UUID()
     var anchorSearchText = ""
@@ -112,11 +112,11 @@ final class AppModel {
     private(set) var rollTypeOverrides: [String: AnchorRollType] = [:] {
         didSet { invalidateScriptAnalysis() }
     }
-    private(set) var capturedBrollRowIDs: Set<String> = []
-    private(set) var arollProductionMethods: [String: ArollProductionMethod] = [:]
-    private(set) var arollShootingDevices: [String: ShootingDevice?] = [:]
-    private(set) var brollProductionMethods: [String: BrollProductionMethod] = [:]
-    private(set) var brollPreparationStatuses: [String: BrollPreparationStatus] = [:]
+    private(set) var capturedBrollRowIDs: Set<String> = [] { didSet { invalidateScriptAnalysis() } }
+    private(set) var arollProductionMethods: [String: ArollProductionMethod] = [:] { didSet { invalidateScriptAnalysis() } }
+    private(set) var arollShootingDevices: [String: ShootingDevice?] = [:] { didSet { invalidateScriptAnalysis() } }
+    private(set) var brollProductionMethods: [String: BrollProductionMethod] = [:] { didSet { invalidateScriptAnalysis() } }
+    private(set) var brollPreparationStatuses: [String: BrollPreparationStatus] = [:] { didSet { invalidateScriptAnalysis() } }
     private(set) var sourceFiles: [SourceFile] = []
     private(set) var visibleSourceFiles: [SourceFile] = []
     private(set) var sourceDirectories: [ProjectSourceDirectory] = []
@@ -142,6 +142,10 @@ final class AppModel {
     }
 
     private let defaults: UserDefaults
+    // UserDefaults is thread-safe; snapshot writes are additionally serialized and
+    // drained before any synchronous preference write on the main actor.
+    private struct InlinePreferenceStore: @unchecked Sendable { let defaults: UserDefaults }
+    @ObservationIgnored private let inlinePreferences: InlinePreferenceStore
     @ObservationIgnored private let localAssignmentsURL: URL?
     let undoManager = UndoManager()
     private var sourceAccessActive: [String: Bool] = [:]
@@ -166,6 +170,25 @@ final class AppModel {
     @ObservationIgnored private var inlinePersistenceGeneration = UUID()
     private var scriptAnalysisRevision = 0
     @ObservationIgnored private var cachedDistribution: ScriptDistribution?
+    @ObservationIgnored private var cachedListAnalysis: ScriptListAnalysis?
+    @ObservationIgnored private var rowDisplayIDs: [String: UUID] = [:]
+
+    struct DisplayedScriptRow: Identifiable {
+        let id: UUID
+        let row: AnchorRow
+    }
+
+    func displayedScriptRows(_ listedRows: [AnchorRow]) -> [DisplayedScriptRow] {
+        listedRows.map { row in
+            let id = rowDisplayIDs[row.id] ?? UUID()
+            rowDisplayIDs[row.id] = id
+            return DisplayedScriptRow(id: id, row: row)
+        }
+    }
+
+    func scriptRowDisplayID(for rowID: String) -> UUID? { rowDisplayIDs[rowID] }
+    @ObservationIgnored private var scriptAnalysisBatchDepth = 0
+    @ObservationIgnored private var scriptAnalysisNeedsInvalidation = false
 
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
@@ -186,6 +209,7 @@ final class AppModel {
 
     init(defaults: UserDefaults = .standard, assignmentsURL: URL? = nil) {
         self.defaults = defaults
+        self.inlinePreferences = InlinePreferenceStore(defaults: defaults)
         self.localAssignmentsURL = assignmentsURL
         if let data = defaults.data(forKey: shootingDevicesKey),
            let saved = try? JSONDecoder().decode([ShootingDevice].self, from: data),
@@ -322,7 +346,7 @@ final class AppModel {
     }
 
     var assignedCount: Int {
-        meaningfulRows.reduce(0) { $0 + assets(for: $1.id).count }
+        scriptListAnalysis.assignedCount
     }
 
     var pendingCount: Int {
@@ -330,7 +354,7 @@ final class AppModel {
     }
 
     var pendingBrollCount: Int {
-        meaningfulRows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll && assets(for: $1.id).isEmpty ? 1 : 0) }
+        scriptListAnalysis.pendingBrollCount
     }
 
     var hasScriptContent: Bool {
@@ -338,7 +362,7 @@ final class AppModel {
     }
 
     var scriptAnchorCount: Int {
-        meaningfulRows.count
+        scriptListAnalysis.countableAttributes.count
     }
 
     private var meaningfulRows: [AnchorRow] {
@@ -346,19 +370,15 @@ final class AppModel {
     }
 
     var scriptCharacterCount: Int {
-        scriptText.reduce(into: 0) { count, character in
-            if !character.isWhitespace {
-                count += 1
-            }
-        }
+        scriptListAnalysis.characterCount
     }
 
     var aRollAnchorCount: Int {
-        meaningfulRows.reduce(0) { $0 + (rollType(for: $1.id) == .aRoll ? 1 : 0) }
+        scriptListAnalysis.aRollCount
     }
 
     var bRollAnchorCount: Int {
-        meaningfulRows.reduce(0) { $0 + (rollType(for: $1.id) == .bRoll ? 1 : 0) }
+        scriptListAnalysis.bRollCount
     }
 
     var pendingPreparationBrollCount: Int {
@@ -374,21 +394,15 @@ final class AppModel {
     }
 
     func brollProductionMethodCount(_ method: BrollProductionMethod) -> Int {
-        meaningfulRows.reduce(0) {
-            $0 + (rollType(for: $1.id) == .bRoll && brollProductionMethod(for: $1.id) == method ? 1 : 0)
-        }
+        scriptListAnalysis.methodCounts[method.rawValue, default: 0]
     }
 
     func arollShootingDeviceCount(_ deviceID: String?) -> Int {
-        meaningfulRows.reduce(0) {
-            $0 + (rollType(for: $1.id) == .aRoll && shootingDevice(for: $1.id)?.id == deviceID ? 1 : 0)
-        }
+        scriptListAnalysis.deviceCounts[deviceID, default: 0]
     }
 
     func brollPreparationStatusCount(_ status: BrollPreparationStatus) -> Int {
-        meaningfulRows.reduce(0) {
-            $0 + (rollType(for: $1.id) == .bRoll && brollPreparationStatus(for: $1.id) == status ? 1 : 0)
-        }
+        scriptListAnalysis.statusCounts[status.rawValue, default: 0]
     }
 
     func filterAttributes(for row: AnchorRow) -> ScriptRowFilter.Attributes {
@@ -418,8 +432,66 @@ final class AppModel {
     }
 
     private func invalidateScriptAnalysis() {
+        if scriptAnalysisBatchDepth > 0 { scriptAnalysisNeedsInvalidation = true; return }
         cachedDistribution = nil
+        cachedListAnalysis = nil
         scriptAnalysisRevision += 1
+    }
+
+    private func beginScriptAnalysisBatch() { scriptAnalysisBatchDepth += 1 }
+    private func endScriptAnalysisBatch() {
+        scriptAnalysisBatchDepth -= 1
+        if scriptAnalysisBatchDepth == 0, scriptAnalysisNeedsInvalidation {
+            scriptAnalysisNeedsInvalidation = false
+            invalidateScriptAnalysis()
+        }
+    }
+
+    struct ScriptListAnalysis {
+        let attributes: [ScriptRowFilter.Attributes]
+        let countableAttributes: [ScriptRowFilter.Attributes]
+        let boundRowIDs: Set<String>
+        let characterCount: Int
+        let assignedCount: Int
+        let aRollCount: Int
+        let bRollCount: Int
+        let pendingBrollCount: Int
+        let deviceCounts: [String?: Int]
+        let methodCounts: [String: Int]
+        let statusCounts: [String: Int]
+    }
+
+    var scriptListAnalysis: ScriptListAnalysis {
+        _ = scriptAnalysisRevision
+        if let cachedListAnalysis { return cachedListAnalysis }
+        let attributes = rows.map(filterAttributes(for:))
+        let countable = attributes.filter { !$0.isBlank }
+        var aroll = 0, broll = 0, assigned = 0, pending = 0
+        var devices: [String?: Int] = [:]
+        var methods: [String: Int] = [:]
+        var statuses: [String: Int] = [:]
+        var bound: Set<String> = []
+        for (row, attribute) in zip(rows, attributes) {
+            let assets = assignments[row.id] ?? []
+            if !assets.isEmpty { bound.insert(row.id) }
+            guard !attribute.isBlank else { continue }
+            assigned += assets.count
+            if attribute.rollType == .aRoll {
+                aroll += 1
+                devices[attribute.shootingDeviceID, default: 0] += 1
+            } else {
+                broll += 1
+                if assets.isEmpty { pending += 1 }
+                methods[attribute.brollMethod.rawValue, default: 0] += 1
+                statuses[attribute.brollStatus.rawValue, default: 0] += 1
+            }
+        }
+        let analysis = ScriptListAnalysis(attributes: attributes, countableAttributes: countable,
+            boundRowIDs: bound, characterCount: scriptText.reduce(0) { $0 + ($1.isWhitespace ? 0 : 1) },
+            assignedCount: assigned, aRollCount: aroll, bRollCount: broll, pendingBrollCount: pending,
+            deviceCounts: devices, methodCounts: methods, statusCounts: statuses)
+        cachedListAnalysis = analysis
+        return analysis
     }
 
     private func rebuildVisibleSourceFiles() {
@@ -736,13 +808,87 @@ final class AppModel {
         defaults.set(try? JSONEncoder().encode(animationTasks), forKey: animationTasksKey)
     }
 
-    private struct InlineFileWrite: Sendable {
-        let url: URL
-        let data: Data
+    /// Value-only data captured on the main actor. The writer never reads AppModel.
+    private struct InlinePersistenceSnapshot {
+        let script: String
+        let settings: BrollProjectSettings
+        let devices: [ShootingDevice]
+        let roles: ShootingDeviceRoles
+        let assignmentsURL: URL?
+        let projectURL: URL?
+
+        nonisolated func write(using defaults: UserDefaults) -> [String] {
+            let span = InlinePerformanceSpan("InlineSavePreparation")
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            defaults.set(script, forKey: "broll-namer-script")
+            defaults.set(settings.splitMode.rawValue, forKey: "broll-namer-split-mode")
+            defaults.set(settings.preservesEmptyAnchors, forKey: "broll-namer-preserves-empty-anchors")
+            defaults.set(settings.anchorNotes, forKey: "broll-namer-anchor-notes")
+            defaults.set(settings.prefix, forKey: "broll-namer-prefix")
+            defaults.set(settings.rollTypeOverrides.mapValues(\.rawValue), forKey: "broll-namer-roll-type-overrides")
+            defaults.set(settings.capturedBrollRowIDs, forKey: "broll-namer-captured-broll-rows")
+            defaults.set(settings.arollProductionMethods.mapValues(\.rawValue), forKey: "broll-namer-aroll-production-methods")
+            defaults.set(try? JSONEncoder().encode(settings.arollShootingDevices), forKey: "broll-namer-aroll-shooting-devices")
+            defaults.set(settings.brollProductionMethods.mapValues(\.rawValue), forKey: "broll-namer-production-methods")
+            defaults.set(settings.brollPreparationStatuses.mapValues(\.rawValue), forKey: "broll-namer-preparation-statuses")
+            defaults.set(try? JSONEncoder().encode(settings.animationTasks), forKey: "broll-namer-animation-tasks")
+            var files: [(URL, Data)] = []
+            do {
+                if let assignmentsURL {
+                    files.append((assignmentsURL, try encoder.encode(AssignmentStore(version: 1, assignments: settings.assignments))))
+                }
+                if let projectURL {
+                    let broll = projectURL.appendingPathComponent("B-roll", isDirectory: true)
+                    let aroll = projectURL.appendingPathComponent("A-roll", isDirectory: true)
+                    let main = devices.first { $0.id == roles.mainDeviceID }
+                    let auxiliary = devices.first { $0.id == roles.auxiliaryDeviceID }
+                    var placements: [ManifestPlacement] = []
+                    var arollPlacements: [CodexARollPlacement] = []
+                    for row in rows {
+                        let assets = settings.assignments[row.id] ?? []
+                        let type = settings.rollTypeOverrides[row.id] ?? (assets.isEmpty ? .aRoll : .bRoll)
+                        if type == .bRoll {
+                            let files = assets.filter { $0.archiveDirectory == .bRoll }.map(\.outputName)
+                            if !files.isEmpty {
+                                placements.append(ManifestPlacement(id: "BR" + String(format: "%03d", row.index), text: row.text, files: files))
+                            }
+                        } else {
+                            let device: ShootingDevice?
+                            if let selected = settings.arollShootingDevices[row.id] { device = selected } else { device = main }
+                            if let device, let auxiliary, device.id == auxiliary.id {
+                                let files = assets.filter { $0.archiveDirectory == .aRoll }.map(\.outputName)
+                                if !files.isEmpty { arollPlacements.append(CodexARollPlacement(rowID: row.id, text: row.text, device: device, files: files)) }
+                            }
+                        }
+                    }
+                    files.append((broll.appendingPathComponent("project-settings.json"), try encoder.encode(settings)))
+                    files.append((broll.appendingPathComponent("broll-manifest.json"), try encoder.encode(BrollManifest(defaultAudio: "preserve", placements: placements))))
+                    files.append((broll.appendingPathComponent("broll-for-ai.json"), try encoder.encode(AIBrollManifest(placements: placements.map { AIBrollPlacement(text: $0.text, files: $0.files) }))))
+                    files.append((aroll.appendingPathComponent("aroll-for-codex.json"), try encoder.encode(CodexARollManifest(mainDevice: main, auxiliaryDevice: auxiliary, placements: arollPlacements))))
+                    let scriptURL = aroll.appendingPathComponent("正确文案.txt")
+                    if FileManager.default.fileExists(atPath: scriptURL.path) { files.append((scriptURL, Data(script.utf8))) }
+                }
+            } catch {
+                span.end()
+                return [error.localizedDescription]
+            }
+            span.end()
+            let writeSpan = InlinePerformanceSpan("InlineSaveWrite")
+            defer { writeSpan.end() }
+            var failures: [String] = []
+            for (url, data) in files {
+                do {
+                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: url, options: .atomic)
+                } catch { failures.append("\(url.lastPathComponent)：\(error.localizedDescription)") }
+            }
+            return failures
+        }
+        let rows: [AnchorRow]
     }
 
     private func scheduleInlinePersistence() {
-        persistPreferenceValues()
         pendingInlineSave?.cancel()
         inlinePersistenceGeneration = UUID()
         let generation = inlinePersistenceGeneration
@@ -759,38 +905,12 @@ final class AppModel {
         pendingInlineSave = nil
         let generation = inlinePersistenceGeneration
         let expectedProject = projectID
-        var files: [InlineFileWrite] = []
-        do {
-            if let assignmentsURL {
-                files.append(InlineFileWrite(url: assignmentsURL,
-                                             data: try encodedJSON(AssignmentStore(version: 1, assignments: assignments))))
-            }
-            if let projectSettingsURL, let brollDirectoryURL, let aRollDirectoryURL {
-                files.append(InlineFileWrite(url: projectSettingsURL, data: try encodedJSON(projectSettingsSnapshot())))
-                files.append(InlineFileWrite(url: brollDirectoryURL.appendingPathComponent("broll-manifest.json"),
-                                             data: try encodedJSON(currentManifest())))
-                files.append(InlineFileWrite(url: brollDirectoryURL.appendingPathComponent("broll-for-ai.json"),
-                                             data: try encodedJSON(currentAIManifest())))
-                files.append(InlineFileWrite(url: aRollDirectoryURL.appendingPathComponent("aroll-for-codex.json"),
-                                             data: try encodedJSON(currentARollManifest())))
-                if let aRollScriptURL, FileManager.default.fileExists(atPath: aRollScriptURL.path) {
-                    files.append(InlineFileWrite(url: aRollScriptURL, data: Data(scriptText.utf8)))
-                }
-            }
-        } catch {
-            showError(title: "文案保存失败", message: error.localizedDescription)
-            return
-        }
-        let writes = files
+        let snapshot = InlinePersistenceSnapshot(script: scriptText, settings: projectSettingsSnapshot(),
+            devices: shootingDevices, roles: shootingDeviceRoles, assignmentsURL: assignmentsURL,
+            projectURL: destinationDirectoryURL, rows: rows)
+        let preferences = inlinePreferences
         inlineWriteQueue.async { [weak self] in
-            var failures: [String] = []
-            for file in writes {
-                do {
-                    try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try file.data.write(to: file.url, options: .atomic)
-                } catch { failures.append("\(file.url.lastPathComponent)：\(error.localizedDescription)") }
-            }
-            let errors = failures
+            let errors = snapshot.write(using: preferences.defaults)
             DispatchQueue.main.async {
                 guard let self, self.projectID == expectedProject, self.inlinePersistenceGeneration == generation else { return }
                 if errors.isEmpty {
@@ -881,13 +1001,16 @@ final class AppModel {
         }
     }
 
-    private static func anchorRows(from chunks: [String]) -> [AnchorRow] {
+    private static func anchorRows(from chunks: [String], reusing previous: [AnchorRow] = []) -> [AnchorRow] {
+        var hashes: [String: String] = [:]
+        for row in previous { hashes[row.text] = String(row.id.prefix(while: { $0 != "-" })) }
         var occurrences: [String: Int] = [:]
         return chunks.enumerated().map { offset, text in
-            let base = ScriptParser.hash(text)
+            let base = hashes[text] ?? ScriptParser.hash(text)
+            hashes[text] = base
             let occurrence = (occurrences[base] ?? 0) + 1
             occurrences[base] = occurrence
-            return AnchorRow(id: ScriptParser.key(for: text, occurrence: occurrence), index: offset + 1, text: text)
+            return AnchorRow(id: "\(base)-\(occurrence)", index: offset + 1, text: text)
         }
     }
 
@@ -912,6 +1035,9 @@ final class AppModel {
     }
 
     func splitInlineRow(at index: Int, text: String, selection: NSRange) {
+        let start = ProcessInfo.processInfo.systemUptime
+        let span = InlinePerformanceSpan("InlineModelUpdate")
+        defer { span.end(); InlineEditPerformance.modelFinished(since: start) }
         guard rows.indices.contains(index) else { return }
         let before = makeUndoSnapshot()
         let value = inlineText(text) as NSString
@@ -924,11 +1050,14 @@ final class AppModel {
         texts.replaceSubrange(index...index, with: [upper, lower])
         var sourceIndices = rows.indices.map { [$0] }
         sourceIndices.replaceSubrange(index...index, with: [[index], []])
-        applyInlineRows(texts, sourceIndices: sourceIndices)
+        applyInlineRows(texts, sourceIndices: sourceIndices, editorSource: index, editorTarget: index + 1)
         registerUndo(named: "拆分文案", restoring: before)
     }
 
     func mergeInlineRowWithPrevious(at index: Int, text: String) -> Int? {
+        let start = ProcessInfo.processInfo.systemUptime
+        let span = InlinePerformanceSpan("InlineModelUpdate")
+        defer { span.end(); InlineEditPerformance.modelFinished(since: start) }
         guard rows.indices.contains(index), index > 0 else { return nil }
         let before = makeUndoSnapshot()
         let insertionPoint = (rows[index - 1].text as NSString).length
@@ -936,7 +1065,7 @@ final class AppModel {
         texts.replaceSubrange((index - 1)...index, with: [rows[index - 1].text + inlineText(text)])
         var sourceIndices = rows.indices.map { [$0] }
         sourceIndices.replaceSubrange((index - 1)...index, with: [[index - 1, index]])
-        applyInlineRows(texts, sourceIndices: sourceIndices)
+        applyInlineRows(texts, sourceIndices: sourceIndices, editorSource: index, editorTarget: index - 1)
         registerUndo(named: "合并文案", restoring: before)
         return insertionPoint
     }
@@ -946,101 +1075,103 @@ final class AppModel {
             .replacingOccurrences(of: "\n", with: " ")
     }
 
-    private func applyInlineRows(_ texts: [String], sourceIndices: [[Int]]) {
+    private func applyInlineRows(_ texts: [String], sourceIndices: [[Int]], editorSource: Int? = nil, editorTarget: Int? = nil) {
+        beginScriptAnalysisBatch()
+        defer { endScriptAnalysisBatch() }
         let previousRows = rows
         let previousAssignments = assignments
         let previousNotes = anchorNotes
-        let previousRollTypeOverrides = rollTypeOverrides
-        let previousCapturedBrollRowIDs = capturedBrollRowIDs
-        let previousArollProductionMethods = arollProductionMethods
-        let previousShootingDevices = arollShootingDevices
-        let previousBrollProductionMethods = brollProductionMethods
-        let previousBrollPreparationStatuses = brollPreparationStatuses
-        let previousAnimationTasks = animationTasks
-        splitMode = .line
-        preservesEmptyAnchors = !texts.isEmpty
-        scriptText = texts.joined(separator: "\n")
-        // The source mapping is already known; avoid the general diff and a second migration pass.
-        rows = Self.anchorRows(from: texts)
-        assignments = AnchorAssignmentMigration.migrate(
-            previousAssignments,
-            from: previousRows,
-            to: rows,
-            sourceIndices: sourceIndices
-        )
-        anchorNotes = AnchorNoteMigration.migrate(
-            previousNotes,
-            from: previousRows,
-            to: rows,
-            sourceIndices: sourceIndices
-        )
-        rollTypeOverrides = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
-            guard sourceIndices.indices.contains(offset) else { return nil }
-            let inheritedType = sourceIndices[offset]
-                .compactMap { sourceIndex -> AnchorRollType? in
-                    guard previousRows.indices.contains(sourceIndex) else { return nil }
-                    return previousRollTypeOverrides[previousRows[sourceIndex].id]
+        let previousTypes = rollTypeOverrides
+        let previousCaptured = capturedBrollRowIDs
+        let previousArollMethods = arollProductionMethods
+        let previousDevices = arollShootingDevices
+        let previousBrollMethods = brollProductionMethods
+        let previousStatuses = brollPreparationStatuses
+        let nextRows = Self.anchorRows(from: texts, reusing: previousRows)
+        let oldIDs = Set(previousRows.map(\.id))
+        var nextAssignments = previousAssignments.filter { !oldIDs.contains($0.key) }
+        var notes: [String: String] = [:]
+        var types: [String: AnchorRollType] = [:]
+        var captured: Set<String> = []
+        var arollMethods: [String: ArollProductionMethod] = [:]
+        var devices: [String: ShootingDevice?] = [:]
+        var brollMethods: [String: BrollProductionMethod] = [:]
+        var statuses: [String: BrollPreparationStatus] = [:]
+        var targets = Array(repeating: [Int](), count: previousRows.count)
+        let editorDisplayID = editorSource.flatMap { previousRows.indices.contains($0) ? rowDisplayIDs[previousRows[$0].id] : nil }
+        var displayIDs: [String: UUID] = [:]
+        var usedDisplayIDs: Set<UUID> = []
+        var sourceIdentities: Set<String> = []
+        var legacyNames: Set<String> = []
+        var assetsByIdentity: [String: [BrollAsset]] = [:]
+        var assetsByLegacyName: [String: [BrollAsset]] = [:]
+
+        for (offset, row) in nextRows.enumerated() {
+            guard sourceIndices.indices.contains(offset) else { continue }
+            let sources = sourceIndices[offset].filter { previousRows.indices.contains($0) }
+            let inherited = offset == editorTarget ? editorDisplayID : sources.first.flatMap { rowDisplayIDs[previousRows[$0].id] }
+            let displayID: UUID
+            if let inherited, !usedDisplayIDs.contains(inherited), offset == editorTarget || inherited != editorDisplayID {
+                displayID = inherited
+            } else { displayID = UUID() }
+            displayIDs[row.id] = displayID
+            usedDisplayIDs.insert(displayID)
+            var noteParts: [String] = []
+            var assets: [BrollAsset] = []
+            for source in sources {
+                targets[source].append(offset)
+                let key = previousRows[source].id
+                if let note = previousNotes[key], !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    noteParts.append(note)
                 }
-                .first
-            return inheritedType.map { (row.id, $0) }
-        })
-        capturedBrollRowIDs = Set(rows.enumerated().compactMap { offset, row in
-            guard sourceIndices.indices.contains(offset) else { return nil }
-            let wasCaptured = sourceIndices[offset].contains { sourceIndex in
-                previousRows.indices.contains(sourceIndex) &&
-                    previousCapturedBrollRowIDs.contains(previousRows[sourceIndex].id)
+                if types[row.id] == nil, let value = previousTypes[key] { types[row.id] = value }
+                if arollMethods[row.id] == nil, let value = previousArollMethods[key] { arollMethods[row.id] = value }
+                if devices[row.id] == nil, let value = previousDevices[key] { devices[row.id] = .some(value) }
+                if brollMethods[row.id] == nil, let value = previousBrollMethods[key] { brollMethods[row.id] = value }
+                if statuses[row.id] == nil, let value = previousStatuses[key] { statuses[row.id] = value }
+                if previousCaptured.contains(key) { captured.insert(row.id) }
+                assets.append(contentsOf: (previousAssignments[key] ?? []).map { $0.reanchored(to: row) })
             }
-            return wasCaptured ? row.id : nil
-        })
-        arollProductionMethods = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
-            guard sourceIndices.indices.contains(offset) else { return nil }
-            let inheritedMethod = sourceIndices[offset]
-                .compactMap { sourceIndex -> ArollProductionMethod? in
-                    guard previousRows.indices.contains(sourceIndex) else { return nil }
-                    return previousArollProductionMethods[previousRows[sourceIndex].id]
+            if !noteParts.isEmpty { notes[row.id] = noteParts.joined(separator: "\n\n") }
+            if !assets.isEmpty { nextAssignments[row.id] = assets; captured.insert(row.id) }
+            for asset in assets {
+                if let directoryID = asset.sourceDirectoryID, let relativePath = asset.sourceRelativePath {
+                    let identity = sourceIdentity(directoryID: directoryID, relativePath: relativePath)
+                    sourceIdentities.insert(identity)
+                    assetsByIdentity[identity, default: []].append(asset)
+                } else {
+                    legacyNames.insert(asset.sourceName)
+                    assetsByLegacyName[asset.sourceName, default: []].append(asset)
                 }
-                .first
-            return inheritedMethod.map { (row.id, $0) }
-        })
-        arollShootingDevices = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
-            guard sourceIndices.indices.contains(offset) else { return nil }
-            let inheritedDevice = sourceIndices[offset].compactMap { sourceIndex -> ShootingDevice?? in
-                guard previousRows.indices.contains(sourceIndex) else { return nil }
-                return previousShootingDevices[previousRows[sourceIndex].id]
-            }.first
-            return inheritedDevice.map { (row.id, $0) }
-        })
-        brollProductionMethods = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
-            guard sourceIndices.indices.contains(offset) else { return nil }
-            let inheritedMethod = sourceIndices[offset]
-                .compactMap { sourceIndex -> BrollProductionMethod? in
-                    guard previousRows.indices.contains(sourceIndex) else { return nil }
-                    return previousBrollProductionMethods[previousRows[sourceIndex].id]
-                }
-                .first
-            return inheritedMethod.map { (row.id, $0) }
-        })
-        brollPreparationStatuses = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { offset, row in
-            guard sourceIndices.indices.contains(offset) else { return nil }
-            let inheritedStatus = sourceIndices[offset]
-                .compactMap { sourceIndex -> BrollPreparationStatus? in
-                    guard previousRows.indices.contains(sourceIndex) else { return nil }
-                    return previousBrollPreparationStatuses[previousRows[sourceIndex].id]
-                }
-                .first
-            return inheritedStatus.map { (row.id, $0) }
-        })
-        animationTasks = previousAnimationTasks.map { task in
+            }
+        }
+        let oldIndexByID = Dictionary(uniqueKeysWithValues: previousRows.enumerated().map { ($0.element.id, $0.offset) })
+        let tasks = animationTasks.map { task in
             var migrated = task
-            if let originalIndex = previousRows.firstIndex(where: { $0.id == task.rowID }) {
-                let targets = rows.indices.filter {
-                    sourceIndices.indices.contains($0) && sourceIndices[$0].contains(originalIndex) && rows[$0].text == task.text
-                }
-                migrated.rowID = targets.count == 1 ? rows[targets[0]].id : ""
+            if let source = oldIndexByID[task.rowID] {
+                let matches = targets[source].filter { nextRows[$0].text == task.text }
+                migrated.rowID = matches.count == 1 ? nextRows[matches[0]].id : ""
             }
             return migrated
         }
-        rebuildAssignmentIndexes()
+        splitMode = .line
+        preservesEmptyAnchors = !texts.isEmpty
+        scriptText = texts.joined(separator: "\n")
+        rowDisplayIDs = displayIDs
+        rows = nextRows
+        if assignments != nextAssignments { assignments = nextAssignments }
+        if anchorNotes != notes { anchorNotes = notes }
+        if rollTypeOverrides != types { rollTypeOverrides = types }
+        if capturedBrollRowIDs != captured { capturedBrollRowIDs = captured }
+        if arollProductionMethods != arollMethods { arollProductionMethods = arollMethods }
+        if arollShootingDevices != devices { arollShootingDevices = devices }
+        if brollProductionMethods != brollMethods { brollProductionMethods = brollMethods }
+        if brollPreparationStatuses != statuses { brollPreparationStatuses = statuses }
+        if animationTasks != tasks { animationTasks = tasks }
+        assignedSourceIdentities = sourceIdentities
+        assignedLegacySourceNames = legacyNames
+        assetsBySourceIdentity = assetsByIdentity
+        assetsByLegacySourceName = assetsByLegacyName
         scheduleInlinePersistence()
     }
 

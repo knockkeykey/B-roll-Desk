@@ -5,6 +5,7 @@ import Charts
 import ImageIO
 import QuickLookUI
 import SwiftUI
+import Observation
 import UniformTypeIdentifiers
 
 enum WindowHeaderMetrics {
@@ -391,11 +392,19 @@ private struct ListScrollbarOverlay: NSViewRepresentable {
     }
 
     private func installLater(from view: ListScrollbar, coordinator: Coordinator, attempts: Int = 20) {
+        if let scrollView = coordinator.scrollView, scrollView.window === view.window, view.window != nil,
+           scrollView.documentView != nil {
+            scrollView.hasVerticalScroller = false
+            view.needsDisplay = true
+            return
+        }
         guard !coordinator.isScheduling else { return }
         coordinator.isScheduling = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             coordinator.isScheduling = false
-            guard let scrollView = findScrollView(around: view) else {
+            guard let scrollView = (coordinator.scrollView.flatMap {
+                $0.window === view.window && $0.documentView != nil ? $0 : nil
+            }) ?? findScrollView(around: view) else {
                 if attempts > 0 {
                     installLater(from: view, coordinator: coordinator, attempts: attempts - 1)
                 }
@@ -2019,12 +2028,14 @@ private final class ScriptRowMarkerView: NSView {
 }
 
 private struct ScriptListVisibilityObserver: NSViewRepresentable {
+    let viewport: ScriptListViewport
     let onChange: ([VisibleScriptRow]) -> Void
     let onSelectRow: (String) -> Void
     let onDoubleClickRow: (String) -> Void
 
     func makeNSView(context: Context) -> ScriptListVisibilityView {
         let view = ScriptListVisibilityView()
+        viewport.view = view
         view.onChange = onChange
         view.onSelectRow = onSelectRow
         view.onDoubleClickRow = onDoubleClickRow
@@ -2091,8 +2102,32 @@ private final class ScriptListVisibilityView: NSView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: work)
     }
 
+    /// Reveal only the missing portion; already visible rows must not jump to the centre.
+    func revealIfNeeded(rowID: String) -> Bool {
+        guard let list = scrollView, list.window === window, let document = list.documentView,
+              let marker = ScriptRowMarkerView.markers(in: document).first(where: {
+                  $0.rowID == rowID && !$0.tracksTextEditing && !$0.isHiddenOrHasHiddenAncestor
+              }) else { return false }
+        let clip = list.contentView
+        var target = marker.convert(marker.bounds, to: clip)
+        if let editor = window?.firstResponder as? AnchorTextView, editor.isDescendant(of: document),
+           marker.convert(marker.bounds, to: document).intersects(editor.convert(editor.bounds, to: document)),
+           let window {
+            let caret = editor.firstRect(forCharacterRange: editor.selectedRange(), actualRange: nil)
+            if !caret.isEmpty { target = clip.convert(window.convertFromScreen(caret), from: nil).insetBy(dx: 0, dy: -6) }
+        }
+        if clip.bounds.contains(target) { return true }
+        let delta = target.minY < clip.bounds.minY ? target.minY - clip.bounds.minY : target.maxY - clip.bounds.maxY
+        let y = min(max(clip.bounds.minY + delta, document.bounds.minY),
+                    max(document.bounds.minY, document.bounds.maxY - clip.bounds.height))
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+        list.reflectScrolledClipView(clip)
+        return true
+    }
+
     private func updateVisibleRows() {
-        guard let list = enclosingListScrollView(around: self), let document = list.documentView else {
+        let cached = scrollView.flatMap { $0.window === window && $0.documentView === documentView ? $0 : nil }
+        guard let list = cached ?? enclosingListScrollView(around: self), let document = list.documentView else {
             if attachmentAttempts < 20 { attachmentAttempts += 1; scheduleUpdate() }
             return
         }
@@ -2744,6 +2779,22 @@ private struct ScriptTimelineNavigator: View {
     }
 }
 
+@Observable private final class InlineEditingDraft {
+    var text = ""
+    @ObservationIgnored var activeSession = UUID()
+    @ObservationIgnored var cursor = 0
+    @ObservationIgnored var isApplyingStructure = false
+}
+
+private struct InlineScrollRequest: Equatable {
+    let rowID: String
+    let session: UUID
+}
+
+@MainActor private final class ScriptListViewport {
+    weak var view: ScriptListVisibilityView?
+}
+
 private struct AnchorListView: View {
     @Bindable var model: AppModel
     @Binding var isSidebarVisible: Bool
@@ -2752,11 +2803,16 @@ private struct AnchorListView: View {
     @State private var isSearchVisible = false
     @FocusState private var isSearchFocused: Bool
     @State private var editingIndex: Int?
-    @State private var editingText = ""
-    @State private var editingCursor = 0
+    @State private var editingDisplayID: UUID?
+    @State private var editingDraft = InlineEditingDraft()
+    private var editingCursor: Int {
+        get { editingDraft.cursor }
+        nonmutating set { editingDraft.cursor = newValue }
+    }
     @State private var editingSession = UUID()
     @State private var editingTarget: InlineEditTarget?
-    @State private var pendingScrollRowID: String?
+    @State private var pendingScrollRequest: InlineScrollRequest?
+    @State private var listViewport = ScriptListViewport()
     @State private var revealedDeleteRowID: String?
     @State private var rowPulse: AnchorRowPulse?
     @State private var bindingExitTokens: [String: UUID] = [:]
@@ -2769,15 +2825,27 @@ private struct AnchorListView: View {
         nonmutating set { model.scriptTimeline.selectedRowID = newValue }
     }
 
+    private var listSelection: Binding<UUID?> {
+        Binding(get: {
+            if let editingDisplayID { return editingDisplayID }
+            return selectedScriptRowID.flatMap { model.scriptRowDisplayID(for: $0) }
+        }, set: { displayID in
+            selectedScriptRowID = displayID.flatMap { id in
+                model.displayedScriptRows(model.rows).first(where: { $0.id == id })?.row.id
+            }
+        })
+    }
+
     var body: some View {
         @Bindable var timeline = model.scriptTimeline
         let distribution = model.scriptDistribution
-        let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
-        let rowAttributes = model.rows.map(model.filterAttributes(for:))
+        let analysis = model.scriptListAnalysis
+        let boundRowIDs = analysis.boundRowIDs
+        let rowAttributes = analysis.attributes
         let filteredRows = model.filteredRows.filter { isListed($0, attributes: rowAttributes) }
         let hasActiveFilters = rowFilter.isActive
         let isNarrowingRows = hasActiveFilters || !model.anchorSearchText.isEmpty
-        let countableAttributes = rowAttributes.filter { !$0.isBlank }
+        let countableAttributes = analysis.countableAttributes
         let visibleCount = filteredRows.filter { !rowAttributes[$0.index - 1].isBlank }.count
         let matchedRowIDs: Set<String>? = isNarrowingRows ? Set(filteredRows.map(\.id)) : nil
 
@@ -2870,8 +2938,9 @@ private struct AnchorListView: View {
                 .modifier(ScriptFileDropTargetModifier { model.importScript(from: $0) })
             } else {
                 ScrollViewReader { proxy in
-                    List(selection: $timeline.selectedRowID) {
-                        ForEach(filteredRows) { row in
+                    List(selection: listSelection) {
+                        ForEach(model.displayedScriptRows(filteredRows)) { displayed in
+                            let row = displayed.row
                             SwipeToDeleteAnchorRow(
                                 rowID: row.id,
                                 revealedRowID: $revealedDeleteRowID,
@@ -2881,25 +2950,29 @@ private struct AnchorListView: View {
                                 AnchorRowView(
                                     row: row,
                                     model: model,
-                                    isEditing: editingIndex == row.index - 1 && editingTarget?.rowID == row.id
+                                    isEditing: editingDisplayID == displayed.id
                                         && editingTarget?.resetID == model.inlineEditingResetID,
                                     isSelected: selectedScriptRowID == row.id,
-                                    editingText: $editingText,
+                                    editingDraft: editingDraft,
                                     editingCursor: editingCursor,
                                     editingSession: editingSession,
                                     beginEditing: { beginEditing(row) },
                                     finishEditing: { session in finishEditing(session: session) },
                                     splitAtSelection: { text, selection in
-                                        splitRow(row, text: text, selection: selection)
+                                        guard let index = editingIndex, model.rows.indices.contains(index) else { return }
+                                        splitRow(model.rows[index], text: text, selection: selection)
                                     },
-                                    mergeWithPrevious: { text in mergeRow(row, text: text) },
+                                    mergeWithPrevious: { text in
+                                        guard let index = editingIndex, model.rows.indices.contains(index) else { return }
+                                        mergeRow(model.rows[index], text: text)
+                                    },
                                     pulse: rowPulse?.pulse(for: row.id),
                                     onBindingStarted: { retainRowForBinding(row.id) },
                                     onBindingFinished: { finishBindingExit(row.id) }
                                 )
                             }
-                            .id(row.id)
-                            .tag(row.id)
+                            .id(displayed.id)
+                            .tag(displayed.id)
                             .background(ScriptRowVisibilityMarker(rowID: row.id).accessibilityHidden(true))
                             .opacity(fadingBoundRowIDs.contains(row.id) ? 0 : 1)
                             .scaleEffect(fadingBoundRowIDs.contains(row.id) ? 0.96 : 1)
@@ -2915,7 +2988,7 @@ private struct AnchorListView: View {
                         AnchorListDropOutline(feedback: model.dropFeedback)
                     }
                     .background {
-                        ScriptListVisibilityObserver(onChange: { [timeline] in timeline.visibleRows = $0 },
+                        ScriptListVisibilityObserver(viewport: listViewport, onChange: { [timeline] in timeline.visibleRows = $0 },
                                                      onSelectRow: selectScriptRow,
                                                      onDoubleClickRow: beginEditingRow)
                             .accessibilityHidden(true)
@@ -2926,13 +2999,15 @@ private struct AnchorListView: View {
                             .accessibilityHidden(true)
                     }
                     .onDrop(of: [UTType.fileURL], delegate: AnchorListDropDelegate(feedback: model.dropFeedback))
-                    .onChange(of: pendingScrollRowID) { _, rowID in
-                        guard let rowID else { return }
+                    .onChange(of: pendingScrollRequest) { _, request in
+                        guard let request else { return }
                         DispatchQueue.main.async {
-                            proxy.scrollTo(rowID, anchor: .center)
-                            if pendingScrollRowID == rowID {
-                                pendingScrollRowID = nil
+                            guard pendingScrollRequest == request, editingSession == request.session else { return }
+                            let handled = listViewport.view?.revealIfNeeded(rowID: request.rowID) ?? false
+                            if !handled, let displayID = model.scriptRowDisplayID(for: request.rowID) {
+                                proxy.scrollTo(displayID, anchor: .center)
                             }
+                            if pendingScrollRequest == request { pendingScrollRequest = nil }
                         }
                     }
                 }
@@ -2989,6 +3064,7 @@ private struct AnchorListView: View {
             if let request { revealTimelineRow(request.rowID) }
         }
         .onChange(of: model.rows.map(\.id)) { _, rowIDs in
+            guard !editingDraft.isApplyingStructure else { return }
             if let editingTarget, let index = editingIndex,
                !editingTarget.canCommit(session: editingSession, resetID: model.inlineEditingResetID,
                                         at: index, in: model.rows) { cancelInlineEditing() }
@@ -3092,7 +3168,7 @@ private struct AnchorListView: View {
             rowFilter.reset()
             resetBindingExits()
         }
-        pendingScrollRowID = rowID
+        pendingScrollRequest = InlineScrollRequest(rowID: rowID, session: editingSession)
     }
 
     private func isListed(_ row: AnchorRow, attributes: [ScriptRowFilter.Attributes]) -> Bool {
@@ -3280,10 +3356,12 @@ private struct AnchorListView: View {
         }
         selectedScriptRowID = row.id
         model.anchorSearchText = ""
-        editingText = row.text
+        editingDraft.text = row.text
         editingCursor = (row.text as NSString).length
         editingSession = UUID()
+        editingDraft.activeSession = editingSession
         editingTarget = InlineEditTarget(rowID: row.id, session: editingSession, resetID: model.inlineEditingResetID)
+        editingDisplayID = model.displayedScriptRows([row]).first?.id
         withAnimation(rowEditAnimation) {
             editingIndex = row.index - 1
         }
@@ -3302,7 +3380,9 @@ private struct AnchorListView: View {
             cancelInlineEditing()
             return
         }
-        let text = editingText
+        let text = editingDraft.text
+        editingDisplayID = nil
+        editingDraft.activeSession = UUID()
         editingIndex = nil
         self.editingTarget = nil
         guard model.rows.indices.contains(index), model.rows[index].text != text else { return }
@@ -3313,24 +3393,31 @@ private struct AnchorListView: View {
 
     private func cancelInlineEditing() {
         editingSession = UUID()
+        editingDraft.activeSession = editingSession
         editingTarget = nil
+        editingDisplayID = nil
         editingIndex = nil
-        editingText = ""
+        editingDraft.text = ""
     }
 
     private func splitRow(_ row: AnchorRow, text: String, selection: NSRange) {
-        guard editingIndex == row.index - 1 else { return }
+        guard editingIndex == row.index - 1, let target = editingTarget,
+              target.canCommit(session: editingSession, resetID: model.inlineEditingResetID,
+                                      at: row.index - 1, in: model.rows) else { return }
         let index = row.index - 1
+        editingDraft.isApplyingStructure = true
+        defer { editingDraft.isApplyingStructure = false }
         editingSession = UUID()
+        editingDraft.activeSession = editingSession
         withAnimation(rowEditAnimation) {
             model.splitInlineRow(at: index, text: text, selection: selection)
             editingIndex = index + 1
-            editingText = model.rows[index + 1].text
+            editingDraft.text = model.rows[index + 1].text
             editingCursor = 0
             editingTarget = InlineEditTarget(rowID: model.rows[index + 1].id, session: editingSession,
                                              resetID: model.inlineEditingResetID)
         }
-        pendingScrollRowID = model.rows[index + 1].id
+        pendingScrollRequest = InlineScrollRequest(rowID: model.rows[index + 1].id, session: editingSession)
         selectedScriptRowID = model.rows[index + 1].id
         triggerPulse([
             model.rows[index].id: .splitSource,
@@ -3339,10 +3426,15 @@ private struct AnchorListView: View {
     }
 
     private func mergeRow(_ row: AnchorRow, text: String) {
-        guard editingIndex == row.index - 1 else { return }
+        guard editingIndex == row.index - 1, let target = editingTarget,
+              target.canCommit(session: editingSession, resetID: model.inlineEditingResetID,
+                                      at: row.index - 1, in: model.rows) else { return }
         let index = row.index - 1
         guard index > 0 else { return }
+        editingDraft.isApplyingStructure = true
+        defer { editingDraft.isApplyingStructure = false }
         editingSession = UUID()
+        editingDraft.activeSession = editingSession
         var mergedCursor: Int?
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -3350,14 +3442,14 @@ private struct AnchorListView: View {
             mergedCursor = model.mergeInlineRowWithPrevious(at: index, text: text)
             if let mergedCursor {
                 editingIndex = index - 1
-                editingText = model.rows[index - 1].text
+                editingDraft.text = model.rows[index - 1].text
                 editingCursor = mergedCursor
                 editingTarget = InlineEditTarget(rowID: model.rows[index - 1].id, session: editingSession,
                                                  resetID: model.inlineEditingResetID)
             }
         }
         guard mergedCursor != nil else { return }
-        pendingScrollRowID = model.rows[index - 1].id
+        pendingScrollRequest = InlineScrollRequest(rowID: model.rows[index - 1].id, session: editingSession)
         selectedScriptRowID = model.rows[index - 1].id
         triggerPulse([model.rows[index - 1].id: .merged])
     }
@@ -3664,7 +3756,7 @@ private struct AnchorRowView: View {
     @Bindable var model: AppModel
     let isEditing: Bool
     let isSelected: Bool
-    @Binding var editingText: String
+    @Bindable var editingDraft: InlineEditingDraft
     let editingCursor: Int
     let editingSession: UUID
     let beginEditing: () -> Void
@@ -3845,16 +3937,16 @@ private struct AnchorRowView: View {
                     }
                     if isEditing {
                         InlineAnchorEditor(
-                            text: $editingText,
+                            draft: editingDraft,
                             initialCursor: editingCursor,
                             session: editingSession,
+                            isCurrentSession: { editingDraft.activeSession == $0 },
                             onFinish: finishEditing,
                             onSplit: splitAtSelection,
                             onMerge: mergeWithPrevious,
                             onUndo: model.undo,
                             onRedo: model.redo
                         )
-                        .id(editingSession)
                         .frame(minHeight: 22)
                         .transition(.opacity)
                     } else {
@@ -3925,6 +4017,9 @@ private struct AnchorRowView: View {
         .onChange(of: pulse) { _, _ in runPulse() }
         .onChange(of: isEditing) { _, editing in
             if editing { runEditingEntryMotion() }
+        }
+        .onChange(of: editingSession) { _, _ in
+            if isEditing { runEditingEntryMotion() }
         }
         .task(id: animationCopyToken) {
             guard animationCopyToken != nil else { return }
@@ -4567,9 +4662,10 @@ private struct PendingAssetChip: View {
 }
 
 private struct InlineAnchorEditor: NSViewRepresentable {
-    @Binding var text: String
+    @Bindable var draft: InlineEditingDraft
     let initialCursor: Int
     let session: UUID
+    let isCurrentSession: (UUID) -> Bool
     let onFinish: (UUID) -> Void
     let onSplit: (String, NSRange) -> Void
     let onMerge: (String) -> Void
@@ -4581,7 +4677,7 @@ private struct InlineAnchorEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> AnchorTextView {
         let view = AnchorTextView()
         view.delegate = context.coordinator
-        view.string = text
+        view.string = draft.text
         view.font = .systemFont(ofSize: 16)
         view.textColor = .labelColor
         view.drawsBackground = false
@@ -4593,11 +4689,15 @@ private struct InlineAnchorEditor: NSViewRepresentable {
         view.textContainer?.heightTracksTextView = true
         view.textContainer?.lineFragmentPadding = 0
         view.textContainerInset = .zero
-        view.onSplit = { [weak coordinator = context.coordinator] value, selection in
-            coordinator?.parent.onSplit(value, selection)
+        view.onSplit = { [weak view, weak coordinator = context.coordinator] value, selection in
+            guard let view, let coordinator, coordinator.parent.isCurrentSession(coordinator.creationSession) else { return }
+            coordinator.parent.onSplit(value, selection)
+            coordinator.synchronize(view)
         }
-        view.onMerge = { [weak coordinator = context.coordinator] value in
-            coordinator?.parent.onMerge(value)
+        view.onMerge = { [weak view, weak coordinator = context.coordinator] value in
+            guard let view, let coordinator, coordinator.parent.isCurrentSession(coordinator.creationSession) else { return }
+            coordinator.parent.onMerge(value)
+            coordinator.synchronize(view)
         }
         view.onUndo = { [weak coordinator = context.coordinator] in coordinator?.parent.onUndo() }
         view.onRedo = { [weak coordinator = context.coordinator] in coordinator?.parent.onRedo() }
@@ -4607,44 +4707,74 @@ private struct InlineAnchorEditor: NSViewRepresentable {
         }
 
         let cursor = initialCursor
-        DispatchQueue.main.async { [weak view] in
-            guard let view, let window = view.window else { return }
-            window.makeFirstResponder(view)
+        let timingToken = InlineEditPerformance.token
+        InlineEditPerformance.displayed(timingToken)
+        view.onAttached = { [weak coordinator = context.coordinator] view in
+            guard let coordinator, coordinator.parent.isCurrentSession(coordinator.creationSession),
+                  let window = view.window else { return }
             view.setSelectedRange(NSRange(location: min(cursor, (view.string as NSString).length), length: 0))
+            window.makeFirstResponder(view)
+            if window.firstResponder === view {
+                view.onAttached = nil
+                InlineEditPerformance.ready(timingToken)
+            }
         }
         return view
     }
 
     func updateNSView(_ view: AnchorTextView, context: Context) {
         context.coordinator.parent = self
-        if view.string != text {
-            view.string = text
+        context.coordinator.creationSession = session
+        if view.string != draft.text {
+            view.string = draft.text
         }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: AnchorTextView, context: Context) -> CGSize? {
         let width = max(proposal.width ?? 300, 40)
-        let displayText = text.isEmpty ? " " : text
+        if let cached = context.coordinator.measuredSize,
+           context.coordinator.measuredText == draft.text, context.coordinator.measuredWidth == width { return cached }
+        let displayText = draft.text.isEmpty ? " " : draft.text
         let bounds = (displayText as NSString).boundingRect(
             with: CGSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: NSFont.systemFont(ofSize: 16)]
         )
-        return CGSize(width: width, height: max(22, ceil(bounds.height) + 2))
+        let size = CGSize(width: width, height: max(22, ceil(bounds.height) + 2))
+        context.coordinator.measuredText = draft.text
+        context.coordinator.measuredWidth = width
+        context.coordinator.measuredSize = size
+        return size
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: InlineAnchorEditor
-        let creationSession: UUID
+        var creationSession: UUID
+        var measuredText: String?
+        var measuredWidth: CGFloat?
+        var measuredSize: CGSize?
 
         init(parent: InlineAnchorEditor) {
             self.parent = parent
             creationSession = parent.session
         }
 
+        @MainActor func synchronize(_ view: AnchorTextView) {
+            guard parent.isCurrentSession(parent.draft.activeSession) else { return }
+            creationSession = parent.draft.activeSession
+            view.string = parent.draft.text
+            view.setSelectedRange(NSRange(location: min(parent.draft.cursor, (view.string as NSString).length), length: 0))
+            if view.window?.firstResponder === view {
+                let token = InlineEditPerformance.token
+                InlineEditPerformance.displayed(token)
+                InlineEditPerformance.ready(token)
+            }
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
-            parent.text = view.string
+            guard parent.isCurrentSession(creationSession) else { return }
+            parent.draft.text = view.string
         }
 
         func textDidEndEditing(_ notification: Notification) {
@@ -4654,6 +4784,11 @@ private struct InlineAnchorEditor: NSViewRepresentable {
 }
 
 private final class AnchorTextView: NSTextView {
+    var onAttached: ((AnchorTextView) -> Void)?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { onAttached?(self) }
+    }
     var onSplit: ((String, NSRange) -> Void)?
     var onMerge: ((String) -> Void)?
     var onEscape: (() -> Void)?
@@ -4682,12 +4817,14 @@ private final class AnchorTextView: NSTextView {
 
         let hasCommandModifier = !event.modifierFlags.intersection([.command, .control, .option]).isEmpty
         if !hasCommandModifier && (event.keyCode == 36 || event.keyCode == 76) {
+            InlineEditPerformance.begin("split")
             onSplit?(string, selectedRange())
             return
         }
         if !hasCommandModifier && event.keyCode == 51 {
             let selection = selectedRange()
             if selection.location == 0 && selection.length == 0 {
+                InlineEditPerformance.begin("merge")
                 onMerge?(string)
                 return
             }
