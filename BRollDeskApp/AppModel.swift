@@ -44,7 +44,6 @@ final class AppModel {
     var splitMode: SplitMode
     private var preservesEmptyAnchors: Bool
     var prefix: String
-    private(set) var pacingSettings: ARollPacingSettings
     private(set) var shootingDevices: [ShootingDevice] = ShootingDevice.defaults
     var anchorSearchText = ""
     let scriptTimeline = ScriptTimelineState()
@@ -159,9 +158,6 @@ final class AppModel {
     private let brollProductionMethodsKey = "broll-namer-production-methods"
     private let brollPreparationStatusesKey = "broll-namer-preparation-statuses"
     private let prefixKey = "broll-namer-prefix"
-    private let pacingRateKey = "broll-namer-pacing-characters-per-minute"
-    private let pacingThresholdKey = "broll-namer-pacing-maximum-continuous-seconds"
-    private let pacingEnabledKey = "broll-namer-pacing-reminders-enabled"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
     private let savedDirectoriesKey = "broll-namer-saved-directories"
@@ -181,12 +177,6 @@ final class AppModel {
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
         preservesEmptyAnchors = defaults.bool(forKey: preservesEmptyAnchorsKey)
         prefix = defaults.string(forKey: prefixKey) ?? ""
-        pacingSettings = ARollPacingSettings(
-            charactersPerMinute: defaults.integer(forKey: pacingRateKey),
-            maximumContinuousSeconds: defaults.double(forKey: pacingThresholdKey),
-            remindersEnabled: defaults.object(forKey: pacingEnabledKey) == nil
-                ? true : defaults.bool(forKey: pacingEnabledKey)
-        )
         anchorNotes = defaults.dictionary(forKey: anchorNotesKey) as? [String: String] ?? [:]
         rollTypeOverrides = (defaults.dictionary(forKey: rollTypeOverridesKey) ?? [:]).compactMapValues { value in
             guard let rawValue = value as? String else { return nil }
@@ -395,17 +385,6 @@ final class AppModel {
         let query = anchorSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return rows }
         return rows.filter { $0.text.localizedCaseInsensitiveContains(query) }
-    }
-
-    var aRollPacingHints: [String: ARollPacingHint] {
-        ARollPacing.hints(for: rows, settings: pacingSettings, rollType: { rollType(for: $0) })
-    }
-
-    func updatePacingSettings(_ settings: ARollPacingSettings) {
-        pacingSettings = settings
-        defaults.set(settings.charactersPerMinute, forKey: pacingRateKey)
-        defaults.set(settings.maximumContinuousSeconds, forKey: pacingThresholdKey)
-        defaults.set(settings.remindersEnabled, forKey: pacingEnabledKey)
     }
 
     private func rebuildVisibleSourceFiles() {

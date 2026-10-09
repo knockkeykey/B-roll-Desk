@@ -857,113 +857,17 @@ private struct SidebarView: View {
 
 private struct AppSettingsPopover: View {
     @Bindable var model: AppModel
-    @State private var rateText: String
-    @State private var thresholdText: String
-
-    init(model: AppModel) {
-        self.model = model
-        _rateText = State(initialValue: String(model.pacingSettings.charactersPerMinute))
-        _thresholdText = State(initialValue: model.pacingSettings.thresholdLabel)
-    }
-
-    private var parsedRate: Int? {
-        guard let value = Int(rateText.trimmingCharacters(in: .whitespaces)), value > 0 else { return nil }
-        return value
-    }
-
-    private var parsedThreshold: Double? {
-        let text = thresholdText.trimmingCharacters(in: .whitespaces)
-        let value = Double(text) ?? Double(text.replacingOccurrences(of: ",", with: "."))
-        guard let value, value.isFinite, value > 0 else { return nil }
-        return value
-    }
-
-    private func applyDraft() {
-        guard let rate = parsedRate, let threshold = parsedThreshold else { return }
-        model.updatePacingSettings(ARollPacingSettings(
-            charactersPerMinute: rate,
-            maximumContinuousSeconds: threshold,
-            remindersEnabled: model.pacingSettings.remindersEnabled
-        ))
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("设置")
                 .font(.system(size: 17, weight: .semibold))
             Divider()
-            Text("文案语速与提醒")
-                .font(.system(size: 14, weight: .medium))
-
-            HStack {
-                Text("估算语速")
-                Spacer()
-                HStack(spacing: 6) {
-                    TextField("350", text: $rateText)
-                        .accessibilityLabel("估算语速")
-                        .frame(width: 80)
-                    Text("字/分钟").foregroundStyle(.secondary)
-                }
-            }
-
-            Toggle("连续 A-roll 时长提醒", isOn: Binding(
-                get: { model.pacingSettings.remindersEnabled },
-                set: { enabled in
-                    model.updatePacingSettings(ARollPacingSettings(
-                        charactersPerMinute: model.pacingSettings.charactersPerMinute,
-                        maximumContinuousSeconds: model.pacingSettings.maximumContinuousSeconds,
-                        remindersEnabled: enabled
-                    ))
-                }
-            ))
-            .toggleStyle(.switch)
-
-            HStack {
-                Text("连续超过")
-                Spacer()
-                HStack(spacing: 6) {
-                    TextField("5", text: $thresholdText)
-                        .accessibilityLabel("连续 A-roll 提醒时长")
-                        .frame(width: 80)
-                    Text("秒时提醒").foregroundStyle(.secondary)
-                }
-            }
-            .disabled(!model.pacingSettings.remindersEnabled)
-
-            if parsedRate == nil || parsedThreshold == nil {
-                Text("语速请输入大于 0 的整数；提醒秒数请输入大于 0 的数字。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Text("按整篇文案累计连续 A-roll 时长，B-roll 会中断计时。忽略标点和空白，实际节奏以口播为准。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Text("语速和提醒修改后自动保存。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Button("恢复默认") {
-                    let settings = ARollPacingSettings()
-                    rateText = String(settings.charactersPerMinute)
-                    thresholdText = settings.thresholdLabel
-                    model.updatePacingSettings(settings)
-                }
-                .controlSize(.small)
-            }
-
-            Divider()
             ShootingDeviceSettingsView(model: model)
         }
         .textFieldStyle(.roundedBorder)
         .padding(20)
         .frame(width: 360)
-        .onChange(of: rateText) { _, _ in applyDraft() }
-        .onChange(of: thresholdText) { _, _ in applyDraft() }
     }
 }
 
@@ -2849,7 +2753,6 @@ private struct AnchorListView: View {
 
     var body: some View {
         @Bindable var timeline = model.scriptTimeline
-        let pacingHints = model.aRollPacingHints
         let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
         let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
         let rowAttributes = model.rows.map(model.filterAttributes(for:))
@@ -2971,7 +2874,6 @@ private struct AnchorListView: View {
                                         splitRow(row, text: text, selection: selection)
                                     },
                                     mergeWithPrevious: { text in mergeRow(row, text: text) },
-                                    pacingHint: pacingHints[row.id],
                                     pulse: rowPulse?.pulse(for: row.id),
                                     onBindingStarted: { retainRowForBinding(row.id) },
                                     onBindingFinished: { finishBindingExit(row.id) }
@@ -3708,7 +3610,6 @@ private struct AnchorRowView: View {
     let finishEditing: (UUID) -> Void
     let splitAtSelection: (String, NSRange) -> Void
     let mergeWithPrevious: (String) -> Void
-    let pacingHint: ARollPacingHint?
     var pulse: AnchorRowPulse.Target? = nil
     var onBindingStarted: () -> Void = {}
     var onBindingFinished: () -> Void = {}
@@ -3720,7 +3621,6 @@ private struct AnchorRowView: View {
     @State private var editEntryGlow: Double = 0
     @State private var editEntryScale: CGFloat = 1
     @State private var isNoteEditorPresented = false
-    @State private var isPacingDetailsPresented = false
     @State private var noteDraft = ""
     @State private var didCopyAnimationPrompt = false
     @State private var animationCopyToken: UUID?
@@ -3819,10 +3719,6 @@ private struct AnchorRowView: View {
                         Text("\(String(format: "%02d", row.index))  BR\(String(format: "%03d", row.index))")
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(isDropTarget ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
-                        if let pacingHint, !isBroll, !isEditing {
-                            ARollPacingReminder(hint: pacingHint, isExpanded: $isPacingDetailsPresented)
-                            .padding(.leading, 7)
-                        }
                         Spacer(minLength: 8)
                         Button {
                             noteDraft = rowNote
@@ -3935,16 +3831,6 @@ private struct AnchorRowView: View {
                 BindingProgressChip()
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            if let pacingHint, isPacingDetailsPresented, !isBroll, !isEditing {
-                ARollPacingDetails(hint: pacingHint) {
-                    isPacingDetailsPresented = false
-                    // Use the existing roll-type action so this remains undoable.
-                    if model.rollType(for: row.id) == .aRoll {
-                        model.toggleRollType(for: row.id)
-                    }
-                }
-                .padding(.leading, 28)
-            }
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 12)
@@ -3975,9 +3861,6 @@ private struct AnchorRowView: View {
         .onChange(of: isEditing) { _, editing in
             if editing { runEditingEntryMotion() }
         }
-        .onChange(of: pacingHint) { _, hint in
-            if hint == nil { isPacingDetailsPresented = false }
-        }
         .task(id: animationCopyToken) {
             guard animationCopyToken != nil else { return }
             do {
@@ -3995,81 +3878,6 @@ private struct AnchorRowView: View {
         .animation(.snappy(duration: 0.2), value: assets.count)
         .animation(.snappy(duration: 0.2), value: isPendingBinding)
         .animation(.snappy(duration: 0.2), value: isBinding)
-    }
-}
-
-private struct ARollPacingReminder: View {
-    let hint: ARollPacingHint
-    @Binding var isExpanded: Bool
-    @State private var isHovered = false
-
-    // Muted amber stays distinct from green preparation states in both appearances.
-    static let tint = Color(nsColor: .systemOrange).opacity(0.72)
-
-    private var elapsed: String { String(format: "%.1f", hint.cumulativeSeconds) }
-
-    var body: some View {
-        Button {
-            isExpanded.toggle()
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "clock")
-                    .font(.system(size: 9))
-                Text("连续 ≈\(elapsed)s")
-                    .font(.system(size: 10, weight: .regular).monospacedDigit())
-            }
-            .foregroundStyle(Self.tint.opacity(isHovered || isExpanded ? 1 : 0.78))
-            .padding(.horizontal, 4)
-            .frame(height: 22)
-            .background(Self.tint.opacity(isHovered || isExpanded ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 4))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .onHover { isHovered = $0 }
-        .help("截至本条，连续 A-roll 约 \(elapsed) 秒，建议补一段 B-roll。点击查看。")
-        .accessibilityLabel("连续 A-roll 约 \(elapsed) 秒，超过 \(hint.settings.thresholdLabel) 秒，建议补充 B-roll")
-        .accessibilityValue(isExpanded ? "已展开" : "已收起")
-        .accessibilityHint("展开或收起估算说明，并可将本条设为 B-roll")
-        .pointerCursor()
-    }
-}
-
-private struct ARollPacingDetails: View {
-    let hint: ARollPacingHint
-    let onMarkBroll: () -> Void
-
-    private var range: String {
-        hint.startRowIndex == hint.endRowIndex
-            ? "第 \(hint.startRowIndex) 条"
-            : "第 \(hint.startRowIndex)–\(hint.endRowIndex) 条"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-            Text("这里可以补一段 B-roll")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                Text("\(range) · 整段约 \(String(format: "%.1f", hint.totalSeconds)) 秒")
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Button("将本条设为 B-roll", action: onMarkBroll)
-                    .controlSize(.small)
-                    .pointerCursor()
-            }
-            Text("只补一部分时，双击文案并按回车拆分，再标记 B-roll。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("按 \(hint.settings.charactersPerMinute) 字/分钟、连续 \(hint.settings.thresholdLabel) 秒估算，忽略标点和空白；实际节奏以口播为准。")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.top, 2)
     }
 }
 
