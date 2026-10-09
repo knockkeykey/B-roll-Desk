@@ -379,12 +379,6 @@ final class AppModel {
         }
     }
 
-    func arollProductionMethodCount(_ method: ArollProductionMethod) -> Int {
-        meaningfulRows.reduce(0) {
-            $0 + (rollType(for: $1.id) == .aRoll && arollProductionMethod(for: $1.id) == method ? 1 : 0)
-        }
-    }
-
     func arollShootingDeviceCount(_ deviceID: String?) -> Int {
         meaningfulRows.reduce(0) {
             $0 + (rollType(for: $1.id) == .aRoll && shootingDevice(for: $1.id)?.id == deviceID ? 1 : 0)

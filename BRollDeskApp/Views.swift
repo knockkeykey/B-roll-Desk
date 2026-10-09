@@ -1742,10 +1742,6 @@ private struct ArollStatisticsView: View {
 
     var body: some View {
         let total = model.aRollAnchorCount
-        let methodStats = ArollProductionMethod.allCases.map {
-            ColoredCategoryStat(id: $0.id, title: $0.title,
-                                count: model.arollProductionMethodCount($0), color: $0.color)
-        }
         let devices = ArollStatisticsPalette.devices(in: model)
         let deviceStats = devices.map { device in
             ColoredCategoryStat(id: "device-\(device.id)", title: device.name,
@@ -1759,7 +1755,6 @@ private struct ArollStatisticsView: View {
             Label("A-roll 统计", systemImage: "person.crop.rectangle")
                 .font(.caption.weight(.semibold))
 
-            ArollCategoryDonutView(title: "制作方式占比", statistics: methodStats, total: total)
             ArollCategoryDonutView(title: "拍摄设备占比", statistics: deviceStats, total: total)
 
             Text("占比以全部 A-roll 文案为基数")
