@@ -46,11 +46,11 @@ struct BRollDeskApp: App {
 
                 Divider()
 
-                Button("在 Finder 新标签页中打开给 Codex 的 JSON 对照表") {
+                Button("在 Finder 新标签页中打开给 AI 的 JSON 对照表") {
                     model.revealManifest()
                 }
 
-                Button("预览给 Codex 的 JSON 对照表") {
+                Button("预览给 AI 的 JSON 对照表") {
                     model.previewManifest()
                 }
             }

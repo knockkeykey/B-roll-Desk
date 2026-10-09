@@ -933,21 +933,21 @@ struct BrollManifest: Codable, Hashable {
     let placements: [ManifestPlacement]
 }
 
-struct CodexBrollPlacement: Codable, Hashable {
+struct AIBrollPlacement: Codable, Hashable {
     let text: String
     let files: [String]
 }
 
-struct CodexBrollManifest: Codable, Hashable {
-    let placements: [CodexBrollPlacement]
+struct AIBrollManifest: Codable, Hashable {
+    let placements: [AIBrollPlacement]
     var defaultAudio = "preserve"
 
-    init(placements: [CodexBrollPlacement]) { self.placements = placements }
+    init(placements: [AIBrollPlacement]) { self.placements = placements }
 
     private enum CodingKeys: String, CodingKey { case placements, defaultAudio }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        placements = try c.decode([CodexBrollPlacement].self, forKey: .placements)
+        placements = try c.decode([AIBrollPlacement].self, forKey: .placements)
         defaultAudio = "preserve"
     }
 }

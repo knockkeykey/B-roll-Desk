@@ -125,8 +125,8 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         expect(model.aRollVideoDisplayName == "A-roll.mov", "Auxiliary footage is not mistaken for the main upload")
         let auxManifest = try JSONDecoder().decode(CodexARollManifest.self,
             from: Data(contentsOf: project.appendingPathComponent("A-roll/aroll-for-codex.json")))
-        let bManifest = try JSONDecoder().decode(CodexBrollManifest.self,
-            from: Data(contentsOf: project.appendingPathComponent("B-roll/broll-for-codex.json")))
+        let bManifest = try JSONDecoder().decode(AIBrollManifest.self,
+            from: Data(contentsOf: project.appendingPathComponent("B-roll/broll-for-ai.json")))
         expect(auxManifest.placements.count == 1 && auxManifest.placements[0].text == model.rows[0].text
                && auxManifest.placements[0].device == dji && auxManifest.placements[0].files == [auxiliary.outputName], "Auxiliary manifest binds exact text, device and files")
         expect(bManifest.placements.count == 1 && bManifest.defaultAudio == "preserve", "B-roll export excludes auxiliary rows and preserves audio")
@@ -138,7 +138,7 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         let legacyAsset = try JSONDecoder().decode(BrollAsset.self, from: JSONSerialization.data(withJSONObject: legacyAssetJSON))
         expect(legacyAsset.archiveDirectory == .bRoll && legacyAsset.audio == "preserve",
                "Legacy bindings default to B-roll and no longer instruct audio deletion")
-        let legacyManifest = try JSONDecoder().decode(CodexBrollManifest.self, from: Data("{\"placements\":[]}".utf8))
+        let legacyManifest = try JSONDecoder().decode(AIBrollManifest.self, from: Data("{\"placements\":[]}".utf8))
         expect(legacyManifest.defaultAudio == "preserve", "Codex manifests without an audio field remain readable")
         let restored = AppModel(defaults: defaults, assignmentsURL: root.appendingPathComponent("restored-cache.json"))
         restored.acceptDestinationDirectoryDrop(project)
