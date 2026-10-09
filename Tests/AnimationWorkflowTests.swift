@@ -117,18 +117,14 @@ struct AnimationWorkflowTests {
         expect(AnimationWorkflow.prompt(for: task, template: "角色：{{character}}；文案：{{text}}", character: " \n").contains(task.text), "Unset character must not remove text sharing the same template line")
         expect(!noCharacter.contains("【统一制作要求】") && !noCharacter.contains("所有成品放在同一个输出目录") && noCharacter.hasSuffix("表达重点：" + task.reason), "Single prompts omit the entire shared requirements block")
         expect(AnimationWorkflow.prompt(for: task, template: "做动画：{{text}}", character: "/tmp/c.png").contains("角色参考图：/tmp/c.png"), "Character appends without placeholder")
-        let outputDirectory = "/Users/keyknock/Downloads/cut/20261003动画-2"
-        let outputLine = "输出视频文件到目录" + outputDirectory
-        let withOutput = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate, outputDirectory: " \n" + outputDirectory + " \n")
-        expect(withOutput.hasSuffix(outputLine), "Single prompts append the trimmed output directory")
+        expect(!singlePrompt.contains("目录") && !prompt.contains("目录"), "Single and batch prompts do not prescribe an output directory")
         var blankFocus = task
         blankFocus.reason = " \t\n"
-        let blankPrompt = AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate, outputDirectory: outputDirectory)
-        expect(!blankPrompt.contains("表达重点：") && blankPrompt.hasSuffix(outputLine), "Whitespace focus is omitted without dropping the directory")
+        let blankPrompt = AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate)
+        expect(!blankPrompt.contains("表达重点：") && blankPrompt.contains(task.text), "Whitespace focus is omitted while preserving the script")
         blankFocus.reason = ""
-        expect(!AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate, outputDirectory: " \n").contains("输出视频文件到目录"), "Unset output directory is omitted")
-        let mixedBatch = AnimationWorkflow.prompts(for: [blankFocus, secondTask], template: AnimationWorkflow.defaultTemplate, outputDirectory: outputDirectory)
-        expect(mixedBatch.components(separatedBy: outputLine).count == 2, "Batch output directory appears once")
+        expect(!AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate).contains("表达重点："), "Empty focus is omitted")
+        let mixedBatch = AnimationWorkflow.prompts(for: [blankFocus, secondTask], template: AnimationWorkflow.defaultTemplate)
         expect(mixedBatch.components(separatedBy: "表达重点：").count == 2 && mixedBatch.contains("表达重点：" + secondTask.reason), "Batch omits only the empty task focus")
         print("PASS segmentation, source integrity, filenames, complete prompts and character handling")
 
@@ -149,6 +145,8 @@ struct AnimationWorkflowTests {
             .replacingOccurrences(of: "如果没有符合标准的段落", with: "画面思路要说明“什么对象发生什么变化”，不要只写“做一个生动的动画”，也不要用整段字幕出现代替动画。\n如果没有符合标准的段落")
         defaults.set(legacyRules, forKey: "broll-namer-animation-rules")
         defaults.set(true, forKey: "broll-namer-preserves-empty-anchors")
+        // A directory saved by older versions must no longer affect copied prompts.
+        defaults.set(outputs.path, forKey: "broll-namer-animation-output-directory")
         let model = AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL)
         defer { model.flushPendingInlineSaves() }
         expect(model.animationRules == AnimationWorkflow.defaultRules && defaults.string(forKey: "broll-namer-animation-rules") == AnimationWorkflow.defaultRules, "Saved default rules migrate and persist without creative output")
@@ -169,12 +167,7 @@ struct AnimationWorkflowTests {
         model.scriptText = ""
         model.parseScript(persist: false)
         expect(model.animationTemplate == AnimationWorkflow.defaultTemplate && model.animationCharacterPath == AnimationWorkflow.legacyCharacterPath, "Legacy template migrates character path")
-        expect(model.animationOutputDirectoryPath.isEmpty, "Existing settings default to no output directory")
-        model.animationOutputDirectoryPath = " \n" + outputs.path + " \n"
-        expect(model.saveAnimationConfiguration(saveAPIKey: false), "Output directory saves without API key access")
-        expect(model.animationOutputDirectoryPath == outputs.path && defaults.string(forKey: "broll-namer-animation-output-directory") == outputs.path, "Output directory is trimmed and persisted")
-        let restoredConfiguration = AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL)
-        expect(restoredConfiguration.animationOutputDirectoryPath == outputs.path, "Output directory survives model recreation")
+        expect(model.saveAnimationConfiguration(saveAPIKey: false), "Animation configuration saves without API key access")
         let characterURL = outputs.appendingPathComponent("角色参考图.png")
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
         try bitmap.representation(using: .png, properties: [:])!.write(to: characterURL)
@@ -287,7 +280,8 @@ struct AnimationWorkflowTests {
         expect(model.copyAnimationPrompt(originalTask), "Single prompt copies from the script row")
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：" + model.note(for: originalTask.rowID)) == true, "Clipboard uses the note's expression focus")
         expect(NSPasteboard.general.string(forType: .string)?.contains("【统一制作要求】") == false, "Single-row clipboard omits shared requirements")
-        expect(NSPasteboard.general.string(forType: .string)?.contains("输出视频文件到目录" + outputs.path) == true, "Single clipboard includes configured output directory")
+        let singleClipboard = NSPasteboard.general.string(forType: .string) ?? ""
+        expect(!singleClipboard.contains("目录") && !singleClipboard.contains(outputs.path), "Single clipboard ignores the legacy output directory")
         event(model) { model.setNote("", for: originalTask.rowID) }
         expect(model.copyAnimationPrompt(originalTask), "Prompt copies with cleared note")
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：") == false, "Cleared note omits focus instead of restoring AI reason")
@@ -297,7 +291,8 @@ struct AnimationWorkflowTests {
         event(model) { model.setNote("自定义表达重点", for: originalTask.rowID) }
         expect(model.copyAllAnimationPrompts(), "Batch prompt copies")
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：自定义表达重点") == true, "Edited note drives batch production prompts")
-        expect(NSPasteboard.general.string(forType: .string)?.components(separatedBy: "输出视频文件到目录" + outputs.path).count == 2, "Batch clipboard includes configured directory once")
+        let batchClipboard = NSPasteboard.general.string(forType: .string) ?? ""
+        expect(!batchClipboard.contains("目录") && !batchClipboard.contains(outputs.path), "Batch clipboard ignores the legacy directory and omits shared directory requirements")
         model.undo()
         let settingsURL = project.appendingPathComponent("B-roll/project-settings.json")
         var settings = try JSONDecoder().decode(BrollProjectSettings.self, from: Data(contentsOf: settingsURL))

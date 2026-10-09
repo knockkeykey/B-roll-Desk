@@ -72,7 +72,6 @@ final class AppModel {
     var animationTemplate = AnimationWorkflow.defaultTemplate
     var animationCharacterPath = ""
     private(set) var animationCharacterImage: NSImage?
-    var animationOutputDirectoryPath = ""
     /// Analysis results waiting for confirmation; the script is untouched until applied.
     var animationReviewItems: [AnimationReviewItem] = []
     @ObservationIgnored private var animationReviewBaseline: (project: String, snapshot: UndoSnapshot)?
@@ -87,7 +86,6 @@ final class AppModel {
     private let animationTemplateKey = "broll-namer-animation-template"
     private let animationCharacterKey = "broll-namer-animation-character"
     private let animationCharacterBookmarkKey = "broll-namer-animation-character-bookmark"
-    private let animationOutputDirectoryKey = "broll-namer-animation-output-directory"
 
     var isScriptEditorPresented = false
     var isManifestPreviewPresented = false
@@ -238,7 +236,6 @@ final class AppModel {
         }
         animationTemplate = defaults.string(forKey: animationTemplateKey) ?? AnimationWorkflow.defaultTemplate
         animationCharacterPath = defaults.string(forKey: animationCharacterKey) ?? ""
-        animationOutputDirectoryPath = defaults.string(forKey: animationOutputDirectoryKey) ?? ""
         if animationTemplate == AnimationWorkflow.legacyTemplate {
             // Old default embedded the character path; split it into the dedicated setting.
             animationTemplate = AnimationWorkflow.defaultTemplate
@@ -3379,8 +3376,6 @@ extension AppModel {
             defaults.set(animationRules, forKey: animationRulesKey)
             defaults.set(animationTemplate, forKey: animationTemplateKey)
             defaults.set(animationCharacterPath.trimmingCharacters(in: .whitespacesAndNewlines), forKey: animationCharacterKey)
-            animationOutputDirectoryPath = animationOutputDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            defaults.set(animationOutputDirectoryPath, forKey: animationOutputDirectoryKey)
             animationFeedback = saveAPIKey ? "设置已保存；API Key 存放在本机钥匙串。" : "设置已保存。"
             return true
         } catch {
@@ -3585,7 +3580,7 @@ extension AppModel {
     @discardableResult
     func copyAnimationPrompt(_ task: AnimationTask) -> Bool {
         NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompt(for: animationPromptTask(task), template: animationTemplate, character: animationCharacterPath, outputDirectory: animationOutputDirectoryPath), forType: .string)
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompt(for: animationPromptTask(task), template: animationTemplate, character: animationCharacterPath), forType: .string)
         animationFeedback = didCopy ? "已复制完整制作提示词。" : "复制失败，请重试。"
         return didCopy
     }
@@ -3595,7 +3590,7 @@ extension AppModel {
         let tasks = activeAnimationTasks
         guard !tasks.isEmpty else { animationFeedback = "没有可复制的动画任务。"; return false }
         NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath, outputDirectory: animationOutputDirectoryPath), forType: .string)
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath), forType: .string)
         animationFeedback = didCopy ? "已复制 \(tasks.count) 条完整制作提示词，可直接粘贴给制作动画的 AI。" : "复制失败，请重试。"
         return didCopy
     }
