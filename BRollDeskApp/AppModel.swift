@@ -1446,14 +1446,14 @@ final class AppModel {
 
     func revealManifest() {
         guard destinationDirectoryURL != nil else {
-            showError(title: "还没有剪辑项目文件夹", message: "请先选择剪辑项目文件夹，才能在 Finder 中定位 Codex JSON 对照表。")
+            showError(title: "还没有剪辑项目文件夹", message: "请先选择剪辑项目文件夹，才能在 Finder 中定位 AI JSON 对照表。")
             return
         }
         guard saveManifest(showMessage: false) else { return }
         guard let brollDirectoryURL else { return }
-        let url = brollDirectoryURL.appendingPathComponent("broll-for-codex.json")
+        let url = brollDirectoryURL.appendingPathComponent("broll-for-ai.json")
         guard revealInFinder(url) else { return }
-        statusMessage = "已在 Finder 中定位 Codex JSON 对照表"
+        statusMessage = "已在 Finder 中定位 AI JSON 对照表"
     }
 
     @discardableResult
@@ -1469,11 +1469,11 @@ final class AppModel {
 
     func previewManifest() {
         do {
-            let data = try encodedJSON(currentCodexManifest())
+            let data = try encodedJSON(currentAIManifest())
             manifestPreviewText = String(decoding: data, as: UTF8.self)
             isManifestPreviewPresented = true
         } catch {
-            showError(title: "无法预览 Codex JSON 对照表", message: error.localizedDescription)
+            showError(title: "无法预览 AI JSON 对照表", message: error.localizedDescription)
         }
     }
 
@@ -2008,11 +2008,11 @@ final class AppModel {
         )
     }
 
-    private func currentCodexManifest() -> CodexBrollManifest {
+    private func currentAIManifest() -> AIBrollManifest {
         let manifest = currentManifest()
-        return CodexBrollManifest(
+        return AIBrollManifest(
             placements: manifest.placements.map { placement in
-                CodexBrollPlacement(text: placement.text, files: placement.files)
+                AIBrollPlacement(text: placement.text, files: placement.files)
             }
         )
     }
@@ -2028,13 +2028,13 @@ final class AppModel {
             to: directoryURL.appendingPathComponent("broll-manifest.json"),
             options: .atomic
         )
-        let codexManifest = CodexBrollManifest(
+        let aiManifest = AIBrollManifest(
             placements: manifest.placements.map { placement in
-                CodexBrollPlacement(text: placement.text, files: placement.files)
+                AIBrollPlacement(text: placement.text, files: placement.files)
             }
         )
-        try encodedJSON(codexManifest).write(
-            to: directoryURL.appendingPathComponent("broll-for-codex.json"),
+        try encodedJSON(aiManifest).write(
+            to: directoryURL.appendingPathComponent("broll-for-ai.json"),
             options: .atomic
         )
     }
@@ -2525,7 +2525,7 @@ final class AppModel {
             mediaExtensions: Self.videoExtensions.union(Self.imageExtensions)
         ))
 
-        let configNames = ["broll-for-codex.json", "broll-manifest.json"]
+        let configNames = ["broll-for-ai.json", "broll-manifest.json"]
         let assetURLs = legacyAssetNames
             .filter { !$0.isEmpty && $0 == ($0 as NSString).lastPathComponent && $0 != "." && $0 != ".." }
             .map { projectURL.appendingPathComponent($0) }

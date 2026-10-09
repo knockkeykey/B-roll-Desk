@@ -61,7 +61,7 @@ A-roll 条目还可以选择拍摄设备，默认是「索尼」，初始选项�
 
 ### 4. 交给 AI 完成粗剪
 
-点击“复制提示词”，把提示词和**整个剪辑项目文件夹**一起提供给支持 ChatCut 剪辑插件的 AI。提示词要求 AI 参考 `A-roll/正确文案.txt` 剪辑实际口播，再按 `B-roll/broll-for-codex.json` 把指定素材放在对应台词的位置，并保存可继续编辑的 ChatCut 时间线。
+点击“复制提示词”，把提示词和**整个剪辑项目文件夹**一起提供给支持 ChatCut 剪辑插件的 AI。提示词要求 AI 参考 `A-roll/正确文案.txt` 剪辑实际口播，再按 `B-roll/broll-for-ai.json` 把指定素材放在对应台词的位置，并保存可继续编辑的 ChatCut 时间线。
 
 配对台负责整理任务、素材和绑定关系；时间线剪辑由 AI 通过 ChatCut 执行。提示词要求 B-roll 视频静音并保留 A-roll 原声。完成后仍需在剪辑软件中检查口播、画面位置和节奏。
 
@@ -74,12 +74,12 @@ A-roll 条目还可以选择拍摄设备，默认是「索尼」，初始选项�
 │   └── 正确文案.txt                # App 中确认和持续更新的文案
 └── B-roll/
     ├── 第15期_BR001_文案短句.mp4   # 已绑定素材的副本
-    ├── broll-for-codex.json        # 交给 AI 的文案与素材对照表
+    ├── broll-for-ai.json           # 交给 AI 的文案与素材对照表
     ├── broll-manifest.json         # App 使用的完整绑定记录
     └── project-settings.json       # 文案分类、准备状态等项目设置
 ```
 
-`broll-for-codex.json` 的主要内容是每段文案和它绑定的素材文件名：
+`broll-for-ai.json` 的主要内容是每段文案和它绑定的素材文件名：
 
 ```json
 {
@@ -93,6 +93,8 @@ A-roll 条目还可以选择拍摄设备，默认是「索尼」，初始选项�
 ```
 
 这些编号用于整理素材，不代表剪辑时间码。交给 AI 时提供整个项目文件夹即可，不需要手动编辑对照表。
+
+旧项目中的 `B-roll/broll-for-codex.json` 请手动改名为 `B-roll/broll-for-ai.json`，内容无需修改。App 不再生成或识别旧文件名。App 恢复项目数据仍使用 `B-roll/broll-manifest.json`、`B-roll/project-settings.json` 和 `A-roll/正确文案.txt`；这些文件保持原名，重新选择整个剪辑项目文件夹即可恢复。AI 对照表不能替代项目恢复文件。
 
 ## 开发验证
 

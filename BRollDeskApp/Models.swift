@@ -787,13 +787,13 @@ struct BrollManifest: Codable, Hashable {
     let placements: [ManifestPlacement]
 }
 
-struct CodexBrollPlacement: Codable, Hashable {
+struct AIBrollPlacement: Codable, Hashable {
     let text: String
     let files: [String]
 }
 
-struct CodexBrollManifest: Codable, Hashable {
-    let placements: [CodexBrollPlacement]
+struct AIBrollManifest: Codable, Hashable {
+    let placements: [AIBrollPlacement]
 }
 
 struct AssignmentStore: Codable {
