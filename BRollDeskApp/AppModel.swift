@@ -51,9 +51,6 @@ final class AppModel {
     var splitMode: SplitMode
     private var preservesEmptyAnchors: Bool
     var prefix: String
-    private(set) var pacingSettings: ARollPacingSettings {
-        didSet { cachedPacingHints = nil; scriptAnalysisRevision += 1 }
-    }
     private(set) var shootingDevices: [ShootingDevice] = ShootingDevice.defaults
     private(set) var shootingDeviceRoles = ShootingDeviceRoles.defaults
     private(set) var pendingShootingDeviceChange: ShootingDeviceChange?
@@ -171,7 +168,6 @@ final class AppModel {
     @ObservationIgnored private var inlinePersistenceGeneration = UUID()
     private var scriptAnalysisRevision = 0
     @ObservationIgnored private var cachedDistribution: ScriptDistribution?
-    @ObservationIgnored private var cachedPacingHints: [String: ARollPacingHint]?
 
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
@@ -186,9 +182,6 @@ final class AppModel {
     private let brollProductionMethodsKey = "broll-namer-production-methods"
     private let brollPreparationStatusesKey = "broll-namer-preparation-statuses"
     private let prefixKey = "broll-namer-prefix"
-    private let pacingRateKey = "broll-namer-pacing-characters-per-minute"
-    private let pacingThresholdKey = "broll-namer-pacing-maximum-continuous-seconds"
-    private let pacingEnabledKey = "broll-namer-pacing-reminders-enabled"
     private let sourceBookmarkKey = "broll-namer-source-bookmark"
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
     private let savedDirectoriesKey = "broll-namer-saved-directories"
@@ -213,12 +206,6 @@ final class AppModel {
         splitMode = SplitMode(rawValue: defaults.string(forKey: splitModeKey) ?? "line") ?? .line
         preservesEmptyAnchors = defaults.bool(forKey: preservesEmptyAnchorsKey)
         prefix = defaults.string(forKey: prefixKey) ?? ""
-        pacingSettings = ARollPacingSettings(
-            charactersPerMinute: defaults.integer(forKey: pacingRateKey),
-            maximumContinuousSeconds: defaults.double(forKey: pacingThresholdKey),
-            remindersEnabled: defaults.object(forKey: pacingEnabledKey) == nil
-                ? true : defaults.bool(forKey: pacingEnabledKey)
-        )
         shootingDeviceRoles = shootingDeviceRoles.normalized(for: shootingDevices)
         anchorNotes = defaults.dictionary(forKey: anchorNotesKey) as? [String: String] ?? [:]
         rollTypeOverrides = (defaults.dictionary(forKey: rollTypeOverridesKey) ?? [:]).compactMapValues { value in
@@ -431,14 +418,6 @@ final class AppModel {
         return rows.filter { $0.text.localizedCaseInsensitiveContains(query) }
     }
 
-    var aRollPacingHints: [String: ARollPacingHint] {
-        _ = scriptAnalysisRevision
-        if let cachedPacingHints { return cachedPacingHints }
-        let hints = ARollPacing.hints(for: rows, settings: pacingSettings, rollType: { rollType(for: $0) })
-        cachedPacingHints = hints
-        return hints
-    }
-
     var scriptDistribution: ScriptDistribution {
         _ = scriptAnalysisRevision
         if let cachedDistribution { return cachedDistribution }
@@ -449,15 +428,7 @@ final class AppModel {
 
     private func invalidateScriptAnalysis() {
         cachedDistribution = nil
-        cachedPacingHints = nil
         scriptAnalysisRevision += 1
-    }
-
-    func updatePacingSettings(_ settings: ARollPacingSettings) {
-        pacingSettings = settings
-        defaults.set(settings.charactersPerMinute, forKey: pacingRateKey)
-        defaults.set(settings.maximumContinuousSeconds, forKey: pacingThresholdKey)
-        defaults.set(settings.remindersEnabled, forKey: pacingEnabledKey)
     }
 
     private func rebuildVisibleSourceFiles() {
