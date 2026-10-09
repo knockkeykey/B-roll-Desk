@@ -21,9 +21,16 @@ final class AppModel {
         let brollPreparationStatuses: [String: BrollPreparationStatus]
         let animationTasks: [AnimationTask]
 
-        var archivedNames: Set<String> {
-            Set(assignments.values.flatMap { $0.map(\.outputName) })
+        var archivedPaths: Set<String> {
+            Set(assignments.values.flatMap { $0.map(\.archiveRelativePath) })
         }
+    }
+
+    struct ShootingDeviceChange {
+        let rowID: String
+        let device: ShootingDevice?
+        let previousDeviceID: String?
+        let assetIDs: Set<String>
     }
 
     private struct ArchiveCopy: Sendable {
@@ -44,8 +51,13 @@ final class AppModel {
     var splitMode: SplitMode
     private var preservesEmptyAnchors: Bool
     var prefix: String
-    private(set) var pacingSettings: ARollPacingSettings
+    private(set) var pacingSettings: ARollPacingSettings {
+        didSet { cachedPacingHints = nil; scriptAnalysisRevision += 1 }
+    }
     private(set) var shootingDevices: [ShootingDevice] = ShootingDevice.defaults
+    private(set) var shootingDeviceRoles = ShootingDeviceRoles.defaults
+    private(set) var pendingShootingDeviceChange: ShootingDeviceChange?
+    private(set) var inlineEditingResetID = UUID()
     var anchorSearchText = ""
     let scriptTimeline = ScriptTimelineState()
     let dropFeedback = DropFeedbackModel()
@@ -95,10 +107,16 @@ final class AppModel {
     private(set) var canUndo = false
     private(set) var canRedo = false
 
-    private(set) var rows: [AnchorRow] = []
-    private(set) var assignments: [String: [BrollAsset]] = [:]
+    private(set) var rows: [AnchorRow] = [] {
+        didSet { invalidateScriptAnalysis() }
+    }
+    private(set) var assignments: [String: [BrollAsset]] = [:] {
+        didSet { invalidateScriptAnalysis() }
+    }
     private(set) var anchorNotes: [String: String] = [:]
-    private(set) var rollTypeOverrides: [String: AnchorRollType] = [:]
+    private(set) var rollTypeOverrides: [String: AnchorRollType] = [:] {
+        didSet { invalidateScriptAnalysis() }
+    }
     private(set) var capturedBrollRowIDs: Set<String> = []
     private(set) var arollProductionMethods: [String: ArollProductionMethod] = [:]
     private(set) var arollShootingDevices: [String: ShootingDevice?] = [:]
@@ -129,6 +147,7 @@ final class AppModel {
     }
 
     private let defaults: UserDefaults
+    @ObservationIgnored private let localAssignmentsURL: URL?
     let undoManager = UndoManager()
     private var sourceAccessActive: [String: Bool] = [:]
     private var destinationAccessActive = false
@@ -146,6 +165,13 @@ final class AppModel {
     private var sourceRefreshWorkItem: DispatchWorkItem?
     @ObservationIgnored private var volumeNotificationObservers: [(NotificationCenter, NSObjectProtocol)] = []
     private var projectID = UUID().uuidString.lowercased()
+    @ObservationIgnored private var archiveRestorationTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingInlineSave: DispatchWorkItem?
+    @ObservationIgnored private let inlineWriteQueue = DispatchQueue(label: "com.keyknock.broll.inline-save", qos: .utility)
+    @ObservationIgnored private var inlinePersistenceGeneration = UUID()
+    private var scriptAnalysisRevision = 0
+    @ObservationIgnored private var cachedDistribution: ScriptDistribution?
+    @ObservationIgnored private var cachedPacingHints: [String: ARollPacingHint]?
 
     private let scriptKey = "broll-namer-script"
     private let splitModeKey = "broll-namer-split-mode"
@@ -155,6 +181,7 @@ final class AppModel {
     private let capturedBrollRowsKey = "broll-namer-captured-broll-rows"
     private let arollProductionMethodsKey = "broll-namer-aroll-production-methods"
     private let shootingDevicesKey = "broll-namer-shooting-devices"
+    private let shootingDeviceRolesKey = "broll-namer-shooting-device-roles"
     private let arollShootingDevicesKey = "broll-namer-aroll-shooting-devices"
     private let brollProductionMethodsKey = "broll-namer-production-methods"
     private let brollPreparationStatusesKey = "broll-namer-preparation-statuses"
@@ -166,12 +193,17 @@ final class AppModel {
     private let destinationBookmarkKey = "broll-namer-destination-bookmark"
     private let savedDirectoriesKey = "broll-namer-saved-directories"
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, assignmentsURL: URL? = nil) {
         self.defaults = defaults
+        self.localAssignmentsURL = assignmentsURL
         if let data = defaults.data(forKey: shootingDevicesKey),
            let saved = try? JSONDecoder().decode([ShootingDevice].self, from: data),
            let validated = ShootingDevice.validated(saved) {
             shootingDevices = validated
+        }
+        if let data = defaults.data(forKey: shootingDeviceRolesKey),
+           let saved = try? JSONDecoder().decode(ShootingDeviceRoles.self, from: data) {
+            shootingDeviceRoles = saved
         }
         if let data = defaults.data(forKey: arollShootingDevicesKey) {
             arollShootingDevices = (try? JSONDecoder().decode([String: ShootingDevice?].self, from: data)) ?? [:]
@@ -187,6 +219,7 @@ final class AppModel {
             remindersEnabled: defaults.object(forKey: pacingEnabledKey) == nil
                 ? true : defaults.bool(forKey: pacingEnabledKey)
         )
+        shootingDeviceRoles = shootingDeviceRoles.normalized(for: shootingDevices)
         anchorNotes = defaults.dictionary(forKey: anchorNotesKey) as? [String: String] ?? [:]
         rollTypeOverrides = (defaults.dictionary(forKey: rollTypeOverridesKey) ?? [:]).compactMapValues { value in
             guard let rawValue = value as? String else { return nil }
@@ -387,7 +420,8 @@ final class AppModel {
             shootingDeviceID: shootingDevice(for: row.id)?.id,
             arollMethod: arollProductionMethod(for: row.id),
             brollMethod: brollProductionMethod(for: row.id),
-            brollStatus: brollPreparationStatus(for: row.id)
+            brollStatus: brollPreparationStatus(for: row.id),
+            arollStatus: isAuxiliaryARoll(for: row.id) ? brollPreparationStatus(for: row.id) : nil
         )
     }
 
@@ -398,7 +432,25 @@ final class AppModel {
     }
 
     var aRollPacingHints: [String: ARollPacingHint] {
-        ARollPacing.hints(for: rows, settings: pacingSettings, rollType: { rollType(for: $0) })
+        _ = scriptAnalysisRevision
+        if let cachedPacingHints { return cachedPacingHints }
+        let hints = ARollPacing.hints(for: rows, settings: pacingSettings, rollType: { rollType(for: $0) })
+        cachedPacingHints = hints
+        return hints
+    }
+
+    var scriptDistribution: ScriptDistribution {
+        _ = scriptAnalysisRevision
+        if let cachedDistribution { return cachedDistribution }
+        let distribution = ScriptDistribution(rows: rows, rollType: { rollType(for: $0) })
+        cachedDistribution = distribution
+        return distribution
+    }
+
+    private func invalidateScriptAnalysis() {
+        cachedDistribution = nil
+        cachedPacingHints = nil
+        scriptAnalysisRevision += 1
     }
 
     func updatePacingSettings(_ settings: ARollPacingSettings) {
@@ -449,11 +501,21 @@ final class AppModel {
     }
 
     func toggleRollType(for rowID: String) {
+        guard !isBusy else { return }
         guard let row = rows.first(where: { $0.id == rowID }) else { return }
         let before = makeUndoSnapshot()
         let nextType: AnchorRollType = rollType(for: rowID) == .bRoll ? .aRoll : .bRoll
+        let directory: AssetArchiveDirectory = nextType == .aRoll && isAuxiliaryDevice(for: rowID) ? .aRoll : .bRoll
+        do {
+            // Hidden legacy B-roll bindings on main-camera rows remain in B-roll.
+            try relocateAssets(for: rowID, to: directory)
+        } catch {
+            showError(title: "切换类别失败", message: "素材副本未能移动，类别和绑定已保留。\n\(error.localizedDescription)")
+            return
+        }
         rollTypeOverrides[rowID] = nextType
         persistPreferences()
+        if destinationDirectoryURL != nil { _ = saveManifest(showMessage: false) }
         lastSaved = "本机已保存 \(Self.timeString())"
         statusMessage = nextType == .bRoll
             ? (assets(for: rowID).isEmpty
@@ -465,39 +527,141 @@ final class AppModel {
 
     func shootingDevice(for rowID: String) -> ShootingDevice? {
         guard let selection = arollShootingDevices[rowID] else {
-            return shootingDevices.first(where: { $0.id == ShootingDevice.defaults[0].id })
+            return mainShootingDevice
         }
         guard let saved = selection else { return nil }
         return shootingDevices.first(where: { $0.id == saved.id }) ?? saved
     }
 
+    var mainShootingDevice: ShootingDevice? {
+        shootingDevices.first { $0.id == shootingDeviceRoles.mainDeviceID }
+    }
+
+    var auxiliaryShootingDevice: ShootingDevice? {
+        shootingDevices.first { $0.id == shootingDeviceRoles.auxiliaryDeviceID }
+    }
+
+    private func isAuxiliaryDevice(for rowID: String) -> Bool {
+        guard let auxiliaryID = shootingDeviceRoles.auxiliaryDeviceID else { return false }
+        return shootingDevice(for: rowID)?.id == auxiliaryID
+    }
+
+    func isAuxiliaryARoll(for rowID: String) -> Bool {
+        rollType(for: rowID) == .aRoll && isAuxiliaryDevice(for: rowID)
+    }
+
+    func supportsPreparationStatus(for rowID: String) -> Bool {
+        rollType(for: rowID) == .bRoll || isAuxiliaryARoll(for: rowID)
+    }
+
+    func rollTypeAfterBinding(for rowID: String) -> AnchorRollType {
+        isAuxiliaryARoll(for: rowID) ? .aRoll : .bRoll
+    }
+
+    func filterAttributesAfterBinding(for row: AnchorRow) -> ScriptRowFilter.Attributes {
+        let current = filterAttributes(for: row)
+        return ScriptRowFilter.Attributes(
+            rollType: rollTypeAfterBinding(for: row.id), isBlank: current.isBlank,
+            shootingDeviceID: current.shootingDeviceID, arollMethod: current.arollMethod,
+            brollMethod: current.brollMethod, brollStatus: .bound,
+            arollStatus: isAuxiliaryARoll(for: row.id) ? .bound : nil
+        )
+    }
+
+    func shootingDeviceRoleLabel(for device: ShootingDevice) -> String {
+        if device.id == shootingDeviceRoles.mainDeviceID { return "主设备" }
+        if device.id == shootingDeviceRoles.auxiliaryDeviceID { return "辅设备" }
+        return ""
+    }
+
     func setShootingDevice(_ device: ShootingDevice?, for rowID: String) {
+        guard !isBusy else { return }
         guard let row = rows.first(where: { $0.id == rowID }), rollType(for: rowID) == .aRoll,
               shootingDevice(for: rowID)?.id != device?.id else { return }
         if let device, !shootingDevices.contains(where: { $0.id == device.id }) { return }
 
+        if isAuxiliaryARoll(for: rowID), !assets(for: rowID).isEmpty {
+            pendingShootingDeviceChange = ShootingDeviceChange(
+                rowID: rowID, device: device, previousDeviceID: shootingDevice(for: rowID)?.id,
+                assetIDs: Set(assets(for: rowID).map(\.id))
+            )
+            return
+        }
+
         let before = makeUndoSnapshot()
+        do {
+            if let device, device.id == shootingDeviceRoles.auxiliaryDeviceID {
+                try relocateAssets(for: rowID, to: .aRoll)
+            }
+        } catch {
+            showError(title: "切换设备失败", message: error.localizedDescription)
+            return
+        }
         if let device {
             arollShootingDevices[rowID] = shootingDevices.first(where: { $0.id == device.id })
         } else {
             arollShootingDevices.updateValue(nil, forKey: rowID)
         }
         persistPreferences()
+        if destinationDirectoryURL != nil { _ = saveManifest(showMessage: false) }
         lastSaved = "本机已保存 \(Self.timeString())"
         statusMessage = "BR\(String(format: "%03d", row.index)) 拍摄设备：\(device?.name ?? "无")"
         registerUndo(named: "更改 A-roll 拍摄设备", restoring: before)
     }
 
+    func cancelShootingDeviceChange() { pendingShootingDeviceChange = nil }
+
+    func confirmShootingDeviceChange() {
+        guard !isBusy, let request = pendingShootingDeviceChange else { return }
+        pendingShootingDeviceChange = nil
+        guard isAuxiliaryARoll(for: request.rowID),
+              shootingDevice(for: request.rowID)?.id == request.previousDeviceID,
+              Set(assets(for: request.rowID).map(\.id)) == request.assetIDs else { return }
+        let before = makeUndoSnapshot()
+        var remaining: [BrollAsset] = []
+        var failures: [String] = []
+        for asset in assets(for: request.rowID) {
+            guard let url = archivedURL(for: asset) else {
+                remaining.append(asset)
+                failures.append(asset.outputName)
+                continue
+            }
+            do {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            } catch {
+                remaining.append(asset)
+                failures.append(asset.outputName)
+            }
+        }
+        assignments[request.rowID] = remaining.isEmpty ? nil : remaining
+        if failures.isEmpty {
+            arollShootingDevices.updateValue(request.device, forKey: request.rowID)
+        }
+        rebuildAssignmentIndexes()
+        persistPreferences()
+        _ = saveManifest(showMessage: false)
+        registerUndo(named: "更改设备并取消辅机绑定", restoring: before)
+        if failures.isEmpty {
+            statusMessage = "已切换到\(request.device?.name ?? "无")并取消辅机绑定；原始素材保留，可撤销恢复。"
+        } else {
+            showError(title: "未能取消全部绑定", message: "设备保持不变，未能删除的副本及绑定已保留：\(failures.joined(separator: "、"))")
+        }
+    }
+
     @discardableResult
-    func updateShootingDevices(_ devices: [ShootingDevice]) -> Bool {
+    func updateShootingDevices(_ devices: [ShootingDevice], roles: ShootingDeviceRoles? = nil) -> Bool {
         guard let validated = ShootingDevice.validated(devices) else { return false }
+        if let roles, roles.normalized(for: validated) != roles { return false }
         shootingDevices = validated
+        shootingDeviceRoles = (roles ?? shootingDeviceRoles).normalized(for: validated)
         defaults.set(try? JSONEncoder().encode(validated), forKey: shootingDevicesKey)
+        defaults.set(try? JSONEncoder().encode(shootingDeviceRoles), forKey: shootingDeviceRolesKey)
         arollShootingDevices = arollShootingDevices.mapValues { saved -> ShootingDevice? in
             guard let saved else { return nil }
             return validated.first(where: { $0.id == saved.id }) ?? saved
         }
         persistPreferences()
+        if destinationDirectoryURL != nil { _ = saveManifest(showMessage: false) }
         statusMessage = "拍摄设备选项已保存"
         return true
     }
@@ -542,7 +706,7 @@ final class AppModel {
     func setBrollPreparationStatus(_ status: BrollPreparationStatus, for rowID: String) {
         guard status != .bound,
               let row = rows.first(where: { $0.id == rowID }),
-              rollType(for: rowID) == .bRoll,
+              supportsPreparationStatus(for: rowID),
               assets(for: rowID).isEmpty,
               brollPreparationStatus(for: rowID) != status else { return }
 
@@ -560,7 +724,7 @@ final class AppModel {
         persistPreferences()
         lastSaved = "本机已保存 \(Self.timeString())"
         statusMessage = "BR\(String(format: "%03d", row.index)) 准备进度：\(status.title)"
-        registerUndo(named: "更改 B-roll 准备进度", restoring: before)
+        registerUndo(named: "更改 \(rollType(for: rowID).title) 准备进度", restoring: before)
     }
 
     func isAssigned(_ file: SourceFile) -> Bool {
@@ -588,6 +752,14 @@ final class AppModel {
     }
 
     func persistPreferences() {
+        flushPendingInlineSaves()
+        inlinePersistenceGeneration = UUID()
+        persistPreferenceValues()
+        saveAssignments()
+        saveProjectSettings()
+    }
+
+    private func persistPreferenceValues() {
         defaults.set(scriptText, forKey: scriptKey)
         defaults.set(splitMode.rawValue, forKey: splitModeKey)
         defaults.set(preservesEmptyAnchors, forKey: preservesEmptyAnchorsKey)
@@ -600,18 +772,98 @@ final class AppModel {
         defaults.set(brollProductionMethods.mapValues(\.rawValue), forKey: brollProductionMethodsKey)
         defaults.set(brollPreparationStatuses.mapValues(\.rawValue), forKey: brollPreparationStatusesKey)
         defaults.set(try? JSONEncoder().encode(animationTasks), forKey: animationTasksKey)
-        saveAssignments()
-        saveProjectSettings()
+    }
+
+    private struct InlineFileWrite: Sendable {
+        let url: URL
+        let data: Data
+    }
+
+    private func scheduleInlinePersistence() {
+        persistPreferenceValues()
+        pendingInlineSave?.cancel()
+        inlinePersistenceGeneration = UUID()
+        let generation = inlinePersistenceGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.inlinePersistenceGeneration == generation else { return }
+            self.enqueueInlinePersistence()
+        }
+        pendingInlineSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        lastSaved = "正在保存文案…"
+    }
+
+    private func enqueueInlinePersistence() {
+        pendingInlineSave = nil
+        let generation = inlinePersistenceGeneration
+        let expectedProject = projectID
+        var files: [InlineFileWrite] = []
+        do {
+            if let assignmentsURL {
+                files.append(InlineFileWrite(url: assignmentsURL,
+                                             data: try encodedJSON(AssignmentStore(version: 1, assignments: assignments))))
+            }
+            if let projectSettingsURL, let brollDirectoryURL, let aRollDirectoryURL {
+                files.append(InlineFileWrite(url: projectSettingsURL, data: try encodedJSON(projectSettingsSnapshot())))
+                files.append(InlineFileWrite(url: brollDirectoryURL.appendingPathComponent("broll-manifest.json"),
+                                             data: try encodedJSON(currentManifest())))
+                files.append(InlineFileWrite(url: brollDirectoryURL.appendingPathComponent("broll-for-codex.json"),
+                                             data: try encodedJSON(currentCodexManifest())))
+                files.append(InlineFileWrite(url: aRollDirectoryURL.appendingPathComponent("aroll-for-codex.json"),
+                                             data: try encodedJSON(currentARollManifest())))
+                if let aRollScriptURL, FileManager.default.fileExists(atPath: aRollScriptURL.path) {
+                    files.append(InlineFileWrite(url: aRollScriptURL, data: Data(scriptText.utf8)))
+                }
+            }
+        } catch {
+            showError(title: "文案保存失败", message: error.localizedDescription)
+            return
+        }
+        let writes = files
+        inlineWriteQueue.async { [weak self] in
+            var failures: [String] = []
+            for file in writes {
+                do {
+                    try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try file.data.write(to: file.url, options: .atomic)
+                } catch { failures.append("\(file.url.lastPathComponent)：\(error.localizedDescription)") }
+            }
+            let errors = failures
+            DispatchQueue.main.async {
+                guard let self, self.projectID == expectedProject, self.inlinePersistenceGeneration == generation else { return }
+                if errors.isEmpty {
+                    self.lastSaved = "本机已保存 \(Self.timeString())"
+                } else {
+                    self.showError(title: "文案保存失败", message: errors.joined(separator: "\n"))
+                }
+            }
+        }
+    }
+
+    /// Drains the serial writer before undo, synchronous exports, project switches or termination.
+    func flushPendingInlineSaves() {
+        if let pendingInlineSave {
+            pendingInlineSave.cancel()
+            self.pendingInlineSave = nil
+            enqueueInlinePersistence()
+        }
+        inlineWriteQueue.sync {}
     }
 
     func undo() {
-        guard undoManager.canUndo else { return }
+        guard !isBusy, undoManager.canUndo else { return }
+        flushPendingInlineSaves()
+        inlineEditingResetID = UUID()
+        pendingShootingDeviceChange = nil
         undoManager.undo()
         refreshUndoAvailability()
     }
 
     func redo() {
-        guard undoManager.canRedo else { return }
+        guard !isBusy, undoManager.canRedo else { return }
+        flushPendingInlineSaves()
+        inlineEditingResetID = UUID()
+        pendingShootingDeviceChange = nil
         undoManager.redo()
         refreshUndoAvailability()
     }
@@ -639,18 +891,7 @@ final class AppModel {
         let previousRows = rows
         let previousNotes = anchorNotes
         let chunks = ScriptParser.split(scriptText, mode: splitMode, preservingEmptyLines: preservesEmptyAnchors)
-        var occurrences: [String: Int] = [:]
-
-        rows = chunks.enumerated().map { offset, text in
-            let base = ScriptParser.hash(text)
-            let occurrence = (occurrences[base] ?? 0) + 1
-            occurrences[base] = occurrence
-            return AnchorRow(
-                id: ScriptParser.key(for: text, occurrence: occurrence),
-                index: offset + 1,
-                text: text
-            )
-        }
+        rows = Self.anchorRows(from: chunks)
         if !previousRows.isEmpty {
             for index in animationTasks.indices {
                 let text = animationTasks[index].text
@@ -675,6 +916,16 @@ final class AppModel {
 
         if persist {
             persistPreferences()
+        }
+    }
+
+    private static func anchorRows(from chunks: [String]) -> [AnchorRow] {
+        var occurrences: [String: Int] = [:]
+        return chunks.enumerated().map { offset, text in
+            let base = ScriptParser.hash(text)
+            let occurrence = (occurrences[base] ?? 0) + 1
+            occurrences[base] = occurrence
+            return AnchorRow(id: ScriptParser.key(for: text, occurrence: occurrence), index: offset + 1, text: text)
         }
     }
 
@@ -747,7 +998,8 @@ final class AppModel {
         splitMode = .line
         preservesEmptyAnchors = !texts.isEmpty
         scriptText = texts.joined(separator: "\n")
-        parseScript(persist: false)
+        // The source mapping is already known; avoid the general diff and a second migration pass.
+        rows = Self.anchorRows(from: texts)
         assignments = AnchorAssignmentMigration.migrate(
             previousAssignments,
             from: previousRows,
@@ -827,12 +1079,7 @@ final class AppModel {
             return migrated
         }
         rebuildAssignmentIndexes()
-        persistPreferences()
-        if destinationDirectoryURL != nil {
-            _ = saveManifest(showMessage: false)
-            saveConfirmedProjectScriptIfPresent()
-        }
-        lastSaved = "本机已保存 \(Self.timeString())"
+        scheduleInlinePersistence()
     }
 
     func chooseSourceDirectory() {
@@ -1002,6 +1249,8 @@ final class AppModel {
     }
 
     private func clearCurrentProjectState() {
+        inlineEditingResetID = UUID()
+        pendingShootingDeviceChange = nil
         cancelAnimationAnalysis()
         animationTasks = []
         animationFeedback = ""
@@ -1359,9 +1608,10 @@ final class AppModel {
         // must not appear to undo a different action after this irreversible cleanup.
         discardUndoActions()
 
-        let recordedNames = Set(assignments.values.flatMap { $0.map(\.outputName) })
+        let recordedAssets = assignments.values.flatMap { $0 }
+        let recordedNames = Dictionary(grouping: recordedAssets, by: \.archiveDirectory)
+            .mapValues { Set($0.map(\.outputName)) }
         let mediaExtensions = Self.videoExtensions.union(Self.imageExtensions)
-        guard let brollDirectoryURL else { return }
         let didStartAccess = destinationDirectoryURL.startAccessingSecurityScopedResource()
         isBusy = true
         statusMessage = "正在清理归档副本…"
@@ -1372,12 +1622,19 @@ final class AppModel {
                     destinationDirectoryURL.stopAccessingSecurityScopedResource()
                 }
             }
-            let discoveredNames = try ArchiveCleaner.discoverCopies(
-                in: brollDirectoryURL,
-                mediaExtensions: mediaExtensions
-            )
-            let outputNames = recordedNames.union(discoveredNames)
-            return ArchiveCleaner.removeCopies(named: outputNames, from: brollDirectoryURL)
+            var combined = ArchiveCleanupResult()
+            let directories = try [AssetArchiveDirectory.bRoll, .aRoll].map { directory in
+                let url = destinationDirectoryURL.appendingPathComponent(directory.rawValue, isDirectory: true)
+                let discovered = try ArchiveCleaner.discoverCopies(in: url, mediaExtensions: mediaExtensions)
+                return (directory, url, (recordedNames[directory] ?? []).union(discovered))
+            }
+            for (directory, url, names) in directories {
+                let result = ArchiveCleaner.removeCopies(named: names, from: url)
+                combined.deletedCount += result.deletedCount
+                combined.missingCount += result.missingCount
+                combined.failedNames.formUnion(result.failedNames.map { "\(directory.rawValue)/\($0)" })
+            }
+            return combined
         }
 
         Task { @MainActor [weak self] in
@@ -1394,7 +1651,7 @@ final class AppModel {
 
     private func finishClearAssignments(_ cleanup: ArchiveCleanupResult) {
         assignments = assignments.compactMapValues { assets in
-            let remaining = assets.filter { cleanup.failedNames.contains($0.outputName) }
+            let remaining = assets.filter { cleanup.failedNames.contains($0.archiveRelativePath) }
             return remaining.isEmpty ? nil : remaining
         }
         rebuildAssignmentIndexes()
@@ -1406,23 +1663,24 @@ final class AppModel {
             let examples = cleanup.failedNames.sorted().prefix(3).joined(separator: "、")
             let suffix = cleanup.failedNames.count > 3 ? "等" : ""
             let manifestNote = manifestSaved
-            ? "对照表已更新；未删除的文件仍留在 B-roll 文件夹，对应绑定会保留。"
-                : "对照表更新也失败了，请检查 B-roll 文件夹。"
+                ? "对照表已更新；未删除的项目副本及对应绑定会保留。"
+                : "对照表更新也失败了，请检查剪辑项目文件夹。"
             let localNote = localSaved ? "" : "本机记录保存也失败了。"
             showError(
                 title: "部分归档副本删除失败",
-                message: "有 \(cleanup.failedNames.count) 个 B-roll 文件未能删除：\(examples)\(suffix)。\(manifestNote)\(localNote)"
+                message: "有 \(cleanup.failedNames.count) 个项目副本未能删除：\(examples)\(suffix)。\(manifestNote)\(localNote)"
             )
         } else if !localSaved {
             showError(title: "本机配对记录保存失败", message: "归档副本已删除，但本机记录未能保存。请检查应用数据目录。")
         } else if manifestSaved {
             lastSaved = "已清空 \(Self.timeString())"
             let missingNote = cleanup.missingCount > 0 ? "，另有 \(cleanup.missingCount) 个文件原本不存在" : ""
-            statusMessage = "已删除 \(cleanup.deletedCount) 个 B-roll 副本\(missingNote)，并更新 JSON 对照表"
+            statusMessage = "已删除 \(cleanup.deletedCount) 个项目副本\(missingNote)，并更新 JSON 对照表"
         }
     }
 
     func saveManifest(showMessage: Bool = true) -> Bool {
+        flushPendingInlineSaves()
         guard destinationDirectoryURL != nil else {
             showError(title: "还没有剪辑项目文件夹", message: "请先选择剪辑项目文件夹，再保存对照表。")
             return false
@@ -1497,7 +1755,7 @@ final class AppModel {
     }
 
     func importScript(from url: URL) {
-        guard destinationDirectoryURL != nil else {
+        guard let aRollScriptURL else {
             showError(title: "请先选择剪辑项目文件夹", message: "选择项目文件夹后，才能向这个项目导入文案。")
             return
         }
@@ -1516,10 +1774,20 @@ final class AppModel {
         }
 
         do {
-            scriptText = try String(contentsOf: url, encoding: .utf8)
+            let importedText = try String(contentsOf: url, encoding: .utf8)
+            flushPendingInlineSaves()
+            // Startup restores this project file, so persist before accepting the import.
+            try FileManager.default.createDirectory(
+                at: aRollScriptURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try importedText.write(to: aRollScriptURL, atomically: true, encoding: .utf8)
+            scriptText = importedText
             preservesEmptyAnchors = false
             parseScript()
-            statusMessage = "已导入文案：\(url.lastPathComponent)"
+            guard saveManifest(showMessage: false) else { return }
+            lastSaved = "已保存到 A-roll \(Self.timeString())"
+            statusMessage = "已导入并保存文案：\(url.lastPathComponent)"
         } catch {
             showError(title: "导入文案失败", message: error.localizedDescription)
         }
@@ -1562,9 +1830,43 @@ final class AppModel {
     }
 
     func reveal(_ asset: BrollAsset) {
-        guard let brollDirectoryURL else { return }
-        let url = brollDirectoryURL.appendingPathComponent(asset.outputName)
+        guard let url = archivedURL(for: asset) else { return }
         revealInFinder(url)
+    }
+
+    private func archiveDirectoryURL(_ directory: AssetArchiveDirectory) -> URL? {
+        destinationDirectoryURL?.appendingPathComponent(directory.rawValue, isDirectory: true)
+    }
+
+    private func archivedURL(for asset: BrollAsset) -> URL? {
+        guard !asset.outputName.isEmpty, asset.outputName == (asset.outputName as NSString).lastPathComponent,
+              asset.outputName != ".", asset.outputName != ".." else { return nil }
+        return archiveDirectoryURL(asset.archiveDirectory)?.appendingPathComponent(asset.outputName)
+    }
+
+    private func relocateAssets(for rowID: String, to directory: AssetArchiveDirectory) throws {
+        let assets = assets(for: rowID)
+        guard assets.contains(where: { $0.archiveDirectory != directory }) else { return }
+        guard let destination = archiveDirectoryURL(directory) else { throw CocoaError(.fileNoSuchFile) }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        var relocated: [BrollAsset] = []
+        var moved: [(URL, URL)] = []
+        do {
+            for asset in assets {
+                guard asset.archiveDirectory != directory else { relocated.append(asset); continue }
+                guard let source = archivedURL(for: asset) else { throw CocoaError(.fileReadInvalidFileName) }
+                let name = uniqueOutputName(asset.outputName, in: directory)
+                let target = destination.appendingPathComponent(name)
+                try FileManager.default.moveItem(at: source, to: target)
+                moved.append((source, target))
+                relocated.append(asset.relocated(to: directory, named: name))
+            }
+        } catch {
+            for (source, target) in moved.reversed() { try? FileManager.default.moveItem(at: target, to: source) }
+            throw error
+        }
+        assignments[rowID] = relocated
+        rebuildAssignmentIndexes()
     }
 
     func revealSource(_ asset: BrollAsset) {
@@ -1621,6 +1923,11 @@ final class AppModel {
     }
 
     private func sourceURL(for asset: BrollAsset) -> URL? {
+        if let bookmark = asset.sourceFileBookmark {
+            var stale = false
+            if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                                  relativeTo: nil, bookmarkDataIsStale: &stale) { return url }
+        }
         if let directoryID = asset.sourceDirectoryID,
            let relativePath = asset.sourceRelativePath,
            let directoryURL = sourceDirectoryURLs[directoryID] {
@@ -1629,6 +1936,7 @@ final class AppModel {
         if let file = sourceFile(for: asset) {
             return file.url
         }
+        if let path = asset.sourceFilePath { return URL(fileURLWithPath: path) }
         guard sourceDirectories.count == 1,
               let onlyDirectoryURL = sourceDirectoryURLs[sourceDirectories[0].id] else { return nil }
         return onlyDirectoryURL.appendingPathComponent(asset.sourceName)
@@ -1658,9 +1966,12 @@ final class AppModel {
             return
         }
 
-        let mediaURLs = urls.filter { mediaKind(for: $0) != nil }
+        let boundRollType = rollTypeAfterBinding(for: rowID)
+        let isAuxiliary = boundRollType == .aRoll
+        let archiveDirectory: AssetArchiveDirectory = isAuxiliary ? .aRoll : .bRoll
+        let mediaURLs = urls.filter { isAuxiliary ? mediaKind(for: $0) == .video : mediaKind(for: $0) != nil }
         guard !mediaURLs.isEmpty else {
-            showError(title: "没有识别到素材", message: "请拖入图片或视频文件。")
+            showError(title: "没有识别到素材", message: isAuxiliary ? "辅设备 A-roll 请拖入口播视频文件。" : "请拖入图片或视频文件。")
             return
         }
 
@@ -1675,7 +1986,7 @@ final class AppModel {
             ? ""
             : "\(ScriptParser.sanitizePart(prefixValue, maxLength: 30))_"
         let label = ScriptParser.sanitizePart(row.text, maxLength: 24)
-        let baseCode = "BR\(String(format: "%03d", row.index))"
+        let baseCode = "\(isAuxiliary ? "AR" : "BR")\(String(format: "%03d", row.index))"
         var copiedCount = 0
         var skippedCount = 0
 
@@ -1694,9 +2005,9 @@ final class AppModel {
             }
 
             let baseName = "\(prefixPart)\(baseCode)_\(label)\(ScriptParser.extensionForFileName(sourceName))"
-            let outputName = uniqueOutputName(baseName)
-            guard let brollDirectoryURL else { return }
-            let outputURL = brollDirectoryURL.appendingPathComponent(outputName)
+            let outputName = uniqueOutputName(baseName, in: archiveDirectory)
+            guard let directoryURL = archiveDirectoryURL(archiveDirectory) else { return }
+            let outputURL = directoryURL.appendingPathComponent(outputName)
             let didStartAccess = sourceURL.startAccessingSecurityScopedResource()
 
             do {
@@ -1712,12 +2023,16 @@ final class AppModel {
                     sourceRelativePath: origin.relativePath,
                     outputName: outputName,
                     mode: .fs,
-                    targetTrack: "V2",
-                    audio: "mute",
-                    copiedAt: ISO8601DateFormatter().string(from: Date())
+                    targetTrack: isAuxiliary ? "V2" : "V3",
+                    audio: "preserve",
+                    copiedAt: ISO8601DateFormatter().string(from: Date()),
+                    archiveDirectory: archiveDirectory,
+                    sourceFilePath: sourceURL.path,
+                    sourceFileBookmark: try? sourceURL.bookmarkData(options: [.withSecurityScope],
+                                                                   includingResourceValuesForKeys: nil, relativeTo: nil)
                 )
                 assignments[rowID, default: []].append(asset)
-                rollTypeOverrides[rowID] = .bRoll
+                rollTypeOverrides[rowID] = boundRollType
                 copiedCount += 1
             } catch {
                 showError(title: "归档失败：\(sourceName)", message: error.localizedDescription)
@@ -1736,7 +2051,7 @@ final class AppModel {
         }
 
         rebuildAssignmentIndexes()
-        saveAssignments()
+        persistPreferences()
         _ = saveManifest(showMessage: false)
         refreshSourceFiles()
         registerUndo(named: "绑定素材", restoring: undoState)
@@ -1744,25 +2059,24 @@ final class AppModel {
         let archiveSummary = "本次新增 \(copiedCount) 个；对照表中共 \(assignedCount) 个素材"
         statusMessage = skippedCount > 0
             ? "\(archiveSummary)，跳过 \(skippedCount) 个重复素材"
-            : "\(archiveSummary)，已保存到 B-roll 文件夹"
+            : "\(archiveSummary)，已保存到 \(archiveDirectory.rawValue) 文件夹"
     }
 
     func unbind(_ asset: BrollAsset) {
         guard !isBusy else { return }
         guard var rowAssets = assignments[asset.anchorKey] else { return }
         let undoState = makeUndoSnapshot()
-        guard let brollDirectoryURL else {
-            showError(title: "无法取消绑定", message: "请先重新选择剪辑项目文件夹，才能删除 B-roll 中的副本并更新对照表。")
+        guard let archivedURL = archivedURL(for: asset) else {
+            showError(title: "无法取消绑定", message: "请先重新选择剪辑项目文件夹，才能删除项目副本并更新对照表。")
             return
         }
 
         let outputFileName = URL(fileURLWithPath: asset.outputName).lastPathComponent
-        let archivedURL = brollDirectoryURL.appendingPathComponent(outputFileName)
         if FileManager.default.fileExists(atPath: archivedURL.path) {
             do {
                 try FileManager.default.removeItem(at: archivedURL)
             } catch {
-                showError(title: "删除 B-roll 副本失败", message: "\(outputFileName) 仍保留在 B-roll 文件夹，因此这次没有取消绑定。\n\(error.localizedDescription)")
+                showError(title: "删除项目副本失败", message: "\(outputFileName) 仍保留在 \(asset.archiveDirectory.rawValue) 文件夹，因此这次没有取消绑定。\n\(error.localizedDescription)")
                 return
             }
         }
@@ -1792,8 +2106,8 @@ final class AppModel {
         }.value
     }
 
-    private func uniqueOutputName(_ baseName: String) -> String {
-        guard let brollDirectoryURL else { return baseName }
+    private func uniqueOutputName(_ baseName: String, in directory: AssetArchiveDirectory = .bRoll) -> String {
+        guard let brollDirectoryURL = archiveDirectoryURL(directory) else { return baseName }
         let fileManager = FileManager.default
         let baseURL = brollDirectoryURL.appendingPathComponent(baseName)
         if !fileManager.fileExists(atPath: baseURL.path) {
@@ -1925,27 +2239,34 @@ final class AppModel {
     }
 
     private func reconcileArchiveCopies(from current: UndoSnapshot, to target: UndoSnapshot) {
-        let removedNames = current.archivedNames.subtracting(target.archivedNames)
-        if let brollDirectoryURL {
-            for name in removedNames where name == (name as NSString).lastPathComponent {
-                try? FileManager.default.removeItem(at: brollDirectoryURL.appendingPathComponent(name))
-            }
+        guard destinationDirectoryURL != nil else { return }
+        let removedPaths = current.archivedPaths.subtracting(target.archivedPaths)
+        let restoredPaths = target.archivedPaths.subtracting(current.archivedPaths)
+        let currentAssets = current.assignments.values.flatMap { $0 }
+        let targetAssets = target.assignments.values.flatMap { $0 }.reduce(into: [String: BrollAsset]()) {
+            $0[$1.archiveRelativePath] = $1
         }
-
-        let restoredNames = target.archivedNames.subtracting(current.archivedNames)
-        guard !restoredNames.isEmpty else {
-            if !removedNames.isEmpty { refreshSourceFiles() }
-            return
-        }
-
-        guard let brollDirectoryURL else { return }
-
+        var protectedPaths: Set<String> = []
         var copies: [ArchiveCopy] = []
-        for asset in target.assignments.values.flatMap({ $0 }) where restoredNames.contains(asset.outputName) {
-            guard let sourceURL = sourceURL(for: asset) else { continue }
-            let destinationURL = brollDirectoryURL.appendingPathComponent(asset.outputName)
-            guard !FileManager.default.fileExists(atPath: destinationURL.path),
-                  FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
+        var failures: [String] = []
+        for path in restoredPaths {
+            guard let asset = targetAssets[path], let destinationURL = archivedURL(for: asset) else { continue }
+            if FileManager.default.fileExists(atPath: destinationURL.path) { continue }
+            if let previous = currentAssets.first(where: { $0.id == asset.id }),
+               let previousURL = archivedURL(for: previous),
+               FileManager.default.fileExists(atPath: previousURL.path) {
+                do {
+                    try FileManager.default.moveItem(at: previousURL, to: destinationURL)
+                } catch {
+                    protectedPaths.insert(previous.archiveRelativePath)
+                    failures.append(asset.outputName)
+                }
+                continue
+            }
+            guard let sourceURL = sourceURL(for: asset), FileManager.default.fileExists(atPath: sourceURL.path) else {
+                failures.append(asset.outputName)
+                continue
+            }
             copies.append(ArchiveCopy(
                 sourceURL: sourceURL,
                 destinationURL: destinationURL,
@@ -1953,16 +2274,22 @@ final class AppModel {
                 outputName: asset.outputName
             ))
         }
-
+        for asset in currentAssets where removedPaths.contains(asset.archiveRelativePath)
+            && !protectedPaths.contains(asset.archiveRelativePath) {
+            if let url = archivedURL(for: asset) { try? FileManager.default.removeItem(at: url) }
+        }
         guard !copies.isEmpty else {
-            if !removedNames.isEmpty { refreshSourceFiles() }
-            statusMessage = "撤回了绑定记录；无法从已连接的素材目录恢复已删除的归档副本"
+            if !removedPaths.isEmpty || !restoredPaths.isEmpty { refreshSourceFiles() }
+            if !failures.isEmpty {
+                showError(title: "归档副本未能全部恢复", message: "绑定记录已恢复，但无法恢复这些副本：\(failures.joined(separator: "、"))。请重新连接原始素材。")
+            }
             return
         }
-
+        isBusy = true
         statusMessage = "正在恢复已删除的归档副本…"
+        let initialFailures = failures
         let copyTask = Task.detached(priority: .utility) {
-            var failedNames: [String] = []
+            var failedNames = initialFailures
             defer {
                 for copy in copies where copy.didStartAccess {
                     copy.sourceURL.stopAccessingSecurityScopedResource()
@@ -1978,9 +2305,10 @@ final class AppModel {
             return failedNames
         }
 
-        Task { @MainActor [weak self] in
+        archiveRestorationTask = Task { @MainActor [weak self] in
             let failedNames = await copyTask.value
             guard let self else { return }
+            self.isBusy = false
             self.refreshSourceFiles()
             if !failedNames.isEmpty {
                 self.showError(
@@ -1993,11 +2321,14 @@ final class AppModel {
         }
     }
 
+    func waitForArchiveRestoration() async { await archiveRestorationTask?.value }
+
     private func currentManifest() -> BrollManifest {
         BrollManifest(
-            defaultAudio: "mute",
+            defaultAudio: "preserve",
             placements: rows.compactMap { row in
-                let rowAssets = assets(for: row.id)
+                guard rollType(for: row.id) == .bRoll else { return nil }
+                let rowAssets = assets(for: row.id).filter { $0.archiveDirectory == .bRoll }
                 guard !rowAssets.isEmpty else { return nil }
                 return ManifestPlacement(
                     id: "BR\(String(format: "%03d", row.index))",
@@ -2006,6 +2337,16 @@ final class AppModel {
                 )
             }
         )
+    }
+
+    private func currentARollManifest() -> CodexARollManifest {
+        CodexARollManifest(mainDevice: mainShootingDevice, auxiliaryDevice: auxiliaryShootingDevice,
+                          placements: rows.compactMap { row in
+            guard isAuxiliaryARoll(for: row.id), let device = shootingDevice(for: row.id) else { return nil }
+            let assets = assets(for: row.id).filter { $0.archiveDirectory == .aRoll }
+            guard !assets.isEmpty else { return nil }
+            return CodexARollPlacement(rowID: row.id, text: row.text, device: device, files: assets.map(\.outputName))
+        })
     }
 
     private func currentCodexManifest() -> CodexBrollManifest {
@@ -2037,6 +2378,11 @@ final class AppModel {
             to: directoryURL.appendingPathComponent("broll-for-codex.json"),
             options: .atomic
         )
+        if let aRollDirectoryURL {
+            try encodedJSON(currentARollManifest()).write(
+                to: aRollDirectoryURL.appendingPathComponent("aroll-for-codex.json"), options: .atomic
+            )
+        }
     }
 
     private func restoreManifestFromDestination() {
@@ -2082,7 +2428,7 @@ final class AppModel {
     }
 
     private func assetIdentity(_ asset: BrollAsset) -> String {
-        "\(asset.anchorKey)|\(asset.outputName)"
+        "\(asset.anchorKey)|\(asset.archiveRelativePath)"
     }
 
     private func mergeManifestAssets(_ assets: [BrollAsset], into row: AnchorRow) -> Bool {
@@ -2130,6 +2476,7 @@ final class AppModel {
 
     @discardableResult
     private func saveAssignments() -> Bool {
+        flushPendingInlineSaves()
         guard let url = assignmentsURL else { return false }
         do {
             let folderURL = url.deletingLastPathComponent()
@@ -2145,6 +2492,7 @@ final class AppModel {
     }
 
     private var assignmentsURL: URL? {
+        if let localAssignmentsURL { return localAssignmentsURL }
         guard let appSupport = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -2477,6 +2825,7 @@ final class AppModel {
 
     @discardableResult
     private func activateDestinationDirectory(_ url: URL) -> Bool {
+        flushPendingInlineSaves()
         let isSameDirectory = destinationDirectoryURL?.standardizedFileURL == url.standardizedFileURL
         let didStartAccess = isSameDirectory
             ? destinationAccessActive
@@ -2582,6 +2931,8 @@ final class AppModel {
             return false
         }
 
+        inlineEditingResetID = UUID()
+        pendingShootingDeviceChange = nil
         discardUndoActions()
         projectID = settings.projectID
         prefix = settings.prefix
@@ -2657,7 +3008,10 @@ final class AppModel {
                     mode: asset.mode,
                     targetTrack: asset.targetTrack,
                     audio: asset.audio,
-                    copiedAt: asset.copiedAt
+                    copiedAt: asset.copiedAt,
+                    archiveDirectory: asset.archiveDirectory,
+                    sourceFilePath: asset.sourceFilePath,
+                    sourceFileBookmark: asset.sourceFileBookmark
                 )
             }
         }
@@ -2766,10 +3120,8 @@ final class AppModel {
         installSourceFiles([])
     }
 
-    private func saveProjectSettings() {
-        guard let projectSettingsURL else { return }
-
-        let settings = BrollProjectSettings(
+    private func projectSettingsSnapshot() -> BrollProjectSettings {
+        BrollProjectSettings(
             projectID: projectID,
             prefix: prefix,
             sourceDirectories: sourceDirectories,
@@ -2788,11 +3140,15 @@ final class AppModel {
             assignments: assignments,
             animationTasks: animationTasks
         )
+    }
 
+    private func saveProjectSettings() {
+        flushPendingInlineSaves()
+        guard let projectSettingsURL else { return }
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(settings).write(to: projectSettingsURL, options: .atomic)
+            try encoder.encode(projectSettingsSnapshot()).write(to: projectSettingsURL, options: .atomic)
         } catch {
             statusMessage = "无法保存 B-roll/project-settings.json：\(error.localizedDescription)"
         }

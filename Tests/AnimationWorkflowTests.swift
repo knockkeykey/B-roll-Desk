@@ -134,6 +134,9 @@ struct AnimationWorkflowTests {
 
         let suite = "BrollAnimationTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
+        let assignmentCacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(suite).appendingPathComponent("assignments.json")
+        defer { try? FileManager.default.removeItem(at: assignmentCacheURL.deletingLastPathComponent()) }
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(suite, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
@@ -146,7 +149,8 @@ struct AnimationWorkflowTests {
             .replacingOccurrences(of: "如果没有符合标准的段落", with: "画面思路要说明“什么对象发生什么变化”，不要只写“做一个生动的动画”，也不要用整段字幕出现代替动画。\n如果没有符合标准的段落")
         defaults.set(legacyRules, forKey: "broll-namer-animation-rules")
         defaults.set(true, forKey: "broll-namer-preserves-empty-anchors")
-        let model = AppModel(defaults: defaults)
+        let model = AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL)
+        defer { model.flushPendingInlineSaves() }
         expect(model.animationRules == AnimationWorkflow.defaultRules && defaults.string(forKey: "broll-namer-animation-rules") == AnimationWorkflow.defaultRules, "Saved default rules migrate and persist without creative output")
         expect(AnimationWorkflow.rulesWithoutVisualIdea("我的自定义判断规则") == "我的自定义判断规则", "Unrelated custom rules remain intact")
         expect(model.rows.isEmpty && model.animationScriptRowCount == 0, "No imported script must show zero analysis rows")
@@ -169,7 +173,7 @@ struct AnimationWorkflowTests {
         model.animationOutputDirectoryPath = " \n" + outputs.path + " \n"
         expect(model.saveAnimationConfiguration(saveAPIKey: false), "Output directory saves without API key access")
         expect(model.animationOutputDirectoryPath == outputs.path && defaults.string(forKey: "broll-namer-animation-output-directory") == outputs.path, "Output directory is trimmed and persisted")
-        let restoredConfiguration = AppModel(defaults: defaults)
+        let restoredConfiguration = AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL)
         expect(restoredConfiguration.animationOutputDirectoryPath == outputs.path, "Output directory survives model recreation")
         let characterURL = outputs.appendingPathComponent("角色参考图.png")
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
@@ -189,7 +193,7 @@ struct AnimationWorkflowTests {
         expect(NSImage(data: restoredCharacterData) != nil,
                "Persisted reference bookmark must restore readable image bytes")
         if characterAccess { characterBookmarkURL.stopAccessingSecurityScopedResource() }
-        expect(AppModel(defaults: defaults).animationCharacterPath == characterURL.path, "Reference image saves immediately without closing a settings sheet")
+        expect(AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL).animationCharacterPath == characterURL.path, "Reference image saves immediately without closing a settings sheet")
         expect(!model.setAnimationCharacterImage(outputs) && model.animationCharacterPath == characterURL.path, "Invalid drop must preserve the current reference")
         let previousBookmark = defaults.data(forKey: "broll-namer-animation-character-bookmark")
         expect(!model.setAnimationCharacterImage(outputs.appendingPathComponent("missing.png"))
@@ -223,7 +227,7 @@ struct AnimationWorkflowTests {
         model.removeAnimationCharacterImage()
         expect(defaults.data(forKey: "broll-namer-animation-character-bookmark") == nil,
                "Removing the reference must also remove its persistent file access")
-        expect(AppModel(defaults: defaults).animationCharacterPath.isEmpty, "Removing the reference saves immediately")
+        expect(AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL).animationCharacterPath.isEmpty, "Removing the reference saves immediately")
         expect(model.copyAnimationPrompt(manualTask) && (NSPasteboard.general.string(forType: .string) ?? "").contains("小螃蟹角色换成 你提供的角色参考图"), "Row clipboard retains replacement instructions after removing the reference")
         event(model) { model.setBrollProductionMethod(.screenRecording, for: manualRow.id) }
         expect(model.animationTask(for: manualRow.id) == nil, "Other production methods have no animation prompt")

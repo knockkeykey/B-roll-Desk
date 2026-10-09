@@ -90,6 +90,33 @@ struct ShootingDevice: Codable, Equatable, Identifiable {
     }
 }
 
+struct ShootingDeviceRoles: Codable, Equatable {
+    var mainDeviceID: String?
+    var auxiliaryDeviceID: String?
+
+    static let defaults = ShootingDeviceRoles(mainDeviceID: "sony", auxiliaryDeviceID: "dji")
+
+    func normalized(for devices: [ShootingDevice]) -> Self {
+        let ids = devices.map(\.id)
+        let main = mainDeviceID.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
+        let auxiliary = auxiliaryDeviceID.flatMap { ids.contains($0) && $0 != main ? $0 : nil }
+            ?? ids.first(where: { $0 != main })
+        return Self(mainDeviceID: main, auxiliaryDeviceID: auxiliary)
+    }
+}
+
+/// A removed editor must never commit its draft into a row reusing its old index.
+struct InlineEditTarget {
+    let rowID: String
+    let session: UUID
+    let resetID: UUID
+
+    func canCommit(session: UUID, resetID: UUID, at index: Int, in rows: [AnchorRow]) -> Bool {
+        self.session == session && self.resetID == resetID && rows.indices.contains(index)
+            && rows[index].id == rowID
+    }
+}
+
 enum ArollProductionMethod: String, RollProductionMethod, Codable, Hashable {
     case none
     case text
@@ -200,6 +227,38 @@ enum BrollPreparationStatus: String, CaseIterable, Codable, Equatable, Identifia
     }
 }
 
+/// Shared preparation choices for B-roll and bindable auxiliary A-roll.
+enum ScriptPreparationFilter: String, CaseIterable, Identifiable {
+    case pending, ready, unbound
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pending: return "待准备"
+        case .ready: return "素材就绪"
+        case .unbound: return "待绑定"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .pending: return BrollPreparationStatus.pending.systemImage
+        case .ready: return BrollPreparationStatus.ready.systemImage
+        case .unbound: return "link.circle"
+        }
+    }
+
+    func matches(_ status: BrollPreparationStatus?) -> Bool {
+        guard let status else { return false }
+        switch self {
+        case .pending: return status == .pending
+        case .ready: return status == .ready
+        case .unbound: return status != .bound
+        }
+    }
+}
+
 /// Tri-state choice for one filter option: ignore, show only, or hide.
 enum ScriptFilterState: Equatable {
     case include
@@ -243,10 +302,15 @@ struct ScriptFilterFacet<Value: Hashable>: Equatable {
         case nil: return !states.values.contains(.include)
         }
     }
+
+    /// Overlapping options (e.g. ready and unbound) keep exclusions ahead of inclusions.
+    func matches(anyOf values: Set<Value>) -> Bool {
+        if values.contains(where: { states[$0] == .exclude }) { return false }
+        return !states.values.contains(.include) || values.contains(where: { states[$0] == .include })
+    }
 }
 
-/// Script list filter. A-roll rows are judged only by A-roll conditions and B-roll rows only by
-/// B-roll conditions; the two results are then shown together.
+/// Roll-specific facets combine with one shared preparation filter.
 struct ScriptRowFilter: Equatable {
     struct Attributes: Equatable {
         let rollType: AnchorRollType
@@ -256,6 +320,12 @@ struct ScriptRowFilter: Equatable {
         let arollMethod: ArollProductionMethod
         let brollMethod: BrollProductionMethod
         let brollStatus: BrollPreparationStatus
+        /// nil for A-roll rows that do not offer individual footage binding.
+        var arollStatus: BrollPreparationStatus? = nil
+
+        var preparationStatus: BrollPreparationStatus? {
+            rollType == .aRoll ? arollStatus : brollStatus
+        }
     }
 
     var showsAroll = true
@@ -263,24 +333,25 @@ struct ScriptRowFilter: Equatable {
     var shootingDevices = ScriptFilterFacet<String?>()
     var arollMethods = ScriptFilterFacet<ArollProductionMethod>()
     var brollMethods = ScriptFilterFacet<BrollProductionMethod>()
-    var brollStatuses = ScriptFilterFacet<BrollPreparationStatus>()
+    var preparationStatuses = ScriptFilterFacet<ScriptPreparationFilter>()
 
     var hasArollConditions: Bool { shootingDevices.isActive || arollMethods.isActive }
-    var hasBrollConditions: Bool { brollMethods.isActive || brollStatuses.isActive }
+    var hasBrollConditions: Bool { brollMethods.isActive }
 
     var isActive: Bool {
-        !showsAroll || !showsBroll || hasArollConditions || hasBrollConditions
+        !showsAroll || !showsBroll || hasArollConditions || hasBrollConditions || preparationStatuses.isActive
     }
 
     var activeConditionCount: Int {
         (showsAroll ? 0 : 1) + (showsBroll ? 0 : 1)
             + shootingDevices.states.count + arollMethods.states.count
-            + brollMethods.states.count + brollStatuses.states.count
+            + brollMethods.states.count + preparationStatuses.states.count
     }
 
     func matches(_ row: Attributes) -> Bool {
         // Blank rows carry no content to filter by, so any active filter hides them.
         if isActive && row.isBlank { return false }
+        guard matchesPreparation(row.preparationStatus) else { return false }
         switch row.rollType {
         case .aRoll:
             return showsAroll
@@ -289,8 +360,13 @@ struct ScriptRowFilter: Equatable {
         case .bRoll:
             return showsBroll
                 && brollMethods.matches(row.brollMethod)
-                && brollStatuses.matches(row.brollStatus)
         }
+    }
+
+    private func matchesPreparation(_ status: BrollPreparationStatus?) -> Bool {
+        guard preparationStatuses.isActive else { return true }
+        guard let status else { return false }
+        return preparationStatuses.matches(anyOf: Set(ScriptPreparationFilter.allCases.filter { $0.matches(status) }))
     }
 
     mutating func reset() { self = ScriptRowFilter() }
@@ -620,6 +696,11 @@ enum ARollPacing {
     }
 }
 
+enum AssetArchiveDirectory: String, Codable, Hashable {
+    case bRoll = "B-roll"
+    case aRoll = "A-roll"
+}
+
 struct BrollAsset: Identifiable, Codable, Hashable {
     let id: String
     let anchorKey: String
@@ -633,9 +714,68 @@ struct BrollAsset: Identifiable, Codable, Hashable {
     let targetTrack: String
     let audio: String
     let copiedAt: String
+    var archiveDirectory: AssetArchiveDirectory = .bRoll
+    var sourceFilePath: String? = nil
+    var sourceFileBookmark: Data? = nil
+
+    var archiveRelativePath: String { "\(archiveDirectory.rawValue)/\(outputName)" }
+
+    func relocated(to directory: AssetArchiveDirectory, named name: String) -> Self {
+        Self(id: id, anchorKey: anchorKey, anchorIndex: anchorIndex, anchorText: anchorText,
+             sourceName: sourceName, sourceDirectoryID: sourceDirectoryID, sourceRelativePath: sourceRelativePath,
+             outputName: name, mode: mode, targetTrack: directory == .aRoll ? "V2" : "V3", audio: "preserve",
+             copiedAt: copiedAt, archiveDirectory: directory,
+             sourceFilePath: sourceFilePath, sourceFileBookmark: sourceFileBookmark)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, anchorKey, anchorIndex, anchorText, sourceName, sourceDirectoryID, sourceRelativePath
+        case outputName, mode, targetTrack, audio, copiedAt, archiveDirectory, sourceFilePath, sourceFileBookmark
+    }
+
+    init(id: String, anchorKey: String, anchorIndex: Int, anchorText: String, sourceName: String,
+         sourceDirectoryID: String?, sourceRelativePath: String?, outputName: String, mode: BrollMode,
+         targetTrack: String, audio: String, copiedAt: String, archiveDirectory: AssetArchiveDirectory = .bRoll,
+         sourceFilePath: String? = nil, sourceFileBookmark: Data? = nil) {
+        self.id = id
+        self.anchorKey = anchorKey
+        self.anchorIndex = anchorIndex
+        self.anchorText = anchorText
+        self.sourceName = sourceName
+        self.sourceDirectoryID = sourceDirectoryID
+        self.sourceRelativePath = sourceRelativePath
+        self.outputName = outputName
+        self.mode = mode
+        self.targetTrack = targetTrack
+        self.audio = audio
+        self.copiedAt = copiedAt
+        self.archiveDirectory = archiveDirectory
+        self.sourceFilePath = sourceFilePath
+        self.sourceFileBookmark = sourceFileBookmark
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        anchorKey = try c.decode(String.self, forKey: .anchorKey)
+        anchorIndex = try c.decode(Int.self, forKey: .anchorIndex)
+        anchorText = try c.decode(String.self, forKey: .anchorText)
+        sourceName = try c.decode(String.self, forKey: .sourceName)
+        sourceDirectoryID = try c.decodeIfPresent(String.self, forKey: .sourceDirectoryID)
+        sourceRelativePath = try c.decodeIfPresent(String.self, forKey: .sourceRelativePath)
+        outputName = try c.decode(String.self, forKey: .outputName)
+        mode = try c.decode(BrollMode.self, forKey: .mode)
+        targetTrack = try c.decode(String.self, forKey: .targetTrack)
+        // Older versions instructed the editor to discard B-roll audio. Preserve it now.
+        audio = "preserve"
+        copiedAt = try c.decode(String.self, forKey: .copiedAt)
+        archiveDirectory = try c.decodeIfPresent(AssetArchiveDirectory.self, forKey: .archiveDirectory) ?? .bRoll
+        sourceFilePath = try c.decodeIfPresent(String.self, forKey: .sourceFilePath)
+        sourceFileBookmark = try c.decodeIfPresent(Data.self, forKey: .sourceFileBookmark)
+    }
 
     var fullScreen: BrollAsset {
-        guard mode != .fs else { return self }
+        guard mode != .fs || audio != "preserve" else { return self }
         return BrollAsset(
             id: id,
             anchorKey: anchorKey,
@@ -647,8 +787,11 @@ struct BrollAsset: Identifiable, Codable, Hashable {
             outputName: outputName,
             mode: .fs,
             targetTrack: targetTrack,
-            audio: audio,
-            copiedAt: copiedAt
+            audio: "preserve",
+            copiedAt: copiedAt,
+            archiveDirectory: archiveDirectory,
+            sourceFilePath: sourceFilePath,
+            sourceFileBookmark: sourceFileBookmark
         )
     }
 }
@@ -682,7 +825,10 @@ enum AnchorAssignmentMigration {
                     mode: asset.mode,
                     targetTrack: asset.targetTrack,
                     audio: asset.audio,
-                    copiedAt: asset.copiedAt
+                    copiedAt: asset.copiedAt,
+                    archiveDirectory: asset.archiveDirectory,
+                    sourceFilePath: asset.sourceFilePath,
+                    sourceFileBookmark: asset.sourceFileBookmark
                 )
             }
         }
@@ -794,6 +940,31 @@ struct CodexBrollPlacement: Codable, Hashable {
 
 struct CodexBrollManifest: Codable, Hashable {
     let placements: [CodexBrollPlacement]
+    var defaultAudio = "preserve"
+
+    init(placements: [CodexBrollPlacement]) { self.placements = placements }
+
+    private enum CodingKeys: String, CodingKey { case placements, defaultAudio }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        placements = try c.decode([CodexBrollPlacement].self, forKey: .placements)
+        defaultAudio = "preserve"
+    }
+}
+
+struct CodexARollPlacement: Codable {
+    let rowID: String
+    let text: String
+    let device: ShootingDevice
+    let files: [String]
+}
+
+struct CodexARollManifest: Codable {
+    let mainDevice: ShootingDevice?
+    let auxiliaryDevice: ShootingDevice?
+    let placements: [CodexARollPlacement]
+    var defaultAudio = "preserve"
+    var coveredMainAudio = "mute_preserving_source"
 }
 
 struct AssignmentStore: Codable {
@@ -978,7 +1149,7 @@ enum ArchiveCleaner {
         return Set(urls.compactMap { url in
             guard mediaExtensions.contains(url.pathExtension.lowercased()),
                   url.lastPathComponent.range(
-                    of: #"^.+_BR[0-9]{3,}_.+\.[^.]+$"#,
+                    of: #"^(?:.*_)?[AB]R[0-9]{3,}_.+\.[^.]+$"#,
                     options: .regularExpression
                   ) != nil,
                   (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {

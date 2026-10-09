@@ -4,9 +4,17 @@ import CoreText
 
 @main
 struct BRollDeskApp: App {
-    @State private var model = AppModel()
+    @State private var model: AppModel
 
     init() {
+        // An explicit verification directory isolates live UI checks from the user's projects and cache.
+        let verificationDirectory = ProcessInfo.processInfo.environment["BROLL_DESK_VERIFICATION_DIRECTORY"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let defaults = verificationDirectory.flatMap {
+            UserDefaults(suiteName: "com.keyknock.BrollDesk.Verification.\($0.lastPathComponent)")
+        } ?? .standard
+        _model = State(initialValue: AppModel(defaults: defaults,
+                                             assignmentsURL: verificationDirectory?.appendingPathComponent("assignments.json")))
         if let fontURL = Bundle.main.url(forResource: "SmileySans-Oblique", withExtension: "ttf") {
             _ = CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
         }
@@ -65,13 +73,13 @@ private struct UndoRedoCommands: Commands {
                 model.undo()
             }
             .keyboardShortcut("z", modifiers: [.command])
-            .disabled(!model.canUndo)
+            .disabled(!model.canUndo || model.isBusy)
 
             Button("重做") {
                 model.redo()
             }
             .keyboardShortcut("z", modifiers: [.command, .shift])
-            .disabled(!model.canRedo)
+            .disabled(!model.canRedo || model.isBusy)
         }
     }
 }

@@ -18,6 +18,9 @@ struct ProductionMethodTests {
 
         let suite = "com.keyknock.BrollDesk.ProductionTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
+        let assignmentCacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(suite).appendingPathComponent("assignments.json")
+        defer { try? FileManager.default.removeItem(at: assignmentCacheURL.deletingLastPathComponent()) }
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(suite, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer {
@@ -26,7 +29,8 @@ struct ProductionMethodTests {
         }
 
         defaults.set("第一条文案\n重复文案\n重复文案", forKey: "broll-namer-script")
-        let model = AppModel(defaults: defaults)
+        let model = AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL)
+        defer { model.flushPendingInlineSaves() }
         model.undoManager.groupsByEvent = false
         let firstID = model.rows[0].id
         let duplicateID = model.rows[2].id
@@ -37,10 +41,10 @@ struct ProductionMethodTests {
         expect(model.arollProductionMethod(for: firstID) == .none, "Undo restores the default method")
         model.redo()
         expect(model.arollProductionMethod(for: firstID) == .searchMaterial, "Redo restores the selected method")
-        expect(AppModel(defaults: defaults).arollProductionMethod(for: firstID) == .searchMaterial,
+        expect(AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL).arollProductionMethod(for: firstID) == .searchMaterial,
                "Selection survives model recreation")
         event(model) { model.setArollProductionMethod(.none, for: firstID) }
-        expect(AppModel(defaults: defaults).arollProductionMethod(for: firstID) == .none,
+        expect(AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL).arollProductionMethod(for: firstID) == .none,
                "Clearing a selection to none persists")
         model.undo()
         expect(model.arollProductionMethod(for: firstID) == .searchMaterial,

@@ -69,23 +69,27 @@ struct ARollPacingTests {
 
         let suite = "com.keyknock.BrollNamer.PacingTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
+        let assignmentCacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(suite).appendingPathComponent("assignments.json")
+        defer { try? FileManager.default.removeItem(at: assignmentCacheURL.deletingLastPathComponent()) }
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("第一条" + String(repeating: "甲", count: 12) + "\n第二条" + String(repeating: "乙", count: 12)
                      + "\n第三条" + String(repeating: "丙", count: 12), forKey: "broll-namer-script")
-        let model = AppModel(defaults: defaults)
+        let model = AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL)
+        defer { model.flushPendingInlineSaves() }
         let ids = model.rows.map(\.id)
         func modelDistribution() -> ScriptDistribution {
-            ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
+            model.scriptDistribution
         }
         let completeDistribution = modelDistribution()
         expect(model.pacingSettings == ARollPacingSettings(), "Existing users keep the original defaults")
         model.updatePacingSettings(custom)
         expect(model.aRollPacingHints[ids[1]] == nil && model.aRollPacingHints[ids[2]]?.cumulativeSeconds == 4.5,
                "Changing preferences immediately recalculates the existing script")
-        expect(AppModel(defaults: defaults).pacingSettings == custom, "Rate and threshold survive model recreation")
+        expect(AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL).pacingSettings == custom, "Rate and threshold survive model recreation")
         model.updatePacingSettings(ARollPacingSettings(charactersPerMinute: 600,
                                                      maximumContinuousSeconds: 3, remindersEnabled: false))
-        expect(model.aRollPacingHints.isEmpty && !AppModel(defaults: defaults).pacingSettings.remindersEnabled,
+        expect(model.aRollPacingHints.isEmpty && !AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL).pacingSettings.remindersEnabled,
                "Disabling reminders persists independently of the numeric settings")
         model.updatePacingSettings(ARollPacingSettings())
         expect(model.aRollPacingHints[ids[1]] != nil, "The model exposes cross-row reminders")

@@ -271,6 +271,9 @@ struct ContentView: View {
             Text("将删除当前剪辑项目文件夹中已绑定及符合命名规则的旧素材副本，并更新 JSON 和 Markdown 对照表。素材目录中的原始文件会保留。")
         }
         .preferredColorScheme(preferredColorScheme)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            model.flushPendingInlineSaves()
+        }
         .font(.system(size: 16))
     }
 }
@@ -970,10 +973,12 @@ private struct AppSettingsPopover: View {
 private struct ShootingDeviceSettingsView: View {
     @Bindable var model: AppModel
     @State private var drafts: [ShootingDevice]
+    @State private var roles: ShootingDeviceRoles
 
     init(model: AppModel) {
         self.model = model
         _drafts = State(initialValue: model.shootingDevices)
+        _roles = State(initialValue: model.shootingDeviceRoles)
     }
 
     private var validatedDrafts: [ShootingDevice]? { ShootingDevice.validated(drafts) }
@@ -982,7 +987,7 @@ private struct ShootingDeviceSettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("拍摄设备")
                 .font(.system(size: 14, weight: .medium))
-            Text("用于 A-roll 条目的拍摄设备选项。")
+            Text("主设备录制主口播，辅设备用于逐句补拍。")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
 
@@ -1006,6 +1011,17 @@ private struct ShootingDeviceSettingsView: View {
             }
             .frame(height: min(132, CGFloat(drafts.count) * 30))
 
+            Picker("主设备", selection: $roles.mainDeviceID) {
+                if drafts.isEmpty { Text("无可选设备").tag(String?.none) }
+                ForEach(drafts) { Text($0.name).tag(Optional($0.id)) }
+            }
+            .accessibilityLabel("A-roll 主设备")
+            Picker("辅设备", selection: $roles.auxiliaryDeviceID) {
+                if drafts.count < 2 { Text("无可选设备").tag(String?.none) }
+                ForEach(drafts.filter { $0.id != roles.mainDeviceID }) { Text($0.name).tag(Optional($0.id)) }
+            }
+            .accessibilityLabel("A-roll 辅设备")
+
             if validatedDrafts == nil {
                 Text("设备名称不能为空或重复。")
                     .font(.system(size: 11))
@@ -1018,9 +1034,13 @@ private struct ShootingDeviceSettingsView: View {
                 }
                 Spacer()
                 Button("保存设备选项") {
-                    if model.updateShootingDevices(drafts) { drafts = model.shootingDevices }
+                    if model.updateShootingDevices(drafts, roles: roles) {
+                        drafts = model.shootingDevices
+                        roles = model.shootingDeviceRoles
+                    }
                 }
-                .disabled(validatedDrafts == nil || validatedDrafts == model.shootingDevices)
+                .disabled(validatedDrafts == nil || roles != roles.normalized(for: drafts)
+                          || (validatedDrafts == model.shootingDevices && roles == model.shootingDeviceRoles))
             }
             .controlSize(.small)
 
@@ -1028,6 +1048,8 @@ private struct ShootingDeviceSettingsView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
         }
+        .onChange(of: drafts.map(\.id)) { _, _ in roles = roles.normalized(for: drafts) }
+        .onChange(of: roles.mainDeviceID) { _, _ in roles = roles.normalized(for: drafts) }
     }
 }
 
@@ -2536,7 +2558,7 @@ struct ScriptTimelineWindowView: View {
 
     var body: some View {
         let state = model.scriptTimeline
-        let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
+        let distribution = model.scriptDistribution
         GeometryReader { geometry in
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
@@ -2834,6 +2856,7 @@ private struct AnchorListView: View {
     @State private var editingText = ""
     @State private var editingCursor = 0
     @State private var editingSession = UUID()
+    @State private var editingTarget: InlineEditTarget?
     @State private var pendingScrollRowID: String?
     @State private var revealedDeleteRowID: String?
     @State private var rowPulse: AnchorRowPulse?
@@ -2850,7 +2873,7 @@ private struct AnchorListView: View {
     var body: some View {
         @Bindable var timeline = model.scriptTimeline
         let pacingHints = model.aRollPacingHints
-        let distribution = ScriptDistribution(rows: model.rows, rollType: { model.rollType(for: $0) })
+        let distribution = model.scriptDistribution
         let boundRowIDs = Set(model.assignments.compactMap { $0.value.isEmpty ? nil : $0.key })
         let rowAttributes = model.rows.map(model.filterAttributes(for:))
         let filteredRows = model.filteredRows.filter { isListed($0, attributes: rowAttributes) }
@@ -2960,7 +2983,8 @@ private struct AnchorListView: View {
                                 AnchorRowView(
                                     row: row,
                                     model: model,
-                                    isEditing: editingIndex == row.index - 1,
+                                    isEditing: editingIndex == row.index - 1 && editingTarget?.rowID == row.id
+                                        && editingTarget?.resetID == model.inlineEditingResetID,
                                     isSelected: selectedScriptRowID == row.id,
                                     editingText: $editingText,
                                     editingCursor: editingCursor,
@@ -3048,6 +3072,15 @@ private struct AnchorListView: View {
         .background(.windowBackground)
         // Binding completes asynchronously; animate the parent list, not just its row content.
         .animation(rowEditAnimation, value: boundRowIDs)
+        .alert("切换设备并取消辅机绑定？", isPresented: Binding(
+            get: { model.pendingShootingDeviceChange != nil },
+            set: { if !$0 { model.cancelShootingDeviceChange() } }
+        )) {
+            Button("取消绑定并切换", role: .destructive) { model.confirmShootingDeviceChange() }
+            Button("取消", role: .cancel) { model.cancelShootingDeviceChange() }
+        } message: {
+            Text("将取消这条文案的辅设备素材绑定并删除项目副本。原始视频保留，操作可通过 ⌘Z 撤销恢复。")
+        }
         .onChange(of: filteredRows.map(\.id)) { _, _ in
             revealedDeleteRowID = nil
         }
@@ -3059,13 +3092,18 @@ private struct AnchorListView: View {
             if let request { revealTimelineRow(request.rowID) }
         }
         .onChange(of: model.rows.map(\.id)) { _, rowIDs in
+            if let editingTarget, let index = editingIndex,
+               !editingTarget.canCommit(session: editingSession, resetID: model.inlineEditingResetID,
+                                        at: index, in: model.rows) { cancelInlineEditing() }
             if let selectedScriptRowID, !rowIDs.contains(selectedScriptRowID) {
                 self.selectedScriptRowID = nil
             }
         }
+        .onChange(of: model.inlineEditingResetID) { _, _ in cancelInlineEditing() }
         .onChange(of: rowFilter) { _, _ in resetBindingExits() }
         .onChange(of: model.shootingDevices.map(\.id)) { _, _ in pruneDeletedDeviceFilters() }
         .onChange(of: model.destinationDirectoryURL) { _, _ in
+            cancelInlineEditing()
             resetBindingExits()
             selectedScriptRowID = nil
             timeline.visibleRows = []
@@ -3083,13 +3121,9 @@ private struct AnchorListView: View {
     }
 
     private func retainRowForBinding(_ rowID: String) {
-        // Only retain rows that the filter will hide once they become bound B-roll.
+        // Auxiliary footage stays A-roll; predict the same type as the binding operation.
         guard let row = model.rows.first(where: { $0.id == rowID }) else { return }
-        let current = model.filterAttributes(for: row)
-        let bound = ScriptRowFilter.Attributes(
-            rollType: .bRoll, isBlank: current.isBlank, shootingDeviceID: current.shootingDeviceID,
-            arollMethod: current.arollMethod, brollMethod: current.brollMethod, brollStatus: .bound
-        )
+        let bound = model.filterAttributesAfterBinding(for: row)
         guard !rowFilter.matches(bound) else { return }
         // Retain the row before the asynchronous copy updates the status filter.
         bindingExitTokens[rowID] = UUID()
@@ -3098,7 +3132,7 @@ private struct AnchorListView: View {
 
     private func finishBindingExit(_ rowID: String) {
         guard let token = bindingExitTokens[rowID] else { return }
-        guard !reduceMotion, model.brollPreparationStatus(for: rowID) == .bound else {
+        guard !reduceMotion, shouldExitAfterBinding(rowID) else {
             bindingExitTokens.removeValue(forKey: rowID)
             fadingBoundRowIDs.remove(rowID)
             return
@@ -3108,6 +3142,11 @@ private struct AnchorListView: View {
             // Show the bound state briefly, then fade the card before closing its gap.
             try? await Task.sleep(for: .milliseconds(250))
             guard bindingExitTokens[rowID] == token else { return }
+            guard shouldExitAfterBinding(rowID) else {
+                bindingExitTokens.removeValue(forKey: rowID)
+                fadingBoundRowIDs.remove(rowID)
+                return
+            }
             withAnimation(.easeInOut(duration: 0.55)) {
                 _ = fadingBoundRowIDs.insert(rowID)
             }
@@ -3121,6 +3160,12 @@ private struct AnchorListView: View {
             guard bindingExitTokens[rowID] == nil else { return }
             fadingBoundRowIDs.remove(rowID)
         }
+    }
+
+    private func shouldExitAfterBinding(_ rowID: String) -> Bool {
+        guard let row = model.rows.first(where: { $0.id == rowID }),
+              model.brollPreparationStatus(for: rowID) == .bound else { return false }
+        return !rowFilter.matches(model.filterAttributes(for: row))
     }
 
     private func resetBindingExits() {
@@ -3262,11 +3307,11 @@ private struct AnchorListView: View {
                 rowFilter.brollMethods[method] = nil
             })
         }
-        for status in BrollPreparationStatus.allCases {
-            guard let state = rowFilter.brollStatuses[status] else { continue }
-            chips.append(ScriptFilterChip(id: "b-status-\(status.rawValue)", scope: "B",
+        for status in ScriptPreparationFilter.allCases {
+            guard let state = rowFilter.preparationStatuses[status] else { continue }
+            chips.append(ScriptFilterChip(id: "status-\(status.rawValue)", scope: "",
                                           title: status.title, state: state) {
-                rowFilter.brollStatuses[status] = nil
+                rowFilter.preparationStatuses[status] = nil
             })
         }
         return chips
@@ -3341,6 +3386,7 @@ private struct AnchorListView: View {
         editingText = row.text
         editingCursor = (row.text as NSString).length
         editingSession = UUID()
+        editingTarget = InlineEditTarget(rowID: row.id, session: editingSession, resetID: model.inlineEditingResetID)
         withAnimation(rowEditAnimation) {
             editingIndex = row.index - 1
         }
@@ -3353,12 +3399,26 @@ private struct AnchorListView: View {
 
     private func finishEditing(session: UUID) {
         guard session == editingSession, let index = editingIndex else { return }
+        guard let editingTarget,
+              editingTarget.canCommit(session: session, resetID: model.inlineEditingResetID,
+                                      at: index, in: model.rows) else {
+            cancelInlineEditing()
+            return
+        }
         let text = editingText
         editingIndex = nil
+        self.editingTarget = nil
         guard model.rows.indices.contains(index), model.rows[index].text != text else { return }
         let wasSelected = selectedScriptRowID == model.rows[index].id
         model.replaceInlineRow(at: index, with: text)
         if wasSelected { selectedScriptRowID = model.rows[index].id }
+    }
+
+    private func cancelInlineEditing() {
+        editingSession = UUID()
+        editingTarget = nil
+        editingIndex = nil
+        editingText = ""
     }
 
     private func splitRow(_ row: AnchorRow, text: String, selection: NSRange) {
@@ -3370,6 +3430,8 @@ private struct AnchorListView: View {
             editingIndex = index + 1
             editingText = model.rows[index + 1].text
             editingCursor = 0
+            editingTarget = InlineEditTarget(rowID: model.rows[index + 1].id, session: editingSession,
+                                             resetID: model.inlineEditingResetID)
         }
         pendingScrollRowID = model.rows[index + 1].id
         selectedScriptRowID = model.rows[index + 1].id
@@ -3385,12 +3447,16 @@ private struct AnchorListView: View {
         guard index > 0 else { return }
         editingSession = UUID()
         var mergedCursor: Int?
-        withAnimation(rowEditAnimation) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             mergedCursor = model.mergeInlineRowWithPrevious(at: index, text: text)
             if let mergedCursor {
                 editingIndex = index - 1
                 editingText = model.rows[index - 1].text
                 editingCursor = mergedCursor
+                editingTarget = InlineEditTarget(rowID: model.rows[index - 1].id, session: editingSession,
+                                                 resetID: model.inlineEditingResetID)
             }
         }
         guard mergedCursor != nil else { return }
@@ -3730,7 +3796,7 @@ private struct AnchorRowView: View {
     private var isDropTarget: Bool { dropState.isActive }
     private var isBinding: Bool { model.bindingRowIDs.contains(row.id) }
     private var isPendingBinding: Bool {
-        !isBinding && model.rollType(for: row.id) == .bRoll && assets.isEmpty
+        !isBinding && model.supportsPreparationStatus(for: row.id) && assets.isEmpty
     }
     private var isBroll: Bool { model.rollType(for: row.id) == .bRoll }
 
@@ -3806,8 +3872,9 @@ private struct AnchorRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 10) {
-                BrollStatusIndicator(
-                    isBroll: isBroll,
+                PreparationStatusIndicator(
+                    supportsPreparation: model.supportsPreparationStatus(for: row.id),
+                    rollType: model.rollType(for: row.id),
                     selection: model.brollPreparationStatus(for: row.id),
                     isBound: !assets.isEmpty,
                     onToggle: { model.setBrollPreparationStatus($0, for: row.id) }
@@ -3870,6 +3937,7 @@ private struct AnchorRowView: View {
                             ShootingDeviceMenu(
                                 selection: model.shootingDevice(for: row.id),
                                 devices: model.shootingDevices,
+                                roleLabel: model.shootingDeviceRoleLabel(for:),
                                 onSelect: { model.setShootingDevice($0, for: row.id) }
                             )
                             RollProductionMethodMenu(
@@ -3891,7 +3959,9 @@ private struct AnchorRowView: View {
                             session: editingSession,
                             onFinish: finishEditing,
                             onSplit: splitAtSelection,
-                            onMerge: mergeWithPrevious
+                            onMerge: mergeWithPrevious,
+                            onUndo: model.undo,
+                            onRedo: model.redo
                         )
                         .id(editingSession)
                         .frame(minHeight: 22)
@@ -3914,7 +3984,7 @@ private struct AnchorRowView: View {
             .contentShape(Rectangle())
 
             if isPendingBinding {
-                PendingAssetChip()
+                PendingAssetChip(isAuxiliary: model.isAuxiliaryARoll(for: row.id))
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
             if !assets.isEmpty {
@@ -4143,11 +4213,13 @@ private struct ScriptFilterChipView: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text(chip.scope)
+            if !chip.scope.isEmpty {
+                Text(chip.scope)
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(tint)
                 .frame(width: 14, height: 14)
                 .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+            }
             Image(systemName: chip.state == .include ? "checkmark" : "minus")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(tint)
@@ -4173,7 +4245,7 @@ private struct ScriptFilterChipView: View {
         .background(tint.opacity(0.08), in: Capsule())
         .overlay { Capsule().strokeBorder(tint.opacity(0.25), lineWidth: 0.7) }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(chip.scope)-roll \(chip.state == .include ? "只看" : "不看")\(chip.title)")
+        .accessibilityLabel("\(chip.scope.isEmpty ? "准备状态" : "\(chip.scope)-roll") \(chip.state == .include ? "只看" : "不看")\(chip.title)")
     }
 }
 
@@ -4235,6 +4307,9 @@ private struct ScriptFilterPopover: View {
 
     private var aRolls: [ScriptRowFilter.Attributes] { attributes.filter { $0.rollType == .aRoll } }
     private var bRolls: [ScriptRowFilter.Attributes] { attributes.filter { $0.rollType == .bRoll } }
+    private var preparationRows: [ScriptRowFilter.Attributes] {
+        attributes.filter { $0.rollType == .aRoll ? filter.showsAroll : filter.showsBroll }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -4250,7 +4325,7 @@ private struct ScriptFilterPopover: View {
                         .pointerCursor()
                 }
             }
-            Text("点一下只看，再点一下不看，第三下取消。A-roll 和 B-roll 各自筛选后一起显示。")
+            Text("点一下只看，再点一下不看，第三下取消。准备状态同时筛选 A-roll 和 B-roll。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -4294,18 +4369,26 @@ private struct ScriptFilterPopover: View {
                             }
                         }
                     }
-                    section("准备状态", isActive: filter.brollStatuses.isActive,
-                            clear: { filter.brollStatuses.removeAll() }) {
-                        ForEach(BrollPreparationStatus.allCases) { status in
-                            optionRow(status.title, systemImage: status.systemImage,
-                                      count: bRolls.filter { $0.brollStatus == status }.count,
-                                      state: filter.brollStatuses[status]) {
-                                filter.brollStatuses.cycle(status)
-                            }
+                }
+            }
+
+            Divider()
+
+            section("准备状态", isActive: filter.preparationStatuses.isActive,
+                    clear: { filter.preparationStatuses.removeAll() }) {
+                HStack(spacing: 16) {
+                    ForEach(ScriptPreparationFilter.allCases) { status in
+                        optionRow(status.title, systemImage: status.systemImage,
+                                  count: preparationRows.filter { status.matches($0.preparationStatus) }.count,
+                                  state: filter.preparationStatuses[status]) {
+                            filter.preparationStatuses.cycle(status)
                         }
                     }
                 }
             }
+            Text("待绑定包含待准备和素材就绪。")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
         }
         .padding(14)
         .frame(width: 480)
@@ -4404,6 +4487,7 @@ private struct ScriptFilterPopover: View {
 private struct ShootingDeviceMenu: View {
     let selection: ShootingDevice?
     let devices: [ShootingDevice]
+    let roleLabel: (ShootingDevice) -> String
     let onSelect: (ShootingDevice?) -> Void
 
     var body: some View {
@@ -4416,11 +4500,13 @@ private struct ShootingDeviceMenu: View {
                 }
             }
             ForEach(devices) { device in
+                let role = roleLabel(device)
+                let title = role.isEmpty ? device.name : "\(device.name)（\(role)）"
                 Button { onSelect(device) } label: {
                     if selection?.id == device.id {
-                        Label(device.name, systemImage: "checkmark")
+                        Label(title, systemImage: "checkmark")
                     } else {
-                        Text(device.name)
+                        Text(title)
                     }
                 }
             }
@@ -4487,8 +4573,9 @@ private struct RollProductionMethodMenu<Method: RollProductionMethod>: View {
 }
 
 /// Leading status circle, Reminders-style: gray hollow = 待准备, green check = 素材就绪, green link = 已绑定.
-private struct BrollStatusIndicator: View {
-    let isBroll: Bool
+private struct PreparationStatusIndicator: View {
+    let supportsPreparation: Bool
+    let rollType: AnchorRollType
     let selection: BrollPreparationStatus
     let isBound: Bool
     let onToggle: (BrollPreparationStatus) -> Void
@@ -4510,6 +4597,10 @@ private struct BrollStatusIndicator: View {
         displayedStatus == .pending ? .ready : .pending
     }
 
+    private func statusTitle(_ status: BrollPreparationStatus) -> String {
+        rollType == .aRoll && status == .ready ? "准备就绪" : status.title
+    }
+
     private var tint: Color {
         switch displayedStatus {
         case .pending: return Color.secondary.opacity(0.6)
@@ -4519,7 +4610,7 @@ private struct BrollStatusIndicator: View {
 
     var body: some View {
         Group {
-            if !isBroll {
+            if !supportsPreparation {
                 Image(systemName: "waveform")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.tertiary)
@@ -4528,7 +4619,7 @@ private struct BrollStatusIndicator: View {
             } else if isBound {
                 icon
                     .help("已绑定素材")
-                    .accessibilityLabel("B-roll 已绑定")
+                    .accessibilityLabel("\(rollType.title) 已绑定")
             } else {
                 Button(action: toggle) {
                     icon
@@ -4536,9 +4627,9 @@ private struct BrollStatusIndicator: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isCommittingReady)
-                .help("\(displayedStatus.title) · 点击标记为\(nextStatus.title)")
-                .accessibilityLabel("B-roll 准备进度：\(displayedStatus.title)")
-                .accessibilityHint("点击切换为\(nextStatus.title)")
+                .help("\(statusTitle(displayedStatus)) · 点击标记为\(statusTitle(nextStatus))")
+                .accessibilityLabel("\(rollType.title) 准备进度：\(statusTitle(displayedStatus))")
+                .accessibilityHint("点击切换为\(statusTitle(nextStatus))")
                 .pointerCursor()
             }
         }
@@ -4650,10 +4741,11 @@ private struct BindingProgressChip: View {
 }
 
 private struct PendingAssetChip: View {
+    var isAuxiliary = false
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.down.to.line")
-            Text("拖入素材以绑定")
+            Text(isAuxiliary ? "拖入辅设备口播视频以绑定" : "拖入素材以绑定")
             Spacer(minLength: 0)
         }
         .font(.system(size: 13))
@@ -4667,7 +4759,7 @@ private struct PendingAssetChip: View {
         }
         .padding(.leading, 28)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("B-roll 待绑定素材；从素材列表拖拽素材到这条文案")
+        .accessibilityLabel(isAuxiliary ? "辅设备 A-roll 待绑定视频；拖拽补拍口播视频到这条文案" : "B-roll 待绑定素材；从素材列表拖拽素材到这条文案")
     }
 }
 
@@ -4678,6 +4770,8 @@ private struct InlineAnchorEditor: NSViewRepresentable {
     let onFinish: (UUID) -> Void
     let onSplit: (String, NSRange) -> Void
     let onMerge: (String) -> Void
+    let onUndo: () -> Void
+    let onRedo: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -4689,6 +4783,7 @@ private struct InlineAnchorEditor: NSViewRepresentable {
         view.textColor = .labelColor
         view.drawsBackground = false
         view.isRichText = false
+        view.allowsUndo = false
         view.isVerticallyResizable = false
         view.isHorizontallyResizable = false
         view.textContainer?.widthTracksTextView = true
@@ -4701,6 +4796,8 @@ private struct InlineAnchorEditor: NSViewRepresentable {
         view.onMerge = { [weak coordinator = context.coordinator] value in
             coordinator?.parent.onMerge(value)
         }
+        view.onUndo = { [weak coordinator = context.coordinator] in coordinator?.parent.onUndo() }
+        view.onRedo = { [weak coordinator = context.coordinator] in coordinator?.parent.onRedo() }
         view.onEscape = { [weak coordinator = context.coordinator] in
             guard let coordinator else { return }
             coordinator.parent.onFinish(coordinator.creationSession)
@@ -4757,8 +4854,24 @@ private final class AnchorTextView: NSTextView {
     var onSplit: ((String, NSRange) -> Void)?
     var onMerge: ((String) -> Void)?
     var onEscape: (() -> Void)?
+    var onUndo: (() -> Void)?
+    var onRedo: (() -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleUndoShortcut(event) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private func handleUndoShortcut(_ event: NSEvent) -> Bool {
+        guard !hasMarkedText(), event.modifierFlags.contains(.command),
+              event.modifierFlags.intersection([.control, .option]).isEmpty,
+              event.charactersIgnoringModifiers?.lowercased() == "z" else { return false }
+        if event.modifierFlags.contains(.shift) { onRedo?() } else { onUndo?() }
+        return true
+    }
 
     override func keyDown(with event: NSEvent) {
+        if handleUndoShortcut(event) { return }
         if hasMarkedText() {
             super.keyDown(with: event)
             return
