@@ -18,7 +18,7 @@ B-roll配对台是一款免费、以 GPLv3 开源的原生 macOS 辅助工具。
 
 ## 下载
 
-适用于 macOS 14 或更新版本。Apple Silicon 用户可下载 [B-roll 配对台 1.0.10（arm64 DMG）](https://github.com/knockkeykey/B-roll-Desk/releases/latest/download/B-roll-Desk-1.0.10-arm64.dmg)，打开后将 App 拖入“Applications”。
+适用于 macOS 14 或更新版本。Apple Silicon 用户可下载 [B-roll 配对台 1.0.11（arm64 DMG）](https://github.com/knockkeykey/B-roll-Desk/releases/latest/download/B-roll-Desk-1.0.11-arm64.dmg)，打开后将 App 拖入“Applications”。
 
 ![B-roll 配对台全文时间线与文案联动示例](docs/images/timeline-overview.png)
 
