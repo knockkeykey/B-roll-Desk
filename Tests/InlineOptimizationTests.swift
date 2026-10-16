@@ -85,7 +85,7 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         let saved = try JSONDecoder().decode(BrollProjectSettings.self, from: Data(contentsOf: settingsURL))
         expect(saved.arollShootingDevices.keys.contains(duplicateID) && saved.arollShootingDevices[duplicateID]! == nil,
                "Background settings preserve a present nil device")
-        let paths = ["B-roll/broll-manifest.json", "B-roll/broll-for-ai.json", "A-roll/aroll-for-codex.json"]
+        let paths = ["B-roll/broll-manifest.json", "B-roll/broll-for-ai.json", "A-roll/aroll-for-ai.json"]
         let background = try paths.map { try Data(contentsOf: project.appendingPathComponent($0)) }
         _ = model.saveManifest(showMessage: false)
         let synchronous = try paths.map { try Data(contentsOf: project.appendingPathComponent($0)) }

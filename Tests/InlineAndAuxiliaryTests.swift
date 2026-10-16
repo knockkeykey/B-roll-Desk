@@ -124,7 +124,7 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         expect(auxiliary.audio == "preserve" && FileManager.default.fileExists(atPath: auxiliaryURL.path), "Auxiliary audio and file are preserved")
         expect(model.aRollVideoDisplayName == "A-roll.mov", "Auxiliary footage is not mistaken for the main upload")
         let auxManifest = try JSONDecoder().decode(CodexARollManifest.self,
-            from: Data(contentsOf: project.appendingPathComponent("A-roll/aroll-for-codex.json")))
+            from: Data(contentsOf: project.appendingPathComponent("A-roll/aroll-for-ai.json")))
         let bManifest = try JSONDecoder().decode(AIBrollManifest.self,
             from: Data(contentsOf: project.appendingPathComponent("B-roll/broll-for-ai.json")))
         expect(auxManifest.placements.count == 1 && auxManifest.placements[0].text == model.rows[0].text

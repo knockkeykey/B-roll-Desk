@@ -4069,8 +4069,9 @@ private struct AnchorNoteEditorView: View {
                     Text("记下要做的画面、动作、场景、搜索词或生成提示…")
                         .font(.system(size: 14))
                         .foregroundStyle(.tertiary)
-                        .padding(.top, 13)
-                        .padding(.leading, 11)
+                        // Match the editor's 5pt inset and native 5pt line-fragment padding.
+                        .padding(.top, 5)
+                        .padding(.horizontal, 10)
                         .allowsHitTesting(false)
                 }
             }
@@ -4283,7 +4284,7 @@ private struct ScriptFilterPopover: View {
                     clear: { filter.preparationStatuses.removeAll() }) {
                 HStack(spacing: 16) {
                     ForEach(ScriptPreparationFilter.allCases) { status in
-                        optionRow(status.title, systemImage: status.systemImage,
+                        optionRow(status.title, systemImage: nil,
                                   count: preparationRows.filter { status.matches($0.preparationStatus) }.count,
                                   state: filter.preparationStatuses[status]) {
                             filter.preparationStatuses.cycle(status)
@@ -4343,7 +4344,7 @@ private struct ScriptFilterPopover: View {
         }
     }
 
-    private func optionRow(_ title: String, systemImage: String, count: Int,
+    private func optionRow(_ title: String, systemImage: String?, count: Int,
                            state: ScriptFilterState?, action: @escaping () -> Void) -> some View {
         let tint: Color = switch state {
         case .include: .accentColor
@@ -4365,9 +4366,11 @@ private struct ScriptFilterPopover: View {
                 Image(systemName: stateImage)
                     .foregroundStyle(tint)
                 .frame(width: 14)
-                Image(systemName: systemImage)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+                }
                 Text(title)
                     .foregroundStyle(state == .exclude ? Color.secondary : Color.primary)
                     .strikethrough(state == .exclude, color: .red)

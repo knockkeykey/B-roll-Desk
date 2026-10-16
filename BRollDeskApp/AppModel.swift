@@ -886,7 +886,7 @@ final class AppModel {
                     files.append((broll.appendingPathComponent("project-settings.json"), try encoder.encode(settings)))
                     files.append((broll.appendingPathComponent("broll-manifest.json"), try encoder.encode(BrollManifest(defaultAudio: "preserve", placements: placements))))
                     files.append((broll.appendingPathComponent("broll-for-ai.json"), try encoder.encode(AIBrollManifest(placements: placements.map { AIBrollPlacement(text: $0.text, files: $0.files) }))))
-                    files.append((aroll.appendingPathComponent("aroll-for-codex.json"), try encoder.encode(CodexARollManifest(mainDevice: main, auxiliaryDevice: auxiliary, placements: arollPlacements))))
+                    files.append((aroll.appendingPathComponent("aroll-for-ai.json"), try encoder.encode(CodexARollManifest(mainDevice: main, auxiliaryDevice: auxiliary, placements: arollPlacements))))
                     let scriptURL = aroll.appendingPathComponent("正确文案.txt")
                     if FileManager.default.fileExists(atPath: scriptURL.path) { files.append((scriptURL, Data(script.utf8))) }
                 }
@@ -2508,7 +2508,7 @@ final class AppModel {
         )
         if let aRollDirectoryURL {
             try encodedJSON(currentARollManifest()).write(
-                to: aRollDirectoryURL.appendingPathComponent("aroll-for-codex.json"), options: .atomic
+                to: aRollDirectoryURL.appendingPathComponent("aroll-for-ai.json"), options: .atomic
             )
         }
     }
