@@ -302,3 +302,54 @@ struct DirectoryDropTargetModifier: ViewModifier {
         return true
     }
 }
+
+/// Consume drag-handle mouse events before the enclosing row's swipe recognizer.
+struct AnimationScriptDragHandle: NSViewRepresentable {
+    let rowNumber: Int
+    let payload: () -> Data?
+    let onDragging: (Bool) -> Void
+
+    func makeNSView(context: Context) -> AnimationScriptDragView { AnimationScriptDragView() }
+
+    func updateNSView(_ view: AnimationScriptDragView, context: Context) {
+        view.payload = payload
+        view.onDragging = onDragging
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.image)
+        view.setAccessibilityLabel("拖动动画文案第\(rowNumber)条")
+    }
+}
+
+final class AnimationScriptDragView: NSView, NSDraggingSource {
+    var payload: (() -> Data?)?
+    var onDragging: ((Bool) -> Void)?
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 24, height: 24) }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.secondaryLabelColor.setFill()
+        for offset in [-4.0, 0.0, 4.0] {
+            NSBezierPath(roundedRect: NSRect(x: (bounds.width - 13) / 2, y: bounds.midY + offset - 0.7,
+                                           width: 13, height: 1.4), xRadius: 0.7, yRadius: 0.7).fill()
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // This dedicated handle starts its native session on press, before the row can
+        // interpret movement as a swipe (also supports a fast, single-motion drag).
+        guard let data = payload?() else { return }
+        let writer = NSPasteboardItem()
+        writer.setData(data, forType: NSPasteboard.PasteboardType(AnimationRowDrag.type.identifier))
+        let item = NSDraggingItem(pasteboardWriter: writer)
+        let image = NSImage(systemSymbolName: "text.alignleft", accessibilityDescription: nil) ?? NSImage(size: bounds.size)
+        item.setDraggingFrame(bounds, contents: image)
+        onDragging?(true)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        onDragging?(false)
+    }
+}

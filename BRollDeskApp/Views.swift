@@ -244,9 +244,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.isScriptEditorPresented) {
             ScriptEditorSheet(model: model)
         }
-        .sheet(isPresented: $model.isAnimationPanelPresented) {
-            AnimationWorkspaceView(model: model)
-        }
         .sheet(isPresented: $model.isManifestPreviewPresented) {
             ManifestPreviewSheet(text: model.manifestPreviewText)
         }
@@ -2556,28 +2553,28 @@ struct ScriptTimelineWindowView: View {
         }
         .background(.windowBackground)
         .background {
-            ScriptTimelineWindowLevelController(isFloating: isPinned)
+            AuxiliaryWindowLevelController(isFloating: isPinned)
                 .frame(width: 0, height: 0)
         }
         .preferredColorScheme(preferredColorScheme)
     }
 }
 
-private struct ScriptTimelineWindowLevelController: NSViewRepresentable {
+struct AuxiliaryWindowLevelController: NSViewRepresentable {
     let isFloating: Bool
 
-    func makeNSView(context: Context) -> ScriptTimelineWindowLevelView {
-        let view = ScriptTimelineWindowLevelView()
+    func makeNSView(context: Context) -> AuxiliaryWindowLevelView {
+        let view = AuxiliaryWindowLevelView()
         view.isFloating = isFloating
         return view
     }
 
-    func updateNSView(_ view: ScriptTimelineWindowLevelView, context: Context) {
+    func updateNSView(_ view: AuxiliaryWindowLevelView, context: Context) {
         view.isFloating = isFloating
     }
 }
 
-private final class ScriptTimelineWindowLevelView: NSView {
+final class AuxiliaryWindowLevelView: NSView {
     var isFloating = false {
         didSet { updateWindowLevel() }
     }
@@ -2890,7 +2887,10 @@ private struct AnchorListView: View {
                 .hoverHelp("编辑或导入视频文案")
                 .accessibilityLabel("编辑或导入视频文案")
                 .pointerCursor()
-                Button { model.openAnimationPanel() } label: {
+                Button {
+                    model.openAnimationPanel()
+                    openWindow(id: "animation-assistant")
+                } label: {
                     Image(systemName: "sparkles")
                 }
                 .buttonStyle(IconActionButtonStyle())
@@ -2944,7 +2944,7 @@ private struct AnchorListView: View {
                             SwipeToDeleteAnchorRow(
                                 rowID: row.id,
                                 revealedRowID: $revealedDeleteRowID,
-                                isEnabled: editingIndex == nil,
+                                isEnabled: editingIndex == nil && !model.isDraggingAnimationRow,
                                 onDelete: { deleteRow(row) }
                             ) {
                                 AnchorRowView(
@@ -3897,6 +3897,13 @@ private struct AnchorRowView: View {
                             )
                         }
                         if let task = model.animationTask(for: row.id) {
+                            AnimationScriptDragHandle(
+                                rowNumber: row.index,
+                                payload: { model.animationDragData(for: row.id) },
+                                onDragging: { model.isDraggingAnimationRow = $0 }
+                            )
+                            .frame(width: 24, height: 24)
+                            .help("拖入 AI 动画助手的文案区域")
                             Button {
                                 didCopyAnimationPrompt = model.copyAnimationPrompt(task)
                                 animationCopyToken = UUID()

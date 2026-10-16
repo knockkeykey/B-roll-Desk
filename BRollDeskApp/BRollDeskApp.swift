@@ -56,6 +56,12 @@ struct BRollDeskApp: App {
             }
         }
 
+        Window("AI 动画助手", id: "animation-assistant") {
+            AnimationWorkspaceView(model: model)
+                .frame(minWidth: 680, minHeight: 540)
+        }
+        .defaultSize(width: 820, height: 760)
+
         Window("剪辑时间线", id: "script-timeline") {
             ScriptTimelineWindowView(model: model)
                 .frame(minWidth: 720, minHeight: 360)

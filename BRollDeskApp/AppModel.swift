@@ -66,11 +66,19 @@ final class AppModel {
     private(set) var selectedSourceDirectoryID: String? {
         didSet { rebuildVisibleSourceFiles() }
     }
-    var isAnimationPanelPresented = false
     var deepSeekKeyDraft = ""
     var animationRules = AnimationWorkflow.defaultRules
-    var animationTemplate = AnimationWorkflow.defaultTemplate
+    var animationTemplate = AnimationWorkflow.defaultTemplate {
+        didSet { defaults.set(animationTemplate, forKey: animationTemplateKey) }
+    }
+    private(set) var animationWorkspaceRowIDs: [String] = []
+    var isDraggingAnimationRow = false
+    var selectedAnimationWorkspaceRowID: String?
+    private(set) var pendingAnimationDrop: AnimationRowDrag?
     var animationCharacterPath = ""
+    var animationOutputDirectory = "" {
+        didSet { defaults.set(animationOutputDirectory.trimmingCharacters(in: .whitespacesAndNewlines), forKey: animationOutputDirectoryKey) }
+    }
     private(set) var animationCharacterImage: NSImage?
     /// Analysis results waiting for confirmation; the script is untouched until applied.
     var animationReviewItems: [AnimationReviewItem] = []
@@ -86,6 +94,7 @@ final class AppModel {
     private let animationTemplateKey = "broll-namer-animation-template"
     private let animationCharacterKey = "broll-namer-animation-character"
     private let animationCharacterBookmarkKey = "broll-namer-animation-character-bookmark"
+    private let animationOutputDirectoryKey = "broll-namer-animation-output-directory"
 
     var isScriptEditorPresented = false
     var isManifestPreviewPresented = false
@@ -163,7 +172,13 @@ final class AppModel {
     private var sourceDirectoryWatchers: [String: SourceDirectoryWatcher] = [:]
     private var sourceRefreshWorkItem: DispatchWorkItem?
     @ObservationIgnored private var volumeNotificationObservers: [(NotificationCenter, NSObjectProtocol)] = []
-    private var projectID = UUID().uuidString.lowercased()
+    private var projectID = UUID().uuidString.lowercased() {
+        didSet {
+            animationWorkspaceRowIDs = []
+            selectedAnimationWorkspaceRowID = nil
+            pendingAnimationDrop = nil
+        }
+    }
     @ObservationIgnored private var archiveRestorationTask: Task<Void, Never>?
     @ObservationIgnored private var pendingInlineSave: DispatchWorkItem?
     @ObservationIgnored private let inlineWriteQueue = DispatchQueue(label: "com.keyknock.broll.inline-save", qos: .utility)
@@ -260,6 +275,7 @@ final class AppModel {
         }
         animationTemplate = defaults.string(forKey: animationTemplateKey) ?? AnimationWorkflow.defaultTemplate
         animationCharacterPath = defaults.string(forKey: animationCharacterKey) ?? ""
+        animationOutputDirectory = defaults.string(forKey: animationOutputDirectoryKey) ?? ""
         if animationTemplate == AnimationWorkflow.legacyTemplate {
             // Old default embedded the character path; split it into the dedicated setting.
             animationTemplate = AnimationWorkflow.defaultTemplate
@@ -268,6 +284,10 @@ final class AppModel {
             }
             defaults.set(animationTemplate, forKey: animationTemplateKey)
             defaults.set(animationCharacterPath, forKey: animationCharacterKey)
+        }
+        if animationTemplate == AnimationWorkflow.previousTemplate {
+            animationTemplate = AnimationWorkflow.defaultTemplate
+            defaults.set(animationTemplate, forKey: animationTemplateKey)
         }
         restoreAnimationCharacterImage()
         if let data = defaults.data(forKey: animationTasksKey) {
@@ -436,6 +456,7 @@ final class AppModel {
         cachedDistribution = nil
         cachedListAnalysis = nil
         scriptAnalysisRevision += 1
+        pruneAnimationWorkspaceRows()
     }
 
     private func beginScriptAnalysisBatch() { scriptAnalysisBatchDepth += 1 }
@@ -1154,6 +1175,19 @@ final class AppModel {
             }
             return migrated
         }
+        // Inline edits regenerate content-based row IDs. Follow their explicit source mapping
+        // before pruning references, rather than losing the selection on every text edit.
+        let migratedWorkspaceIDs = Dictionary(uniqueKeysWithValues: previousRows.enumerated().compactMap { source, old -> (String, String)? in
+            guard let target = targets[source].first else { return nil }
+            return (old.id, nextRows[target].id)
+        })
+        var seenWorkspaceIDs: Set<String> = []
+        animationWorkspaceRowIDs = animationWorkspaceRowIDs.compactMap { migratedWorkspaceIDs[$0] }
+            .filter { seenWorkspaceIDs.insert($0).inserted }
+        selectedAnimationWorkspaceRowID = selectedAnimationWorkspaceRowID.flatMap { migratedWorkspaceIDs[$0] }
+        if let pending = pendingAnimationDrop {
+            pendingAnimationDrop = migratedWorkspaceIDs[pending.rowID].map { AnimationRowDrag(projectID: projectID, rowID: $0) }
+        }
         splitMode = .line
         preservesEmptyAnchors = !texts.isEmpty
         scriptText = texts.joined(separator: "\n")
@@ -1347,7 +1381,6 @@ final class AppModel {
         cancelAnimationAnalysis()
         animationTasks = []
         animationFeedback = ""
-        isAnimationPanelPresented = false
         discardUndoActions()
 
         scriptText = ""
@@ -2308,6 +2341,8 @@ final class AppModel {
     }
 
     private func applyUndoSnapshot(_ snapshot: UndoSnapshot) {
+        beginScriptAnalysisBatch()
+        defer { endScriptAnalysisBatch() }
         scriptText = snapshot.scriptText
         splitMode = snapshot.splitMode
         preservesEmptyAnchors = snapshot.preservesEmptyAnchors
@@ -3414,7 +3449,82 @@ extension AppModel {
     func openAnimationPanel() {
         do { deepSeekKeyDraft = try DeepSeekKeychain.read() }
         catch { animationFeedback = error.localizedDescription }
-        isAnimationPanelPresented = true
+    }
+
+    var animationWorkspaceTasks: [AnimationTask] {
+        let tasks = Dictionary(uniqueKeysWithValues: activeAnimationTasks.map { ($0.rowID, $0) })
+        return animationWorkspaceRowIDs.compactMap { tasks[$0] }
+    }
+
+    var selectedAnimationWorkspaceTask: AnimationTask? {
+        animationWorkspaceTasks.first { $0.rowID == selectedAnimationWorkspaceRowID }
+    }
+
+    func animationDragData(for rowID: String) -> Data? {
+        guard animationTask(for: rowID) != nil else { return nil }
+        return try? JSONEncoder().encode(AnimationRowDrag(projectID: projectID, rowID: rowID))
+    }
+
+    @discardableResult
+    func receiveAnimationDrop(_ data: Data) -> Bool {
+        guard let drag = try? JSONDecoder().decode(AnimationRowDrag.self, from: data),
+              drag.projectID == projectID, animationTask(for: drag.rowID) != nil else {
+            animationFeedback = "请拖入当前项目中的非空动画条目。"
+            return false
+        }
+        pruneAnimationWorkspaceRows()
+        if animationWorkspaceRowIDs.contains(drag.rowID) {
+            selectedAnimationWorkspaceRowID = drag.rowID
+            pendingAnimationDrop = nil
+        } else if animationWorkspaceRowIDs.isEmpty {
+            animationWorkspaceRowIDs = [drag.rowID]
+            selectedAnimationWorkspaceRowID = drag.rowID
+            pendingAnimationDrop = nil
+        } else {
+            pendingAnimationDrop = drag
+        }
+        return true
+    }
+
+    func resolveAnimationDrop(keepingOthers: Bool) {
+        guard let drag = pendingAnimationDrop else { return }
+        pendingAnimationDrop = nil
+        guard drag.projectID == projectID, animationTask(for: drag.rowID) != nil else {
+            animationFeedback = "这条文案已变化，请重新拖入。"
+            return
+        }
+        pruneAnimationWorkspaceRows()
+        if !animationWorkspaceRowIDs.contains(drag.rowID) {
+            if !keepingOthers, let selected = selectedAnimationWorkspaceRowID,
+               let index = animationWorkspaceRowIDs.firstIndex(of: selected) {
+                animationWorkspaceRowIDs[index] = drag.rowID
+            } else {
+                animationWorkspaceRowIDs.append(drag.rowID)
+            }
+        }
+        selectedAnimationWorkspaceRowID = drag.rowID
+    }
+
+    func cancelAnimationDrop() { pendingAnimationDrop = nil }
+
+    func removeAnimationWorkspaceRow(_ rowID: String) {
+        animationWorkspaceRowIDs.removeAll { $0 == rowID }
+        if selectedAnimationWorkspaceRowID == rowID {
+            selectedAnimationWorkspaceRowID = animationWorkspaceRowIDs.first
+        }
+    }
+
+    private func pruneAnimationWorkspaceRows() {
+        guard !animationWorkspaceRowIDs.isEmpty || pendingAnimationDrop != nil else { return }
+        let valid = Set(rows.filter {
+            rollType(for: $0.id) == .bRoll && brollProductionMethod(for: $0.id) == .animation &&
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.map(\.id))
+        animationWorkspaceRowIDs.removeAll { !valid.contains($0) }
+        if !animationWorkspaceRowIDs.contains(selectedAnimationWorkspaceRowID ?? "") {
+            selectedAnimationWorkspaceRowID = animationWorkspaceRowIDs.first
+        }
+        if let pending = pendingAnimationDrop, !valid.contains(pending.rowID) { pendingAnimationDrop = nil }
     }
 
     @discardableResult
@@ -3608,7 +3718,6 @@ extension AppModel {
         do {
             try applyAnimationCandidates(selected)
             discardAnimationReview()
-            isAnimationPanelPresented = false
         } catch {
             animationFeedback = error.localizedDescription
         }
@@ -3705,7 +3814,7 @@ extension AppModel {
     @discardableResult
     func copyAnimationPrompt(_ task: AnimationTask) -> Bool {
         NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompt(for: animationPromptTask(task), template: animationTemplate, character: animationCharacterPath), forType: .string)
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompt(for: animationPromptTask(task), template: animationTemplate, character: animationCharacterPath, outputDirectory: animationOutputDirectory), forType: .string)
         animationFeedback = didCopy ? "已复制完整制作提示词。" : "复制失败，请重试。"
         return didCopy
     }
@@ -3715,7 +3824,7 @@ extension AppModel {
         let tasks = activeAnimationTasks
         guard !tasks.isEmpty else { animationFeedback = "没有可复制的动画任务。"; return false }
         NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath), forType: .string)
+        let didCopy = NSPasteboard.general.setString(AnimationWorkflow.prompts(for: tasks.map { animationPromptTask($0) }, template: animationTemplate, character: animationCharacterPath, outputDirectory: animationOutputDirectory), forType: .string)
         animationFeedback = didCopy ? "已复制 \(tasks.count) 条完整制作提示词，可直接粘贴给制作动画的 AI。" : "复制失败，请重试。"
         return didCopy
     }

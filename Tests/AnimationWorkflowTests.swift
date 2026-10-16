@@ -61,6 +61,15 @@ struct AnimationWorkflowTests {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.writeObjects(items)
         }
+        let dragInfoURL = URL(fileURLWithPath: "BRollDeskApp/Info.plist")
+        let dragInfo = (try? Data(contentsOf: dragInfoURL)).flatMap {
+            try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any]
+        }
+        let exportedDragTypes = dragInfo?["UTExportedTypeDeclarations"] as? [[String: Any]] ?? []
+        expect(exportedDragTypes.contains {
+            $0["UTTypeIdentifier"] as? String == AnimationRowDrag.type.identifier &&
+            ($0["UTTypeConformsTo"] as? [String] ?? []).contains("public.data")
+        }, "The native drag type must be exported in Info.plist so SwiftUI accepts cross-window drops")
         expect(ScriptParser.split("", mode: .line, preservingEmptyLines: true).isEmpty, "An empty script must not create a phantom row")
         expect(ScriptParser.split("原文\n\n后文", mode: .line, preservingEmptyLines: true) == ["原文", "", "后文"], "Intentional blank anchors must remain intact")
         let rows = [AnchorRow(id: "a", index: 1, text: "前言。把分散的素材"), AnchorRow(id: "b", index: 2, text: "统一放进文件夹。结尾。")]
@@ -111,13 +120,20 @@ struct AnimationWorkflowTests {
         let singlePrompt = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate)
         expect(singlePrompt.contains("表达重点：汇聚") && !singlePrompt.contains("画面思路：") && singlePrompt.contains("视频文件的命名需要是文案。"), "Single copy retains template naming and expression focus")
         let noCharacter = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate)
-        expect(!noCharacter.contains("{{character}}") && noCharacter.contains("小螃蟹角色换成 你提供的角色参考图") && noCharacter.contains(task.text), "Unset character preserves the replacement instruction without an unresolved placeholder")
+        expect(!noCharacter.contains("{{character}}") && !noCharacter.contains("小螃蟹角色换成") && noCharacter.contains(task.text), "Unset character omits replacement requirements without unresolved placeholders")
         let noCharacterBatch = AnimationWorkflow.prompts(for: [task, secondTask], template: AnimationWorkflow.defaultTemplate)
-        expect(noCharacterBatch.components(separatedBy: "小螃蟹角色换成 你提供的角色参考图").count == 2, "Batch preserves the unset reference instruction once")
+        expect(!noCharacterBatch.contains("小螃蟹角色换成"), "Batch omits the unset reference requirement")
         expect(AnimationWorkflow.prompt(for: task, template: "角色：{{character}}；文案：{{text}}", character: " \n").contains(task.text), "Unset character must not remove text sharing the same template line")
         expect(!noCharacter.contains("【统一制作要求】") && !noCharacter.contains("所有成品放在同一个输出目录") && noCharacter.hasSuffix("表达重点：" + task.reason), "Single prompts omit the entire shared requirements block")
         expect(AnimationWorkflow.prompt(for: task, template: "做动画：{{text}}", character: "/tmp/c.png").contains("角色参考图：/tmp/c.png"), "Character appends without placeholder")
-        expect(!singlePrompt.contains("目录") && !prompt.contains("目录"), "Single and batch prompts do not prescribe an output directory")
+        expect(!singlePrompt.contains("{{outputDirectory}}") && !prompt.contains("{{outputDirectory}}"), "Unset output directory leaves no placeholder")
+        let configuredPrompt = AnimationWorkflow.prompt(for: task, template: AnimationWorkflow.defaultTemplate, character: "/tmp/c.png", outputDirectory: " /tmp/动画输出 ")
+        let configuredBatch = AnimationWorkflow.prompts(for: [task, secondTask], template: AnimationWorkflow.defaultTemplate, character: "/tmp/c.png", outputDirectory: "/tmp/动画输出")
+        expect(configuredPrompt.contains("输出到/tmp/动画输出。") && configuredBatch.components(separatedBy: "输出到/tmp/动画输出。").count == 2, "Configured output path is trimmed and included once in single and batch prompts")
+        for result in [configuredPrompt, configuredBatch] {
+            expect(result.contains("【文案】-【时间】") && result.contains("固定种子") && result.contains("12fps") && result.contains("背景层不参与") && result.contains("如果需要，则把小螃蟹"), "New production requirements survive both copy formats")
+        }
+        expect(AnimationWorkflow.prompt(for: task, template: "做动画：{{text}}", outputDirectory: "/tmp/out").contains("输出到/tmp/out。"), "Custom templates also receive the configured output directory")
         var blankFocus = task
         blankFocus.reason = " \t\n"
         let blankPrompt = AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate)
@@ -126,6 +142,17 @@ struct AnimationWorkflowTests {
         expect(!AnimationWorkflow.prompt(for: blankFocus, template: AnimationWorkflow.defaultTemplate).contains("表达重点："), "Empty focus is omitted")
         let mixedBatch = AnimationWorkflow.prompts(for: [blankFocus, secondTask], template: AnimationWorkflow.defaultTemplate)
         expect(mixedBatch.components(separatedBy: "表达重点：").count == 2 && mixedBatch.contains("表达重点：" + secondTask.reason), "Batch omits only the empty task focus")
+        let inlineSections = AnimationTemplateSection.parse(AnimationWorkflow.defaultTemplate)
+        expect(inlineSections.map(\.raw).joined() == AnimationWorkflow.defaultTemplate, "Default inline template round-trips without text loss")
+        expect(inlineSections.filter { $0.kind != .text }.count == 3, "Default template has image, script and directory anchors")
+        let mixedTemplate = "角色{{character}}，文案{{text}}，目录{{outputDirectory}}，再次{{character}}。"
+        expect(AnimationTemplateSection.parse(mixedTemplate).map(\.raw).joined() == mixedTemplate, "Mixed and repeated custom placeholders retain exact order and content")
+        let migratedSections = AnimationTemplateSection.parse("我的自定义正文。")
+        expect(migratedSections.first?.raw == "我的自定义正文。" && migratedSections.contains { $0.kind == .script }, "Custom text is preserved and missing resource positions are appended")
+        var editedSection = inlineSections.first { $0.kind == .character }!
+        editedSection.updateText("换成另一种角色说明")
+        expect(editedSection.raw.contains("{{character}}"), "Editing surrounding text cannot remove fixed resource anchors")
+        expect(!AnimationWorkflow.prompt(for: task, template: "角色：{{character}}；文案：{{text}}；输出到{{outputDirectory}}。").contains("{{"), "Omitting resource clauses keeps neighboring script placeholders resolvable")
         print("PASS segmentation, source integrity, filenames, complete prompts and character handling")
 
         let suite = "BrollAnimationTests." + UUID().uuidString
@@ -139,14 +166,80 @@ struct AnimationWorkflowTests {
         let project = root.appendingPathComponent("project", isDirectory: true)
         let outputs = root.appendingPathComponent("outputs", isDirectory: true)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
+        let workspaceSuite = suite + ".workspace"
+        let workspaceDefaults = UserDefaults(suiteName: workspaceSuite)!
+        defer { workspaceDefaults.removePersistentDomain(forName: workspaceSuite) }
+        let workspace = AppModel(defaults: workspaceDefaults, assignmentsURL: root.appendingPathComponent("workspace.json"))
+        workspace.undoManager.groupsByEvent = false
+        workspace.scriptText = "第一条动画。\n第二条动画。\n第三条动画。\n普通文案。"
+        workspace.parseScript(persist: false)
+        let rowIDs = workspace.rows.map(\.id)
+        for id in rowIDs.prefix(3) {
+            event(workspace) { workspace.toggleRollType(for: id) }
+            event(workspace) { workspace.setBrollProductionMethod(.animation, for: id) }
+        }
+        let firstDrag = workspace.animationDragData(for: rowIDs[0])!
+        let secondDrag = workspace.animationDragData(for: rowIDs[1])!
+        let thirdDrag = workspace.animationDragData(for: rowIDs[2])!
+        expect(workspace.animationDragData(for: rowIDs[3]) == nil, "Only animation rows offer a drag payload")
+        let foreignDrag = try JSONEncoder().encode(AnimationRowDrag(projectID: "other-project", rowID: rowIDs[0]))
+        expect(!workspace.receiveAnimationDrop(foreignDrag) && !workspace.receiveAnimationDrop(Data("invalid".utf8)), "Reject foreign and malformed row drags")
+        expect(workspace.receiveAnimationDrop(firstDrag) && workspace.animationWorkspaceRowIDs == [rowIDs[0]], "First drop selects an animation without altering it")
+        expect(workspace.receiveAnimationDrop(secondDrag) && workspace.pendingAnimationDrop != nil && workspace.animationWorkspaceRowIDs == [rowIDs[0]], "Later drops await a choice")
+        workspace.cancelAnimationDrop()
+        expect(workspace.animationWorkspaceRowIDs == [rowIDs[0]], "Cancelling preserves existing rows")
+        _ = workspace.receiveAnimationDrop(secondDrag)
+        workspace.resolveAnimationDrop(keepingOthers: true)
+        expect(workspace.animationWorkspaceRowIDs == Array(rowIDs.prefix(2)) && workspace.selectedAnimationWorkspaceRowID == rowIDs[1], "Append keeps existing rows and selects new row")
+        _ = workspace.receiveAnimationDrop(firstDrag)
+        expect(workspace.animationWorkspaceRowIDs.count == 2 && workspace.pendingAnimationDrop == nil && workspace.selectedAnimationWorkspaceRowID == rowIDs[0], "Repeated drop selects without duplicates or confirmation")
+        _ = workspace.receiveAnimationDrop(thirdDrag)
+        workspace.resolveAnimationDrop(keepingOthers: false)
+        expect(workspace.animationWorkspaceRowIDs == [rowIDs[2], rowIDs[1]], "Replace changes only the selected row")
+        event(workspace) { workspace.replaceInlineRow(at: 2, with: "更新后的动画。") }
+        let editedWorkspaceRowID = workspace.rows[2].id
+        event(workspace) { workspace.setNote("最新表达重点", for: editedWorkspaceRowID) }
+        expect(workspace.selectedAnimationWorkspaceTask?.text == "更新后的动画。", "Workspace follows the source text")
+        expect(workspace.copyAnimationPrompt(workspace.selectedAnimationWorkspaceTask!), "Selected workspace row copies")
+        let liveClipboard = NSPasteboard.general.string(forType: .string) ?? ""
+        expect(liveClipboard.contains("更新后的动画。") && liveClipboard.contains("最新表达重点"), "Copy resolves current source text and notes")
+        event(workspace) { workspace.setBrollProductionMethod(.screenRecording, for: editedWorkspaceRowID) }
+        expect(workspace.animationWorkspaceRowIDs == [rowIDs[1]], "Leaving animation removes the workspace reference")
+        event(workspace) { workspace.deleteInlineRow(at: 1) }
+        expect(workspace.animationWorkspaceRowIDs.isEmpty, "Deleting the source clears its reference")
+        expect(!workspace.receiveAnimationDrop(secondDrag), "Removed row drag payload is rejected")
+        workspace.animationTemplate = "自动保存的模板：{{text}}"
+        expect(AppModel(defaults: workspaceDefaults, assignmentsURL: root.appendingPathComponent("workspace-reload.json")).animationTemplate == workspace.animationTemplate, "Inline template edits persist immediately")
+        let restarted = AppModel(defaults: workspaceDefaults, assignmentsURL: root.appendingPathComponent("workspace-restart.json"))
+        expect(restarted.animationWorkspaceRowIDs.isEmpty, "Workspace selections are not persisted across restarts")
+        // Restoring a different project clears existing references and invalidates old drags.
+        event(workspace) { workspace.toggleRollType(for: workspace.rows[0].id) }
+        event(workspace) { workspace.toggleRollType(for: workspace.rows[0].id) }
+        event(workspace) { workspace.setBrollProductionMethod(.animation, for: workspace.rows[0].id) }
+        _ = workspace.receiveAnimationDrop(workspace.animationDragData(for: workspace.rows[0].id)!)
+        workspace.acceptDestinationDirectoryDrop(root.appendingPathComponent("another-project"))
+        expect(workspace.animationWorkspaceRowIDs.isEmpty && !workspace.receiveAnimationDrop(firstDrag), "Project switch clears workspace rows and rejects stale project payloads")
+        print("PASS animation workspace: drag identity, choices, live data, autosave and lifecycle")
         defaults.set(AnimationWorkflow.legacyTemplate, forKey: "broll-namer-animation-template")
         let legacyRules = AnimationWorkflow.defaultRules
             .replacingOccurrences(of: "| 序号 | 适合动画的原文段落 | 推荐理由 |\n|---|---|---|", with: "| 序号 | 适合动画的原文段落 | 推荐理由 | 一句话画面思路 |\n|---|---|---|---|")
             .replacingOccurrences(of: "如果没有符合标准的段落", with: "画面思路要说明“什么对象发生什么变化”，不要只写“做一个生动的动画”，也不要用整段字幕出现代替动画。\n如果没有符合标准的段落")
         defaults.set(legacyRules, forKey: "broll-namer-animation-rules")
         defaults.set(true, forKey: "broll-namer-preserves-empty-anchors")
-        // A directory saved by older versions must no longer affect copied prompts.
+        // Restore output directories configured in the assistant, including older saved values.
         defaults.set(outputs.path, forKey: "broll-namer-animation-output-directory")
+        let migrationSuite = suite + ".migration"
+        let migrationDefaults = UserDefaults(suiteName: migrationSuite)!
+        defer { migrationDefaults.removePersistentDomain(forName: migrationSuite) }
+        migrationDefaults.set(AnimationWorkflow.previousTemplate, forKey: "broll-namer-animation-template")
+        let migratedModel = AppModel(defaults: migrationDefaults, assignmentsURL: root.appendingPathComponent("migration.json"))
+        expect(migratedModel.animationTemplate == AnimationWorkflow.defaultTemplate, "Previous placeholder default upgrades to the new animation requirements")
+        migratedModel.animationOutputDirectory = " /tmp/新输出 "
+        let restoredModel = AppModel(defaults: migrationDefaults, assignmentsURL: root.appendingPathComponent("restored.json"))
+        expect(restoredModel.animationOutputDirectory == "/tmp/新输出", "Typed output directory persists across model reloads")
+        migrationDefaults.set("我的模板：{{text}}", forKey: "broll-namer-animation-template")
+        let customModel = AppModel(defaults: migrationDefaults, assignmentsURL: root.appendingPathComponent("custom.json"))
+        expect(customModel.animationTemplate == "我的模板：{{text}}", "Custom templates are preserved during migration")
         let model = AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL)
         defer { model.flushPendingInlineSaves() }
         expect(model.animationRules == AnimationWorkflow.defaultRules && defaults.string(forKey: "broll-namer-animation-rules") == AnimationWorkflow.defaultRules, "Saved default rules migrate and persist without creative output")
@@ -221,7 +314,7 @@ struct AnimationWorkflowTests {
         expect(defaults.data(forKey: "broll-namer-animation-character-bookmark") == nil,
                "Removing the reference must also remove its persistent file access")
         expect(AppModel(defaults: defaults, assignmentsURL: assignmentCacheURL).animationCharacterPath.isEmpty, "Removing the reference saves immediately")
-        expect(model.copyAnimationPrompt(manualTask) && (NSPasteboard.general.string(forType: .string) ?? "").contains("小螃蟹角色换成 你提供的角色参考图"), "Row clipboard retains replacement instructions after removing the reference")
+        expect(model.copyAnimationPrompt(manualTask) && !(NSPasteboard.general.string(forType: .string) ?? "").contains("小螃蟹角色换成"), "Row clipboard omits replacement requirements after removing the reference")
         event(model) { model.setBrollProductionMethod(.screenRecording, for: manualRow.id) }
         expect(model.animationTask(for: manualRow.id) == nil, "Other production methods have no animation prompt")
         model.undo()
@@ -259,7 +352,6 @@ struct AnimationWorkflowTests {
         model.animationReviewItems[1].isSelected = false
         event(model) { model.applyAnimationReview() }
         expect(model.animationReviewItems.isEmpty && model.activeAnimationTasks.count == 1 && model.activeAnimationTasks[0].text == selected.text, "Only checked candidates apply")
-        expect(!model.isAnimationPanelPresented, "Applying review returns to the script list")
         expect(model.note(for: model.activeAnimationTasks[0].rowID) == selected.reason, "Animation reason becomes the editable production note")
         model.undo()
         expect(model.animationTasks.isEmpty && model.rows.count == 3, "Applied review undoes as one step")
@@ -281,7 +373,7 @@ struct AnimationWorkflowTests {
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：" + model.note(for: originalTask.rowID)) == true, "Clipboard uses the note's expression focus")
         expect(NSPasteboard.general.string(forType: .string)?.contains("【统一制作要求】") == false, "Single-row clipboard omits shared requirements")
         let singleClipboard = NSPasteboard.general.string(forType: .string) ?? ""
-        expect(!singleClipboard.contains("目录") && !singleClipboard.contains(outputs.path), "Single clipboard ignores the legacy output directory")
+        expect(singleClipboard.contains("输出到" + outputs.path + "。"), "Single clipboard includes the assistant output directory")
         event(model) { model.setNote("", for: originalTask.rowID) }
         expect(model.copyAnimationPrompt(originalTask), "Prompt copies with cleared note")
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：") == false, "Cleared note omits focus instead of restoring AI reason")
@@ -292,7 +384,7 @@ struct AnimationWorkflowTests {
         expect(model.copyAllAnimationPrompts(), "Batch prompt copies")
         expect(NSPasteboard.general.string(forType: .string)?.contains("表达重点：自定义表达重点") == true, "Edited note drives batch production prompts")
         let batchClipboard = NSPasteboard.general.string(forType: .string) ?? ""
-        expect(!batchClipboard.contains("目录") && !batchClipboard.contains(outputs.path), "Batch clipboard ignores the legacy directory and omits shared directory requirements")
+        expect(batchClipboard.contains("输出到" + outputs.path + "。"), "Batch clipboard includes the assistant output directory")
         model.undo()
         let settingsURL = project.appendingPathComponent("B-roll/project-settings.json")
         var settings = try JSONDecoder().decode(BrollProjectSettings.self, from: Data(contentsOf: settingsURL))

@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import UniformTypeIdentifiers
 
 struct AnimationTask: Codable, Equatable, Identifiable {
     var id: String
@@ -47,8 +48,114 @@ enum AnimationWorkflowError: LocalizedError {
     }
 }
 
+/// Internal drags carry identity only; content is resolved from the shared model at drop/copy time.
+struct AnimationRowDrag: Codable, Equatable {
+    static let type = UTType(exportedAs: "com.keyknock.BrollNamer.animation-row", conformingTo: .data)
+    let projectID: String
+    let rowID: String
+}
+
+struct AnimationTemplateSection: Equatable {
+    enum Kind: String, CaseIterable {
+        case text, character, script, outputDirectory
+        var marker: String {
+            switch self {
+            case .text: return ""
+            case .character: return "{{character}}"
+            case .script: return "{{text}}"
+            case .outputDirectory: return "{{outputDirectory}}"
+            }
+        }
+        var label: String {
+            switch self {
+            case .text: return ""
+            case .character: return "下方角色参考图"
+            case .script: return "下方所选文案"
+            case .outputDirectory: return "下方输出目录"
+            }
+        }
+    }
+    let kind: Kind
+    var raw: String
+
+    var editableText: String { kind == .text ? raw : raw.replacingOccurrences(of: kind.marker, with: kind.label) }
+
+    mutating func updateText(_ text: String) {
+        if kind == .text { raw = text; return }
+        raw = text.replacingOccurrences(of: kind.label, with: kind.marker)
+        // Resource anchors stay available even when their surrounding sentence is rewritten.
+        if !raw.contains(kind.marker) { raw += kind.marker }
+    }
+
+    static func parse(_ template: String) -> [Self] {
+        let normalized = template.replacingOccurrences(of: "xxxxxxxx", with: "{{text}}")
+        let kinds: [Kind] = [.character, .script, .outputDirectory]
+        var sections: [Self] = []
+        var textBuffer = ""
+        func flushText() {
+            if !textBuffer.isEmpty { sections.append(Self(kind: .text, raw: textBuffer)); textBuffer = "" }
+        }
+        let lines = normalized.components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
+            let raw = line + (index < lines.count - 1 ? "\n" : "")
+            let markers = kinds.flatMap { kind in
+                raw.components(separatedBy: kind.marker).dropFirst().map { _ in kind }
+            }
+            if markers.count == 1, let kind = markers.first {
+                flushText()
+                sections.append(Self(kind: kind, raw: raw))
+            } else if markers.count > 1 {
+                // Keep mixed/repeated placeholders in custom templates in their original order.
+                flushText()
+                var remainder = raw
+                while let match = kinds.compactMap({ kind -> (Kind, Range<String.Index>)? in
+                    remainder.range(of: kind.marker).map { (kind, $0) }
+                }).min(by: { $0.1.lowerBound < $1.1.lowerBound }) {
+                    let prefix = String(remainder[..<match.1.lowerBound])
+                    if !prefix.isEmpty { sections.append(Self(kind: .text, raw: prefix)) }
+                    sections.append(Self(kind: match.0, raw: match.0.marker))
+                    remainder = String(remainder[match.1.upperBound...])
+                }
+                if !remainder.isEmpty { sections.append(Self(kind: .text, raw: remainder)) }
+            } else { textBuffer += raw }
+        }
+        flushText()
+        for kind in kinds where !sections.contains(where: { $0.kind == kind }) {
+            let sentence: String
+            switch kind {
+            case .character: sentence = "需要角色时使用{{character}}。"
+            case .script: sentence = "这是我的文案：“{{text}}”。"
+            case .outputDirectory: sentence = "输出到{{outputDirectory}}。"
+            case .text: continue
+            }
+            sections.append(Self(kind: kind, raw: "\n\n" + sentence))
+        }
+        return sections
+    }
+}
+
 enum AnimationWorkflow {
     static let defaultTemplate = """
+    参考 https://github.com/JohnHeibel/PDoomVideo 的视觉风格，根据我的文案帮我生成动画视频。
+
+    不要 BGM，需要音效，不要为音效加字幕，比如：“咔”、“嗒”、“啪”、“吱”、“咚”。
+
+    背景改成静态的：一层纯色水彩底，最多叠一个很淡的、不动的中心晕染，不要同心圆环，不要旋转，不要脉动/缩放。
+    背景的水彩 fill 用固定种子（整个镜头一个 seed，不跟 t 变，也不跟 jit 的 12fps 重置走），保证边缘每帧完全一样、不闪。
+    "boil" 抖动只给前景角色和道具的描边，背景层不参与。纸纹和暗角照常叠在最上面。
+
+    你根据文案判断是否需要角色，如果需要，则把小螃蟹角色换成 {{character}} 。
+
+    这是我的文案：“{{text}}”。
+
+    你存放代码以及其他各种东西的文件夹的命名格式是“【文案】-【时间】”。
+    输出到{{outputDirectory}}。
+
+    视频文件的命名需要是文案。
+    """
+
+    /// Previous default; upgrade it without replacing a user's custom template.
+    static let previousTemplate = """
     参考 https://github.com/JohnHeibel/PDoomVideo 的视觉风格，
     根据我的文案帮我生成动画视频。
     不要 BGM，需要音效，不要为音效加字幕，比如：“咔”、“嗒”、“啪”、“吱”、“咚”。
@@ -236,14 +343,27 @@ enum AnimationWorkflow {
         return candidate
     }
 
-    private static func resolvedTemplate(_ template: String, character: String) -> String {
+    private static func omittingResource(_ marker: String, from template: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: marker)
+        let pattern = "[^。\\n；;！？!?{}]*" + escaped + "[^。\\n；;！？!?{}]*[。；;！？!?]?"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return template }
+        return regex.stringByReplacingMatches(in: template, range: NSRange(template.startIndex..., in: template), withTemplate: "")
+    }
+
+    private static func resolvedTemplate(_ template: String, character: String, outputDirectory: String) -> String {
         let character = character.trimmingCharacters(in: .whitespacesAndNewlines)
         var base = template
-        if base.contains("{{character}}") {
-            base = base.replacingOccurrences(of: "{{character}}", with: character.isEmpty ? "你提供的角色参考图" : character)
-        } else if !character.isEmpty {
-            base += "\n角色参考图：\(character)"
-        }
+        if character.isEmpty {
+            base = omittingResource("{{character}}", from: base)
+        } else if base.contains("{{character}}") {
+            base = base.replacingOccurrences(of: "{{character}}", with: character)
+        } else { base += "\n需要角色时使用角色参考图：\(character)" }
+        let outputDirectory = outputDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if outputDirectory.isEmpty {
+            base = omittingResource("{{outputDirectory}}", from: base)
+        } else if base.contains("{{outputDirectory}}") {
+            base = base.replacingOccurrences(of: "{{outputDirectory}}", with: outputDirectory)
+        } else { base += "\n输出到\(outputDirectory)。" }
         return base
     }
 
@@ -252,8 +372,8 @@ enum AnimationWorkflow {
         return reason.isEmpty ? "" : "表达重点：\(reason)"
     }
 
-    static func prompt(for task: AnimationTask, template: String, character: String = "") -> String {
-        let base = resolvedTemplate(template, character: character)
+    static func prompt(for task: AnimationTask, template: String, character: String = "", outputDirectory: String = "") -> String {
+        let base = resolvedTemplate(template, character: character, outputDirectory: outputDirectory)
         let filled: String
         if base.contains("{{text}}") {
             filled = base.replacingOccurrences(of: "{{text}}", with: task.text)
@@ -266,10 +386,10 @@ enum AnimationWorkflow {
             .filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
-    static func prompts(for tasks: [AnimationTask], template: String, character: String = "") -> String {
+    static func prompts(for tasks: [AnimationTask], template: String, character: String = "", outputDirectory: String = "") -> String {
         guard !tasks.isEmpty else { return "" }
         let instructions = "请按顺序制作以下 \(tasks.count) 个独立动画视频。"
-        let requirements = resolvedTemplate(template, character: character)
+        let requirements = resolvedTemplate(template, character: character, outputDirectory: outputDirectory)
             .replacingOccurrences(of: "这是我的文案：“{{text}}”。", with: "")
             .replacingOccurrences(of: "视频文件的命名需要是文案。", with: "")
             .replacingOccurrences(of: "{{text}}", with: "下方任务中的对应文案")

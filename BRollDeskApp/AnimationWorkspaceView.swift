@@ -2,10 +2,16 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// Script analysis workspace; production tasks live in the filtered script list.
+/// Independent animation production and full-script analysis workspace.
 struct AnimationWorkspaceView: View {
     @Bindable var model: AppModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissWindow) private var dismissWindow
+    @AppStorage("broll-namer-animation-always-on-top") private var isPinned = false
+    @AppStorage("broll-namer-theme") private var themeRawValue = AppTheme.system.rawValue
+    @State private var page = AnimationPage.production
+    @State private var sections: [AnimationTemplateSection] = []
+    @State private var isScriptDropTargeted = false
+    @State private var resetTemplate = false
     @State private var settingsDestination: AnimationSettingsDestination?
     @State private var isAnalysisHelpPresented = false
 
@@ -21,7 +27,14 @@ struct AnimationWorkspaceView: View {
                 .padding(.top, 20)
                 .padding(.bottom, 16)
             Divider()
-            analyzePage
+            Group {
+                if page == .production { productionPage }
+                else {
+                    analyzePage
+                        .disabled(model.isAnalyzingAnimations)
+                        .overlay { if model.isAnalyzingAnimations { analysisLoadingOverlay } }
+                }
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .background(Color(nsColor: .windowBackgroundColor))
             Divider()
@@ -29,16 +42,25 @@ struct AnimationWorkspaceView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)
         }
-        .frame(width: 820, height: 640)
-        .disabled(model.isAnalyzingAnimations)
-        .accessibilityHidden(model.isAnalyzingAnimations)
-        .blur(radius: model.isAnalyzingAnimations ? 2 : 0)
-        .overlay {
-            if model.isAnalyzingAnimations {
-                analysisLoadingOverlay
-            }
+        .background(AuxiliaryWindowLevelController(isFloating: isPinned).frame(width: 0, height: 0))
+        .preferredColorScheme(preferredColorScheme)
+        .onAppear { loadTemplate() }
+        .onChange(of: model.animationTemplate) { _, value in
+            if sections.map(\.raw).joined() != value { loadTemplate() }
         }
-        .interactiveDismissDisabled(model.isBusy || model.isAnalyzingAnimations)
+        .alert("如何加入这条文案？", isPresented: Binding(
+            get: { model.pendingAnimationDrop != nil },
+            set: { if !$0 { model.cancelAnimationDrop() } }
+        )) {
+            Button("替换当前") { model.resolveAnimationDrop(keepingOthers: false) }
+            Button("保留多条") { model.resolveAnimationDrop(keepingOthers: true) }
+            Button("取消", role: .cancel) { model.cancelAnimationDrop() }
+        } message: {
+            Text("替换当前选中的文案，或保留已有条目并加入新文案。")
+        }
+        .confirmationDialog("恢复默认制作提示词？", isPresented: $resetTemplate) {
+            Button("恢复默认", role: .destructive) { model.animationTemplate = AnimationWorkflow.defaultTemplate }
+        } message: { Text("当前自定义提示词将被覆盖，角色图和输出目录保留。") }
         .sheet(item: $settingsDestination) { destination in
             AnimationSettingsSheet(model: model, destination: destination)
         }
@@ -100,11 +122,21 @@ struct AnimationWorkspaceView: View {
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("AI 动画助手").font(.title3.weight(.semibold))
-                    Text("分析全文，筛选适合动画的段落。")
+                    Text("拖入动画文案，配置并复制制作提示词。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Toggle(isOn: $isPinned) {
+                    Label("置顶", systemImage: isPinned ? "pin.fill" : "pin")
+                }
+                .toggleStyle(.button)
+                .accessibilityLabel("动画助手窗口置顶")
             }
+            Picker("工作区", selection: $page) {
+                Text("制作提示词").tag(AnimationPage.production)
+                Text("全文分析").tag(AnimationPage.analysis)
+            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -115,25 +147,155 @@ struct AnimationWorkspaceView: View {
             if model.isTestingDeepSeek || model.isBusy {
                 ProgressView().controlSize(.small)
             }
-            Text(model.animationFeedback.isEmpty ? footerHint : model.animationFeedback)
+            Text(model.animationFeedback.isEmpty ? (page == .production ? "仅复制当前选中文案的完整提示词；修改会自动保存。" : footerHint) : model.animationFeedback)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .lineLimit(2, reservesSpace: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("完成") { dismiss() }
+            Button("关闭") { dismissWindow(id: "animation-assistant") }
                 .keyboardShortcut(.cancelAction)
                 .disabled(model.isBusy)
-            Button("复制全部提示词") { model.copyAllAnimationPrompts() }
-                .disabled(model.activeAnimationTasks.isEmpty || model.isBusy)
-            primaryAction
+            if page == .production {
+                Button("复制提示词") {
+                    if let task = model.selectedAnimationWorkspaceTask { model.copyAnimationPrompt(task) }
+                }
                 .buttonStyle(.borderedProminent)
+                .disabled(model.selectedAnimationWorkspaceTask == nil || model.isBusy)
+            } else {
+                primaryAction.buttonStyle(.borderedProminent)
+            }
         }
         .controlSize(.large)
     }
 
     private var footerHint: String {
         isReviewing ? "勾选要做动画的段落；应用后会拆分并标记，可 ⌘Z 撤销。" : "整篇文案会发送给 DeepSeek；所有有文字的条目都参与判断，勾选应用后才修改。"
+    }
+
+    private enum AnimationPage { case production, analysis }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch AppTheme(rawValue: themeRawValue) ?? .system {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    private func loadTemplate() {
+        sections = AnimationTemplateSection.parse(model.animationTemplate)
+        let normalized = sections.map(\.raw).joined()
+        if normalized != model.animationTemplate { model.animationTemplate = normalized }
+    }
+
+    private func sectionBinding(_ index: Int) -> Binding<String> {
+        Binding {
+            guard sections.indices.contains(index) else { return "" }
+            return sections[index].editableText.trimmingCharacters(in: .newlines)
+        } set: { value in
+            guard sections.indices.contains(index) else { return }
+            let old = sections[index].raw
+            let prefix = String(old.prefix(while: { $0 == "\n" }))
+            let suffix = String(old.reversed().prefix(while: { $0 == "\n" }).reversed())
+            sections[index].updateText(prefix + value + suffix)
+            model.animationTemplate = sections.map(\.raw).joined()
+        }
+    }
+
+    private var productionPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("动画制作提示词").font(.headline)
+                    Spacer()
+                    Text("自动保存").font(.caption).foregroundStyle(.secondary)
+                    Button("恢复默认") { resetTemplate = true }.buttonStyle(.link)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(sections.indices, id: \.self) { index in
+                        if sections[index].kind != .text || !sections[index].raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                TextField("输入提示词", text: sectionBinding(index), axis: .vertical)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 14))
+                                    .lineSpacing(5)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityLabel("提示词正文第\(index + 1)段")
+                                switch sections[index].kind {
+                                case .text: EmptyView()
+                                case .character: AnimationCharacterReferenceEditor(model: model).cardBackground()
+                                case .script: scriptDropCard
+                                case .outputDirectory: AnimationOutputDirectoryEditor(model: model).cardBackground()
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .padding(24)
+        }
+    }
+
+    private var scriptDropCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("动画文案", systemImage: "text.badge.plus").font(.subheadline.weight(.semibold))
+            if model.animationWorkspaceTasks.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "arrow.down.doc").font(.title2)
+                    Text("把动画条目拖到这里").font(.body.weight(.medium))
+                    Text("拖动主列表动画条目上的拖拽柄；不会改变原条目。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 24)
+            } else {
+                ForEach(model.animationWorkspaceTasks) { task in
+                    HStack(alignment: .top, spacing: 10) {
+                        Button {
+                            model.selectedAnimationWorkspaceRowID = task.rowID
+                        } label: {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: task.rowID == model.selectedAnimationWorkspaceRowID ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(Color.accentColor)
+                                Text(task.text).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("选择文案：\(task.text)")
+                        .accessibilityValue(task.rowID == model.selectedAnimationWorkspaceRowID ? "已选择" : "未选择")
+                        Button { model.removeAnimationWorkspaceRow(task.rowID) } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("移除文案：\(task.text)")
+                    }
+                    .padding(10)
+                    .background(task.rowID == model.selectedAnimationWorkspaceRowID ? Color.accentColor.opacity(0.08) : .clear,
+                                in: RoundedRectangle(cornerRadius: 8))
+                }
+                if let task = model.selectedAnimationWorkspaceTask, !model.note(for: task.rowID).isEmpty {
+                    Text("表达重点：" + model.note(for: task.rowID)).font(.callout).foregroundStyle(.secondary)
+                }
+                Text("继续拖入，可选择替换当前文案或保留多条。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(isScriptDropTargeted ? 0.12 : 0.035), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor.opacity(isScriptDropTargeted ? 0.8 : 0.3), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+        .accessibilityIdentifier("animation-script-drop-zone")
+        .onDrop(of: [AnimationRowDrag.type], isTargeted: $isScriptDropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadDataRepresentation(forTypeIdentifier: AnimationRowDrag.type.identifier) { data, _ in
+                guard let data else { return }
+                Task { @MainActor in _ = model.receiveAnimationDrop(data) }
+            }
+            return true
+        }
     }
 
     @ViewBuilder private var primaryAction: some View {
@@ -246,11 +408,7 @@ extension AnimationWorkspaceView {
                     Divider().padding(.leading, 46)
                     SettingsRow(systemImage: "checklist", tint: .purple, title: "动画判断规则",
                                 value: model.animationRules == AnimationWorkflow.defaultRules ? "默认" : "已自定义") { settingsDestination = .rules }
-                    Divider().padding(.leading, 46)
-                    SettingsRow(systemImage: "text.badge.star", tint: .pink, title: "制作提示词模板",
-                                value: model.animationTemplate == AnimationWorkflow.defaultTemplate ? "默认" : "已自定义") { settingsDestination = .template }
-                    Divider().padding(.leading, 46)
-                    AnimationCharacterReferenceEditor(model: model)
+
                 }
             }
             .padding(24)
@@ -359,6 +517,41 @@ extension View {
 
 // MARK: - Settings
 
+private struct AnimationOutputDirectoryEditor: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("动画输出目录").font(.system(size: 14, weight: .medium))
+            HStack {
+                TextField("填写输出文件夹的完整路径", text: $model.animationOutputDirectory)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("动画输出目录")
+                Button("选择文件夹…") { chooseDirectory() }
+                if !model.animationOutputDirectory.isEmpty {
+                    Button("清除") { model.animationOutputDirectory = "" }
+                }
+            }
+            Text("复制时加入此目录；代码等文件夹按“【文案】-【时间】”命名，视频以文案命名。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(12)
+    }
+
+    private func chooseDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "选择动画输出目录"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        let path = model.animationOutputDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !path.isEmpty { panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true) }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.animationOutputDirectory = url.path
+    }
+}
+
 private struct AnimationCharacterReferenceEditor: View {
     @Bindable var model: AppModel
     @State private var isDropTargeted = false
@@ -370,7 +563,7 @@ private struct AnimationCharacterReferenceEditor: View {
                 Text("角色参考图").font(.system(size: 14, weight: .medium))
                 Text(model.animationCharacterPath.isEmpty ? "拖入图片，或点击选择图片" : (model.animationCharacterPath as NSString).lastPathComponent)
                     .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                Text("复制提示词时自动加入角色替换说明")
+                Text("由制作 AI 判断是否需要角色，需要时使用此参考图")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
@@ -429,136 +622,57 @@ private struct AnimationCharacterReferenceEditor: View {
     }
 }
 
-private enum AnimationSettingsDestination: String, Identifiable {
-    case overview, deepSeek, rules, template, character
+private enum AnimationSettingsDestination: Identifiable {
+    case deepSeek, rules
     var id: Self { self }
-    var title: String {
-        switch self {
-        case .overview: return "动画助手设置"
-        case .deepSeek: return "DeepSeek 连接"
-        case .rules: return "动画判断规则"
-        case .template: return "制作提示词模板"
-        case .character: return "角色参考图"
-        }
-    }
-    var height: CGFloat {
-        switch self {
-        case .overview: return 410
-        case .deepSeek: return 310
-        case .rules, .template: return 560
-        case .character: return 330
-        }
-    }
+    var title: String { self == .deepSeek ? "DeepSeek 连接" : "动画判断规则" }
 }
 
 private struct AnimationSettingsSheet: View {
     @Bindable var model: AppModel
-    @State var destination: AnimationSettingsDestination
+    let destination: AnimationSettingsDestination
     @Environment(\.dismiss) private var dismiss
     @State private var revealKey = false
-    @State private var resetTarget: ResetTarget?
-
-    enum ResetTarget: Identifiable {
-        case rules, template
-        var id: Self { self }
-        var title: String { self == .rules ? "恢复默认判断规则？" : "恢复默认制作模板？" }
-    }
+    @State private var resetRules = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text(destination.title).font(.title3.weight(.semibold))
                 Spacer()
-            }
-            .padding(20)
+                if destination == .rules {
+                    Button("恢复默认") { resetRules = true }.buttonStyle(.link)
+                }
+            }.padding(20)
             Divider()
             Form {
-                if destination == .overview {
-                    Section {
-                        settingsLink(.deepSeek, icon: "key.fill", tint: .blue)
-                        settingsLink(.rules, icon: "checklist", tint: .purple)
-                        settingsLink(.template, icon: "text.badge.star", tint: .pink)
-                        settingsLink(.character, icon: "person.crop.square", tint: .orange)
-                    }
-                }
                 if destination == .deepSeek {
-                    Section {
-                        HStack(spacing: 8) {
+                    Section("DeepSeek") {
+                        HStack {
                             Group {
-                                if revealKey {
-                                    TextField("API Key", text: $model.deepSeekKeyDraft, prompt: Text("sk-…"))
-                                } else {
-                                    SecureField("API Key", text: $model.deepSeekKeyDraft, prompt: Text("sk-…"))
-                                }
-                            }
-                            .accessibilityLabel("DeepSeek API Key")
-                            Button { revealKey.toggle() } label: { Image(systemName: revealKey ? "eye.slash" : "eye") }
-                                .buttonStyle(.borderless)
-                                .help(revealKey ? "隐藏 API Key" : "显示 API Key")
+                                if revealKey { TextField("API Key", text: $model.deepSeekKeyDraft) }
+                                else { SecureField("API Key", text: $model.deepSeekKeyDraft) }
+                            }.accessibilityLabel("DeepSeek API Key")
+                            Button { revealKey.toggle() } label: {
+                                Image(systemName: revealKey ? "eye.slash" : "eye")
+                            }.buttonStyle(.borderless)
                         }
                         LabeledContent("模型") {
-                            HStack(spacing: 10) {
-                                Text("deepseek-flash").font(.callout.monospaced()).foregroundStyle(.secondary)
-                                if model.isTestingDeepSeek { ProgressView().controlSize(.small) }
-                                Button("测试连接") { Task { await model.testDeepSeekConnection() } }
-                                    .disabled(model.isTestingDeepSeek || model.deepSeekKeyDraft.isEmpty)
-                            }
+                            Text("deepseek-flash").font(.callout.monospaced()).foregroundStyle(.secondary)
+                            if model.isTestingDeepSeek { ProgressView().controlSize(.small) }
+                            Button("测试连接") { Task { await model.testDeepSeekConnection() } }
+                                .disabled(model.isTestingDeepSeek || model.deepSeekKeyDraft.isEmpty)
                         }
-                    } header: {
-                        Text("DeepSeek")
                     }
-
+                } else {
+                    TextEditor(text: $model.animationRules)
+                        .font(.system(size: 13)).lineSpacing(3)
+                        .frame(minHeight: 300)
+                        .accessibilityLabel("动画判断规则")
                 }
-                if destination == .rules {
-                    Section {
-                        promptEditor($model.animationRules, label: "动画判断规则", height: 320)
-                    } header: {
-                        sectionHeader("动画判断规则", isDefault: model.animationRules == AnimationWorkflow.defaultRules) { resetTarget = .rules }
-                    }
-
-                }
-                if destination == .character {
-                    Section {
-                        AnimationCharacterReferenceEditor(model: model)
-                    } header: {
-                        Text("角色参考图")
-                    }
-
-                }
-                if destination == .template {
-                    Section {
-                        promptEditor($model.animationTemplate, label: "动画制作提示词模板", height: 320)
-                    } header: {
-                        sectionHeader("制作提示词模板", isDefault: model.animationTemplate == AnimationWorkflow.defaultTemplate) { resetTarget = .template }
-                    }
-                }
-            }
-            .formStyle(.grouped)
-
-            if let note = configurationNote {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 1)
-                    Text(note)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(12)
-                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(Color.secondary.opacity(0.12), lineWidth: 1)
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 16)
-            }
-
+            }.formStyle(.grouped)
+            Text(destination == .deepSeek ? "API Key 只保存在本机钥匙串，不写入项目或导出的 JSON。" : "告诉 DeepSeek 哪些段落值得做动画；输出格式由软件自动约束。")
+                .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 16)
             Divider()
             HStack {
                 Text(model.animationFeedback).font(.callout).foregroundStyle(.secondary).lineLimit(1)
@@ -566,58 +680,14 @@ private struct AnimationSettingsSheet: View {
                 Button("完成") {
                     if model.saveAnimationConfiguration(saveAPIKey: destination == .deepSeek) { dismiss() }
                 }
-                .keyboardShortcut(.cancelAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(model.isTestingDeepSeek)
-            }
-            .controlSize(.large)
-            .padding(16)
+            }.padding(16)
         }
-        .frame(width: 640, height: destination.height)
+        .frame(width: 640, height: destination == .deepSeek ? 320 : 550)
         .interactiveDismissDisabled(model.isTestingDeepSeek)
-        .confirmationDialog(resetTarget?.title ?? "", isPresented: Binding(get: { resetTarget != nil }, set: { if !$0 { resetTarget = nil } }),
-                            presenting: resetTarget) { target in
-            Button("恢复默认", role: .destructive) {
-                if target == .rules { model.animationRules = AnimationWorkflow.defaultRules }
-                else { model.animationTemplate = AnimationWorkflow.defaultTemplate }
-            }
-        } message: { _ in
-            Text("当前的自定义内容将被覆盖。")
-        }
-    }
-
-    private var configurationNote: String? {
-        switch destination {
-        case .overview: return nil
-        case .deepSeek: return "API Key 只保存在本机钥匙串，不写入项目文件或导出的 JSON。"
-        case .rules: return "告诉 DeepSeek 什么样的段落值得做动画。输出格式由软件自动约束，表格要求会被忽略。"
-        case .template: return "{{text}} 替换为该条文案，{{character}} 替换为角色参考图；非空的表达重点会自动追加。"
-        case .character: return "替换模板中的 {{character}}；模板里没有该占位符时会追加到提示词末尾。未设置时，会保留使用你提供的角色参考图的说明。"
-        }
-    }
-
-    private func settingsLink(_ target: AnimationSettingsDestination, icon: String, tint: Color) -> some View {
-        SettingsRow(systemImage: icon, tint: tint, title: target.title, value: "") {
-            destination = target
-        }
-    }
-
-    private func sectionHeader(_ title: String, isDefault: Bool, reset: @escaping () -> Void) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            if !isDefault {
-                Button("恢复默认", action: reset).buttonStyle(.link).font(.callout)
-            }
-        }
-    }
-
-    private func promptEditor(_ text: Binding<String>, label: String, height: CGFloat) -> some View {
-        TextEditor(text: text)
-            .font(.system(size: 12.5))
-            .lineSpacing(2)
-            .scrollContentBackground(.hidden)
-            .frame(height: height)
-            .accessibilityLabel(label)
+        .confirmationDialog("恢复默认判断规则？", isPresented: $resetRules) {
+            Button("恢复默认", role: .destructive) { model.animationRules = AnimationWorkflow.defaultRules }
+        } message: { Text("当前自定义判断规则将被覆盖。") }
     }
 }
