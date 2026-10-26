@@ -109,7 +109,7 @@ AI 动画助手是可调整大小的独立窗口，可用“置顶”开关固�
 
 运行 `Tests/run-inline-optimization-tests.sh` 可检查文案迁移、派生缓存、编辑器显示身份和后台保存兼容性；`Tests/run-inline-performance-tests.sh` 使用隔离的 300 条文案测量模型性能。实际窗口计时、复现方式和未完成的验收项见 [性能记录](docs/inline-edit-performance.md)。
 
-运行 `Tests/run-script-import-tests.sh` 可检查直接导入文案后立即保存、替换已有文案、`.txt` / `.md`、导入前的待保存编辑、重启恢复及保存失败时保留原列表。
+运行 `Tests/run-script-import-tests.sh` 可检查直接导入文案后立即保存、替换已有文案、`.txt` / `.md`、导入前的待保存编辑、重启恢复及保存失败时保留原列表，以及空白工作区外层拖放入口的 Finder 文件提供器、中文与空格文件名和项目文案落盘。
 
 运行 `Tests/run-animation-tests.sh` 可检查分段原文完整性、全文分析、已有设置条目推荐及重复任务更新、完整提示词导出、项目恢复及撤销。DeepSeek 请求测试使用离线模拟响应，不调用真实账户。
 

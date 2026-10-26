@@ -59,10 +59,54 @@ import Foundation
             reopened.clearDestinationDirectory()
         }
 
+        // Exercise the ancestor drop entry point, rather than bypassing it with
+        // importScript(from:). Finder represents these files as file-URL providers.
+        let dropSuite = "BrollScriptDropTests.\(UUID().uuidString)"
+        let dropDefaults = UserDefaults(suiteName: dropSuite)!
+        let dropRoot = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(dropSuite)
+        try FileManager.default.createDirectory(at: dropRoot, withIntermediateDirectories: true)
+        defer { dropDefaults.removePersistentDomain(forName: dropSuite); try? FileManager.default.removeItem(at: dropRoot) }
+        let dropProject = dropRoot.appendingPathComponent("project")
+        let dropModel = AppModel(defaults: dropDefaults, assignmentsURL: dropRoot.appendingPathComponent("cache.json"))
+        await Task.yield()
+        dropModel.acceptDestinationDirectoryDrop(dropProject)
+        let feedback = FolderDragFeedbackModel()
+        let inactive = WholeWindowDirectoryDropDelegate(feedback: feedback)
+        expect(inactive.dropOperation == .cancel, "nonempty workspace keeps its existing drop behavior")
+        expect(!inactive.acceptDrop([]), "inactive fallback rejects drops")
+        var importedDrops = 0
+        let drop = WholeWindowDirectoryDropDelegate(feedback: feedback, onScriptDrop: { url in
+            importedDrops += 1
+            dropModel.importScript(from: url)
+        })
+        expect(drop.dropOperation == .copy, "empty workspace must offer a copy instead of cancelling the script drag")
+        expect(!drop.acceptDrop([NSItemProvider(object: "plain text" as NSString)]), "plain text without a file URL is rejected")
+        for name in ["中文 空格.txt", "中文 空格.MD"] {
+            let source = dropRoot.appendingPathComponent(name)
+            let text = "拖入第一句。\n拖入第二句：\(name)"
+            try text.write(to: source, atomically: true, encoding: .utf8)
+            let media = dropRoot.appendingPathComponent("video.mp4")
+            try Data().write(to: media)
+            let previousDrops = importedDrops
+            expect(drop.acceptDrop([NSItemProvider(contentsOf: media)!, NSItemProvider(contentsOf: source)!]),
+                   "\(name): ancestor accepts Finder file providers")
+            let deadline = Date().addingTimeInterval(3)
+            while importedDrops == previousDrops && Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            expect(importedDrops == previousDrops + 1, "\(name): drop invokes exactly one script import")
+            expect(dropModel.scriptText == text && dropModel.rows.count == 2, "\(name): drop loads visible rows")
+            expect((try? String(contentsOf: dropProject.appendingPathComponent("A-roll/正确文案.txt"), encoding: .utf8)) == text,
+                   "\(name): drag entry persists the project script")
+            expect((try? String(contentsOf: source, encoding: .utf8)) == text, "\(name): drag preserves source")
+        }
+        dropModel.flushPendingInlineSaves()
+        dropModel.clearDestinationDirectory()
+
         guard failures.isEmpty else {
             for failure in failures { print("FAIL \(failure)") }
             exit(1)
         }
-        print("PASS script import persistence: direct import, replacement, txt/md, pending inline saves, project-file restoration independent of cache, source preservation and write errors")
+        print("PASS script import persistence: direct import, replacement, txt/md, pending inline saves, project-file restoration independent of cache, source preservation, write errors and window-level Finder drops")
     }
 }

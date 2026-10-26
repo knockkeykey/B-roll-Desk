@@ -235,7 +235,10 @@ struct ContentView: View {
                 .allowsHitTesting(isMaterialListVisible)
                 .accessibilityHidden(!isMaterialListVisible)
         }
-        .onDrop(of: [UTType.fileURL], delegate: WholeWindowDirectoryDropDelegate(feedback: folderDragFeedback))
+        .onDrop(of: [UTType.fileURL], delegate: WholeWindowDirectoryDropDelegate(
+            feedback: folderDragFeedback,
+            onScriptDrop: model.hasScriptContent ? nil : { model.importScript(from: $0) }
+        ))
         .environmentObject(folderDragFeedback)
         .frame(minWidth: minimumContentWidth)
         .padding(.top, isWindowFullscreen ? 0 : -28)
@@ -5367,6 +5370,7 @@ private struct ScriptFileDropTargetModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .contentShape(Rectangle())
             .overlay {
                 if isDropTarget {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)

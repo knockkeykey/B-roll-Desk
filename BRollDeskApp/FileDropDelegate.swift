@@ -226,6 +226,9 @@ struct AnchorListDropDelegate: DropDelegate {
 
 struct WholeWindowDirectoryDropDelegate: DropDelegate {
     let feedback: FolderDragFeedbackModel
+    var onScriptDrop: ((URL) -> Void)? = nil
+
+    var dropOperation: DropOperation { onScriptDrop == nil ? .cancel : .copy }
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [UTType.fileURL])
@@ -236,7 +239,7 @@ struct WholeWindowDirectoryDropDelegate: DropDelegate {
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .cancel)
+        DropProposal(operation: dropOperation)
     }
 
     func dropExited(info: DropInfo) {
@@ -244,8 +247,26 @@ struct WholeWindowDirectoryDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
+        acceptDrop(info.itemProviders(for: [UTType.fileURL]))
+    }
+
+    // SwiftUI can route drops in empty space to this ancestor instead of the
+    // placeholder. Keep the import fallback here so those drops are not cancelled.
+    func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
         feedback.endInspection()
-        return false
+        guard let onScriptDrop else { return false }
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !fileProviders.isEmpty else { return false }
+        FileURLDropLoader.loadURLs(from: fileProviders) { urls in
+            guard let scriptURL = urls.first(where: {
+                ["txt", "md"].contains($0.pathExtension.lowercased())
+                    && (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true
+            }) else { return }
+            onScriptDrop(scriptURL)
+        }
+        return true
     }
 }
 
