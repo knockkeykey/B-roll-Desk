@@ -13,9 +13,20 @@ B-roll 配对台是一款免费、开源的 macOS 工具，适合做口播、教
 
 需要 **macOS 14 或更新版本**。目前提供 Apple Silicon（M 系列芯片）安装包。
 
-**[下载 v1.0.11 安装包（DMG）](https://github.com/knockkeykey/B-roll-Desk/releases/download/v1.0.11/B-roll-Desk-1.0.11-arm64.dmg)** · [查看最新版本](https://github.com/knockkeykey/B-roll-Desk/releases/latest)
+**[下载 v1.0.12 安装包（DMG）](https://github.com/knockkeykey/B-roll-Desk/releases/download/v1.0.12/B-roll-Desk-1.0.12-arm64.dmg)** · [查看最新版本](https://github.com/knockkeykey/B-roll-Desk/releases/latest)
 
 打开 DMG，将 App 拖入“Applications（应用程序）”即可。
+
+### 首次打开被 macOS 拦截怎么办？
+
+当前 v1.0.12 已有 Developer ID 签名，但尚未完成 Apple 公证。如果首次打开时提示“Apple 无法检查此 App 是否包含恶意软件”或“无法验证开发者”，确认安装包来自上方的本项目 GitHub 发布页后，可以按以下步骤临时放行：
+
+1. 在“应用程序”中尝试打开“B-roll 配对台”，出现提示后关闭提示窗口。
+2. 打开 **系统设置 → 隐私与安全性**，向下滚动到“安全性”区域。
+3. 找到“B-roll 配对台”被阻止的提示，点击 **“仍要打开”**。
+4. 按系统提示验证身份，再点击 **“打开”**。
+
+完成后，系统会记住对此 App 的允许，下次可正常双击打开。此操作只为当前 App 添加例外，无需关闭整个系统的安全检查。具体说明见 [Apple 官方操作指南](https://support.apple.com/zh-cn/102445)。
 
 ## 四步上手
 
